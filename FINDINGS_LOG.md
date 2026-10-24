@@ -340,3 +340,76 @@ source of the pages on `create.roblox.com/docs` (the rendered page URL is given 
   non-live environments (F-0012).
 - **Impact**: test ladder = (1) Studio *Server & Clients* (2–3 clients) with a Local Secret for logic; (2) Team Test with
   the real secret; (3) published private server run by the owner as the only production proof (spec §9).
+
+## Research R2 — Existing implementations (T-0004…T-0007)
+
+R2 findings come from inspected public source code (**[CODE]**, static review unless marked **[TESTED]**) and forum posts
+(**[COMMUNITY]**). Third-party code is studied, never copied (ScreenBlox is GPL-3.0). Notes: `docs/research/EXISTING_PROJECTS.md`.
+
+### F-0023 — ScreenBlox = GitHub `Reb0rnEnder/ScreenBlox`, the code behind the 2024 DevForum "ScreenShare | Free Game Source" resource [CODE][COMMUNITY]
+- **Date**: 2026-10-24 · **Question**: T-0004 — what is ScreenBlox, where is its source, how does it relate to the other
+  projects in scope?
+- **Method**: `web_search` ("ScreenBlox Roblox screen sharing", "ScreenBlox Reb0rnEnder devforum", "ScreenBlox github roblox
+  screen share EditableImage") → DevForum topic 2823814 excerpt; `git clone https://github.com/Reb0rnEnder/ScreenBlox`.
+- **Source**: S-0028 (DevForum topic, search excerpt only), S-0029 (repository @ `b873f78`).
+- **Finding**: the DevForum resource "ScreenShare | Free Game Source [UPDATED] [OVERHAUL]" (topic 2823814, author
+  RebornEnder, first post Feb 2024; excerpt: "Update 4.0: Added video downloading & caching", "Update 4.7: Added mouse
+  functionality, auto roblox finder, config editor") links "GitHub - Reb0rnEnder/ScreenBlox: Send video data to roblox
+  games." Its disclaimer says the tool "can only be used to convert the screen to colours that are stored on a local web
+  server and then loaded by the game to color frames accordingly". A reply in the excerpt recommends `EditableImage` with
+  `WritePixels` "instead of drawing". Repository: GPL-3.0, 17 commits from 2024-08-17 ("(backup) Initial commit") to
+  2026-01-12 (head `b873f7829518b8cf137e933997d5c98e57ef2d7f`, "added missing cv2 dependency"); `Data/Version.json` = 5.2;
+  files `Launcher.py`, `Data/App.py`, `requirements.txt` (flask, gevent, pillow, requests, pydirectinput, opencv-python),
+  `readme.md`, `notes-for-maintainer`, `LICENSE` and the binary place file `v4.7.rbxl` (124,062 B, the Roblox side).
+  PR #2 (regedit-sys, merged 2025-12-02) added README/requirements and changed the bind address to `0.0.0.0`.
+- **Confidence**: high for repository contents; medium for forum details (excerpt; thread not loaded yet).
+- **Impact**: "ScreenBlox" and "the ScreenShare free-game-source project discussed in 2024" (spec research list) are the
+  **same project** → that T-0007 item is covered by T-0004 (full thread still to read).
+- **Action**: parse `v4.7.rbxl` scripts and read the full thread (T-0004 part 2); no code reuse (GPL-3.0).
+
+### F-0024 — ScreenBlox desktop pipeline: per-request PIL screenshot → 190×90 → JSON array of hex strings over plain, unauthenticated HTTP :8080 [CODE]
+- **Source**: S-0029 `Data/App.py` (lines 122–143, 189–214) @ `b873f78`.
+- **Finding**: `GET /` calls `generate_hex()` **inside the request handler**: `ImageGrab.grab().resize((resx, resy))`
+  (default **190×90**, Pillow default resampling; `grab()` without `all_screens` = primary monitor) and returns
+  `{"HEX": ["rrggbb", …]}` (`application/json`), one quoted 6-hex-digit string per pixel, row-major. No frame ID,
+  timestamp, delta, compression or caching: every poll captures and re-encodes a full frame. Other endpoints: `/res`
+  (`{"RES": [resx, resy]}`), `/vidsett`, `/key`, `/roblox` (feature flags). Server: Flask under gevent
+  `WSGIServer(('0.0.0.0', 8080))` — **plain HTTP, no TLS, no authentication, no rate limit**. Internet exposure relies on
+  a third-party TCP tunnel (`notes-for-maintainer`: "use https://tunnel.pyjam.as instead of playit?", or self-hosted FRP).
+  "Video mode" pre-converts a local video file with OpenCV into hex frames resampled to 60 fps (`?frame=N`) —
+  pre-recorded media, not live capture.
+- **Evidence** [CALCULATED]: 17,100 px × 9 B (`"rrggbb",`) − 1 + 11 B wrapper ≈ **153,910 B per frame** (≈ 9 B/pixel vs
+  4 B raw RGBA); at the 500 req/min server cap (F-0008) ≤ 8.3 fps ≈ 1.28 MB/s of HTTP per game server, and Luau
+  `JSONDecode` must build a 17,100-string table per frame.
+- **Confidence**: high (code read). **Not executed** (Windows-only `ImageGrab` behaviour / `pydirectinput`, KI-0001).
+- **Impact**: confirms the community topology "desktop HTTP server + public tunnel + Roblox `HttpService` poll"
+  (consistent with F-0007…F-0009) and its costs: ~2× raw size, JSON parse per pixel, capture coupled to polling, no
+  security. Our design keeps the topology and replaces the weak parts: capture loop independent of requests with a
+  latest-frame buffer + frame IDs; binary tile/delta format + zstd (F-0016); HTTPS + bearer secret (F-0011); size caps
+  and rate limits.
+- **Action**: T-0008 comparison row "ScreenBlox-style JSON hex polling"; T-0009 codec benchmark uses it as a baseline.
+
+### F-0025 — ScreenBlox exposes remote keyboard, remote mouse and process-control endpoints without authentication; its launcher executes code downloaded at run time [CODE]
+- **Source**: S-0029 `Data/App.py` lines 35–36, 156–187; `Launcher.py`.
+- **Finding**: `/keysend?key=` → `pydirectinput.press(key)` for whitelisted keys `w a s d i o left right space`;
+  `/mousclick?x=&y=&btn=` → `pydirectinput.click(x, y, button=btn)` at **arbitrary screen coordinates**;
+  `/robloxjoin?placeid=` → `taskkill /f /im RobloxPlayerBeta.exe`, then launches `roblox://placeID=<placeid>` with the
+  auto-detected `RobloxPlayerBeta.exe`. Each is gated only by a local config flag (default `false`), **never by
+  authentication**: once enabled, anyone who knows the tunnel URL can click on / type into the owner's PC.
+  `Launcher.py` downloads `Data/App.py` from `raw.githubusercontent.com/Reb0rnEnder/screenblox/main/` whenever the remote
+  `Version.json` is newer and runs it with `os.system("python …")` — no pinning, signature or hash check.
+- **Impact**: these are exactly the features the spec forbids (no remote mouse/keyboard control, no command execution,
+  no generic remote desktop; `SECURITY.md`). Our capture app exposes **no inbound endpoint** (it pushes frames out to the
+  relay), contains no input-injection code and no self-updater that executes downloaded code.
+- **Action**: SECURITY.md threat list (T-0011/T-0014): unauthenticated tunnel URL, input injection, auto-update RCE as
+  explicit non-goals, with tests where applicable.
+
+### F-0026 — ScreenBlox defects found by static review (not executed) [CODE]
+- **Source**: S-0029 `Data/App.py` @ `b873f78`.
+- **Finding**: (1) the `/` route is chosen by `if config["video_mode"]:` at **import time**, before `load_config()` runs
+  in `__main__`, so a saved `video_mode: true` never switches `/` to video frames. (2) `edit_config()` tests
+  `isinstance(new_value, int)` on the string returned by `input()` (never true), so edited numeric values (`resx`,
+  `resy`) are stored as **strings** and the next `Image.resize((resx, resy))` would fail. (3) Video mode keeps every frame
+  as a hex string in memory (≈ 154 KB per frame at 60 fps).
+- **Confidence**: medium-high (Python semantics; not run).
+- **Impact**: nothing is reused; lessons: load and type-check configuration before it drives behaviour; bound memory.
