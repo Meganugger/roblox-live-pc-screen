@@ -256,3 +256,87 @@ source of the pages on `create.roblox.com/docs` (the rendered page URL is given 
   deltas are mandatory. Design default: average ≤ 50 KB/s per client (Balanced profile), keyframes chunked and paced;
   profiles may exceed it only when measured to work.
 - **Action**: PERFORMANCE.md budget; server pacing/backpressure in T-0012; quality profiles in T-0010.
+
+### F-0018 — `VideoFrame` plays only uploaded Roblox video assets (or in-experience capture recordings) — no live external stream [OFFICIAL]
+- **Date**: 2026-10-24 · **Question**: §10 Q1/Q14 and hard rule "do not assume arbitrary stream URLs work in `VideoFrame`".
+- **Source**: S-0018 (`classes/VideoFrame.yaml`), S-0019 (`ui/video-frames.md`, `cloud-services/video-service.md`). Snapshot `4e795e6`.
+- **Finding**: class description: "The video must be from a file uploaded to the Roblox website." `VideoFrame.Video: ContentId`
+  ("The content ID of the video file"); `VideoFrame.VideoContent: Content` is "either an asset content ID … or a direct
+  reference to a `VideoCapture` object for local screen recordings" — such `VideoCapture` objects come from
+  `CaptureService:ReadCapturesFromGalleryAsync()` (recordings *of the experience*, F-0020); values are built with
+  `Content.fromAssetId()`, `Content.fromUri("rbxassetid://…")` or `Content.fromObject(capture)`. Upload rules (guide): 13+
+  ID-verified uploader, ≤ 5 minutes, `.mp4`/`.mov`, ≤ 4096×2160, < 3.75 GB, "**Each video upload costs 2,000 Robux**",
+  ≤ 20 uploads/day; "Currently, a **maximum of two videos can play simultaneously**"; "every video asset must be downloaded
+  to each player's device before it can play". No URL/stream source property, no API to push frames.
+- **Confidence**: high (generated API reference + official guide).
+- **Impact**: `VideoFrame` cannot carry a live desktop (each update would be a new ≤ 5-min uploaded asset costing 2,000 Robux
+  and passing moderation — neither live nor affordable). **Rejected for the live path**; `EditableImage` (F-0001) remains
+  the only documented dynamic-pixel display.
+- **Action**: T-0008 records VideoFrame as rejected; troubleshooting guide mentions it.
+
+### F-0019 — `VideoPlayer` / `VideoDisplay` (Wire-based) and `VideoService` / `VideoSampler` are also asset-based [OFFICIAL]
+- **Source**: S-0020 (`classes/VideoPlayer.yaml`, `VideoDisplay.yaml`, `VideoService.yaml`, `VideoSampler.yaml`).
+- **Finding**: `VideoPlayer` is "An instance for playing video assets"; `VideoContent: Content` = "The asset to be loaded";
+  `LoadAsync() -> AssetFetchStatus`, `PlayFailed(error: AssetFetchStatus)`; output goes through a `Wire` to a `VideoDisplay`
+  (GuiObject with `ResampleMode`, `ScaleType`, `VideoRectOffset/Size`); both are tagged `NotBrowsable`.
+  `VideoService:CreateVideoSamplerAsync(content, options?) -> VideoSampler`; `VideoSampler:GetSamplesAtTimesAsync(times) ->
+  List<VideoSample>` returns image frames "from selected timestamps of a video". No class accepts live frames.
+- **Impact**: no advantage over EditableImage for live content → rejected for the live path.
+
+### F-0020 — No Roblox API captures the host desktop or exposes Windows capture; Roblox capture APIs record only the experience (camera capture is internal-only) [OFFICIAL]
+- **Question**: §10 Q1 (can a normal client capture its host desktop?) and Q2 (can a published experience access Windows
+  capture APIs?).
+- **Source**: S-0021 (`CaptureService`, `Capture`, `ScreenshotCapture`, `VideoCapture`, enums `CaptureType`,
+  `VideoCaptureStartedResult`, `VideoCaptureResult`), S-0022 (`VideoCaptureService`, `VideoDeviceCaptureQuality`), S-0023
+  (`StudioCaptureService`), S-0024 (GitHub code search over `Roblox/creator-docs`).
+- **Finding**: `CaptureService` "is a **client-side** service that allows developers to control how the screenshot and
+  video capture feature integrates with their experiences"; a `Capture` is "a screenshot or a video — **captured within an
+  experience**". Methods: `TakeScreenshotCaptureAsync` (UI inclusion via `Enum.UICaptureMode`, default `None`),
+  `CaptureScreenshot` (temporary contentId), `StartVideoCaptureAsync` (records "until `StopVideoCapture()` … or when **30
+  seconds** have passed", "all user voices are muted", `captureParams` "currently non-operational"), gallery save/share
+  prompts, `UploadCaptureAsync`; `Capture.FilePathString` / `VideoCapture.FilePath` require `RobloxScriptSecurity`.
+  `VideoCaptureService` "manages **camera** capture, for example for avatar facial-animation tracking … All of its members
+  require `RobloxScript` security; **not callable from experience scripts**." `StudioCaptureService` is "a **Studio-only**
+  service that lets **plugins** capture screenshots of the active place's 3D viewport" (`PluginSecurity`).
+  Negative search: `desktop repo:Roblox/creator-docs path:content/en-us/reference/engine` → 9 files, all platform /
+  device / settings items (`Platform`, `DeviceType`, `DeviceForm`, `MatchmakingType`, `AppLifecycleManagerState`,
+  `UserGameSettings`, `GuiButton`, `UserInputService`, `StudioDeviceSimulatorService`); `"screen capture" OR "screen
+  recording" OR "capture the screen" repo:Roblox/creator-docs` → 0 results.
+- **Confidence**: high for what the documented capture APIs do; "no desktop-capture API exists" is an absence-of-evidence
+  conclusion over the generated engine reference (limitation: GitHub code search indexes the default branch and literal
+  terms only).
+- **Impact**: **Q1 = No; Q2 = No.** The real desktop must be captured by a **separate native Windows application** outside
+  Roblox (spec options D/E). Option A (Roblox-only Luau) is infeasible. Webcam capture is unavailable to experience scripts
+  and is forbidden by the spec anyway (safeguard 5).
+- **Action**: T-0008 rejects option A; T-0010 implements capture in the desktop app.
+
+### F-0021 — `SurfaceGui` facts for building the physical screen [OFFICIAL]
+- **Question**: §15 physical screen construction.
+- **Source**: S-0025 (`classes/SurfaceGui.yaml`), S-0026 (`ui/in-experience-containers.md`).
+- **Finding**: a SurfaceGui renders GuiObjects on one part face (`Face`). Either parent it to the part, or place it in
+  `StarterGui` (→ `PlayerGui`) and set `Adornee` (+ `Face`) — "Setting `Adornee` overrides direct parent association".
+  "Interactive UI elements … inside a `SurfaceGui` will only receive user input if they are parented to the player's
+  `PlayerGui`". Canvas = the whole face; scale-based child sizes recommended. Properties: `SizingMode` (fixed size vs
+  `PixelsPerStud`), `PixelsPerStud`, `CanvasSize`, `LightInfluence` (0…1), `Brightness` (0…1000; "no effect when either
+  `LightInfluence` is `1` or `AlwaysOnTop` is `true`"), `AlwaysOnTop` (default false), `MaxDistance` (default 1000; 0 =
+  unlimited), `ZOffset`, `ClipsDescendants`, `ToolPunchThroughDistance`.
+- **Impact**: screen = anchored 16:9 Part + **client-created SurfaceGui in `PlayerGui` with `Adornee` = screen part**,
+  `Face = Front`, `LightInfluence = 0`, `Brightness ≈ 1–2`, `SizingMode = PixelsPerStud`; child `ImageLabel` (size 1×1
+  scale, `ScaleType = Fit`, `ResampleMode` configurable) whose `ImageContent = Content.fromObject(editableImage)` (F-0006).
+  The client owns that instance, consistent with F-0005, and any on-screen button can receive input. Status overlay
+  (sharing indicator, loading / connecting / error / stopped) = TextLabels on the same SurfaceGui.
+- **Action**: T-0012 screen module.
+
+### F-0022 — Studio testing modes vs published servers (consolidated answer to Q13) [OFFICIAL]
+- **Source**: S-0027 (`studio/testing-modes.md`) + F-0003, F-0004, F-0009, F-0010, F-0011, F-0012.
+- **Finding**: "When testing in either **Test** or **Test Here** mode, Studio runs two separate simulations — one client
+  simulation and one server simulation"; Client mode "is a close simulation of the game running on the Roblox application,
+  without multiple players"; **Server & Clients** multi-client simulation supports "up to eight" clients; **Team Test**
+  (collaborative testing) runs a shared server session; device and network *simulation* exist (emulation, not real
+  devices). Official Studio-vs-published differences relevant here: EditableImage fails in published games until **Enable
+  Mesh / Image APIs** (F-0003); Studio/server have unlimited editable memory, real clients do not (F-0004); `localhost`
+  only from Studio plugins (F-0009); `WebStreamClient` Studio-only (F-0010); secrets only in live servers / collaborative
+  testing — local playtests need **Local Secrets** (F-0011); `HttpError.CreatorEnvironmentsNotSupportedByService` for
+  non-live environments (F-0012).
+- **Impact**: test ladder = (1) Studio *Server & Clients* (2–3 clients) with a Local Secret for logic; (2) Team Test with
+  the real secret; (3) published private server run by the owner as the only production proof (spec §9).

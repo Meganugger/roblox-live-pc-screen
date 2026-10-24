@@ -1,8 +1,9 @@
 # ROBLOX_API_FACTS.md — Official Roblox API verification (task T-0003)
 
-**Status: IN PROGRESS.** Done: R1a (EditableImage group), R1b (HttpService, WebStreamClient, secrets), R1c (RemoteEvent /
-UnreliableRemoteEvent / buffer / EncodingService / network budget). Still to do: R1d (VideoFrame / VideoPlayer /
-SurfaceGui, Studio vs published, desktop-capture question).
+**Status: DONE (documentation level) — 2026-10-24.** R1a (EditableImage group), R1b (HttpService, WebStreamClient,
+secrets), R1c (RemoteEvent / UnreliableRemoteEvent / buffer / EncodingService / network budget), R1d (VideoFrame /
+VideoPlayer / SurfaceGui / capture services / Studio testing modes). All 14 questions are answered from official docs;
+runtime confirmation in Studio and in a published server is still required (owner tests, `KNOWN_ISSUES.md` KI-0002).
 
 **Method.** Official Creator Docs source files were downloaded from the public `Roblox/creator-docs` repository
 (snapshot `4e795e65a41fd48624fd85442292a81baa6bb3f5`, main, committed 2026-10-24T10:11:10Z) and parsed with PyYAML.
@@ -14,8 +15,8 @@ These files generate the pages on `https://create.roblox.com/docs/...`. Each ans
 
 | # | Question | Answer (official unless marked) | Evidence |
 | --- | --- | --- | --- |
-| 1 | Can a normal Roblox client capture its host desktop? | _Pending R1d._ | — |
-| 2 | Can a published experience access Windows capture APIs? | _Pending R1d._ | — |
+| 1 | Can a normal Roblox client capture its host desktop? | **No.** No documented API does it. `CaptureService` (client-side) captures only screenshots / ≤ 30 s videos **of the experience** into the user's Captures gallery; `VideoCaptureService` (camera) requires `RobloxScript` security, "not callable from experience scripts"; `StudioCaptureService` is Studio-only, plugin-only, 3D viewport only. Searching the engine reference for "desktop" finds only platform/device items. ⇒ a **native Windows app outside Roblox** must capture the desktop. | F-0020 |
+| 2 | Can a published experience access Windows capture APIs? | **No.** No OS/Win32/DXGI/Graphics-Capture access is documented; experience scripts run in the Luau sandbox (no FFI, no file paths: capture file paths are `RobloxScriptSecurity`). | F-0020 |
 | 3 | Can it hold a persistent external WebSocket/SSE connection? | **Not in a published experience.** `HttpService:CreateWebStreamClient` (SSE / RawStream / WebSocket) "is available in **Studio only**" and is limited to **4 clients** at once. Production must use request/response HTTP (polling / long-polling). | F-0010 |
 | 4 | Which HTTP operations can it perform? | `RequestAsync` (GET, HEAD, POST, PUT, DELETE, OPTIONS, TRACE, PATCH; custom headers except locked `User-Agent`/`Roblox-Id`; request body any string incl. binary; optional gzip request compression; `Timeout`), plus `GetAsync`/`PostAsync` shorthands. **500 external requests/min per server** (Open Cloud separately 2500/min). Ports: not 1194, not < 1024 except 80/443. Response-size limit and binary-safe response bodies **not documented → test**. | F-0007, F-0008, F-0009 |
 | 5 | In which execution contexts? | **Experience servers** (class description: requests "sent from experience servers"); secrets only in **server scripts** (client scripts get `Can't find secret with given key`); `localhost`/`127.0.0.1` documented only for **Studio plugins** on the same computer. Client-side HTTP is not documented as supported. | F-0007, F-0009, F-0011 |
@@ -26,8 +27,8 @@ These files generate the pages on `https://create.roblox.com/docs/...`. Each ans
 | 10 | Efficient multi-client delivery? | Each client must rebuild its own image (Q8), and clients cannot make HTTP requests (Q5), so **one server poller fetches each frame once and fans it out** with `RemoteEvent:FireAllClients(buffer)` (or `FireClient` for subscribed/nearby players). Forward the **compressed** payload unchanged (server validates header/size only; clients decompress natively); cache the latest keyframe for late joiners/resync; pace by the per-client budget. Server egress grows linearly with players **[CALCULATED]**. | F-0005, F-0013, F-0016, F-0017 |
 | 11 | Protecting external credentials? | Experience **secrets store** (Creator Dashboard ⟩ Secrets; owner only; value ≤ 1,024 chars; bound to a domain pattern). `HttpService:GetSecret(key)` → non-printable `Secret`, server-only, usable in URL/headers via `AddPrefix`/`AddSuffix` (not in body). Studio playtests need **Local Secrets** (Experience Settings ⟩ Security). | F-0011 |
 | 12 | Required HTTP/domain/permission settings? | **Allow HTTP Requests** (Studio ⟩ File ⟩ Experience Settings ⟩ Security) **and** **Enable Mesh / Image APIs** (Creator Dashboard ⟩ Configure ⟩ Settings, or Studio ⟩ Experience Settings ⟩ Security ⟩ Allow Mesh / Image APIs); a secret whose domain matches the relay host; relay on HTTPS port 443. | F-0003, F-0009, F-0011 |
-| 13 | Studio vs published differences? | Partial: EditableImage fails by default when published until the toggle is on; Studio/server have unlimited editable memory, clients do not. | F-0003, F-0004 |
-| 14 | What works in real published games? | _Pending R1d + owner test (no Roblox runtime in the agent sandbox, KI-0002)._ | — |
+| 13 | Studio vs published differences? | Studio *Test* runs separate client + server simulations, *Server & Clients* simulates up to 8 clients, *Team Test* = collaborative server — all simulations, not production. Differences: EditableImage fails when published until **Enable Mesh / Image APIs**; unlimited editable memory in Studio/server but budgeted on clients; `localhost` only from Studio plugins; `WebStreamClient` Studio-only; secrets only on live/collaborative servers (Local Secrets for solo playtests); `CreatorEnvironmentsNotSupportedByService` errors in non-live environments. | F-0003, F-0004, F-0009…F-0012, F-0022 |
+| 14 | What works in real published games? | **Documented as supported** (with Allow HTTP Requests + Enable Mesh / Image APIs): server `HttpService:RequestAsync` to a public HTTPS endpoint (500 req/min/server, secret in headers); reliable `RemoteEvent` with `buffer` payloads; client `EditableImage` + `WritePixelsBuffer` shown via `ImageLabel.ImageContent` on a `SurfaceGui`; `EncodingService` Zstd/Base64. **Not available**: desktop capture, `WebStreamClient`, owner's `localhost`, live video in `VideoFrame`/`VideoPlayer` (uploaded assets only, 2,000 Robux each, max 2 playing). Runtime proof **[UNVERIFIED]** until the owner's published test (KI-0002). | F-0001…F-0022 |
 
 ## Key verbatim quotes (official)
 
@@ -59,6 +60,15 @@ These files generate the pages on `https://create.roblox.com/docs/...`. Each ans
   instances".
 - EncodingService.GetDecompressedBufferSize: use it before decompressing — "very important if the input buffer contents
   are outside of your control".
+- VideoFrame: "The video must be from a file uploaded to the Roblox website." Video guide: "Each video upload costs 2,000
+  Robux." "Currently, a maximum of two videos can play simultaneously."
+- CaptureService: "a client-side service that allows developers to control how the screenshot and video capture feature
+  integrates with their experiences". StartVideoCaptureAsync: recording stops "when 30 seconds have passed".
+- VideoCaptureService: "All of its members require `RobloxScript` security; not callable from experience scripts."
+- StudioCaptureService: "a Studio-only service that lets plugins capture screenshots of the active place's 3D viewport".
+- SurfaceGui guide: "Interactive UI elements … inside a `SurfaceGui` will only receive user input if they are parented to
+  the player's `PlayerGui`".
+- Testing modes: "Studio runs two separate simulations — one client simulation and one server simulation".
 - buffer: "When passed through Roblox APIs, including sending a buffer through custom events, the identity of the buffer
   object is not preserved and the target will receive a copy."
 
@@ -81,3 +91,8 @@ These files generate the pages on `https://create.roblox.com/docs/...`. Each ans
 11. The game server forwards compressed payloads without decompressing them (header/size validation only) and caches
     the latest keyframe for late joiners (F-0013, F-0016).
 12. Default bandwidth budget ≈ 50 KB/s average per client; large keyframes are chunked and paced (F-0017).
+13. Desktop capture happens in a **native Windows application outside Roblox**; nothing inside Roblox can capture the
+    desktop (F-0020). Option A (Roblox-only) is infeasible.
+14. Display = client `EditableImage` → `ImageLabel.ImageContent` on a **client-created SurfaceGui in `PlayerGui`** with
+    `Adornee` = screen part (F-0021). `VideoFrame` / `VideoPlayer` are rejected for live content (F-0018, F-0019).
+15. Test ladder: Studio *Server & Clients* + Local Secret → Team Test → published private server (owner) (F-0022).
