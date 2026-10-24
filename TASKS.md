@@ -6,7 +6,7 @@ Statuses: `TODO` · `IN_PROGRESS` · `BLOCKED` · `DONE` · `NEEDS_RETEST`. A ta
 | --- | --- | --- | --- | --- | --- |
 | T-0001 | Inspect GitHub tools; create + verify private repo | DONE | — | `GITHUB_WORKFLOW.md` | Repo readable via MCP; metadata verified (private, `main`) |
 | T-0002 | Create persistent-memory system; push; verify remotely (checkpoint 1) | DONE (`67a6e4a`) | T-0001 | all `*.md`, `scripts/agent/` | Commit visible in `list_commits`; blob SHAs match |
-| T-0003 | Official Roblox API verification (14 questions) — R1a done (EditableImage group); R1b HttpService/WebStreamClient/secrets, R1c remotes/buffer/EncodingService, R1d VideoFrame/SurfaceGui/Studio-vs-published pending | IN_PROGRESS | T-0002 | `docs/research/ROBLOX_API_FACTS.md`, logs | All answers cited or marked unknown; checkpoint verified |
+| T-0003 | Official Roblox API verification (14 questions) — R1a done (EditableImage group, `9de19e7`); R1b done (HttpService/WebStreamClient/secrets, F-0007…F-0012); R1c remotes/buffer/EncodingService next; R1d VideoFrame/SurfaceGui/CaptureService/Studio-vs-published pending | IN_PROGRESS | T-0002 | `docs/research/ROBLOX_API_FACTS.md`, logs | All answers cited or marked unknown; checkpoint verified |
 | T-0004 | Investigate ScreenBlox (Reb0rnEnder) | TODO | T-0002 | `docs/research/` | Source/posts examined; findings + checkpoint |
 | T-0005 | Investigate Icy-Monster/Screen-Sharing-in-Roblox | TODO | T-0002 | `docs/research/` | Source examined; findings + checkpoint |
 | T-0006 | Investigate RSSP by ssavnayt | TODO | T-0002 | `docs/research/` | Source examined; findings + checkpoint |
@@ -18,3 +18,4 @@ Statuses: `TODO` · `IN_PROGRESS` · `BLOCKED` · `DONE` · `NEEDS_RETEST`. A ta
 | T-0012 | Roblox server + client + physical screen | TODO | T-0008 | `roblox/` | Static analysis + harness tests pass |
 | T-0013 | Test suites, benchmarks, CI workflow | TODO | T-0009..T-0012 | `tests/`, `.github/workflows/` | Results recorded |
 | T-0014 | Packaging: guides, reports, archive, final audit | TODO | all | `docs/` | Final verified checkpoint |
+| T-0015 | Recheck whether `HttpService:CreateWebStreamClient` became available in live games (currently Studio-only, F-0010) | TODO | — | `FINDINGS_LOG.md` | Docs re-read at each research refresh; finding updated |

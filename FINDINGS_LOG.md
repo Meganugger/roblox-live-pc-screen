@@ -81,3 +81,106 @@ source of the pages on `create.roblox.com/docs` (the rendered page URL is given 
   (`Enum.ResamplerMode`, e.g. `Pixelated`) controls filtering when the image is scaled; `ScaleType` controls fitting.
 - **Impact**: physical screen = Part + `SurfaceGui` + full-size `ImageLabel` whose `ImageContent` is the client's
   EditableImage. Aspect ratio handled by ScaleType/`UIAspectRatioConstraint` (to verify in T-0012).
+
+### F-0007 — `HttpService` sends outbound HTTP(S) requests from experience servers; bodies may be binary [OFFICIAL]
+- **Date**: 2026-10-24 · **Question**: §10 Q4/Q5 — which HTTP operations, in which contexts?
+- **Source**: S-0005 (`reference/engine/classes/HttpService.yaml`), S-0006 (`cloud-services/http-service.md`).
+- **Finding**: "`HttpService` allows HTTP requests to be sent from **experience servers** using `RequestAsync`, `GetAsync`
+  and `PostAsync`." `RequestAsync(requestOptions: Dictionary) -> Dictionary` supports `GET, HEAD, POST, PUT, DELETE,
+  OPTIONS, TRACE, PATCH`; request fields `Url` ("Must use http or https"), `Method`, `Headers`, `Body` ("Can be any
+  string, **including binary data**. Must be excluded when using the GET or HEAD HTTP methods"), `Compress`
+  (`Enum.HttpCompression.None|Gzip`), `Timeout` (seconds, > 0 and ≤ the default timeout). Response dictionary:
+  `Success` (true iff 200–299), `StatusCode`, `StatusMessage`, `Headers`, `Body`. `User-Agent` and `Roblox-Id` headers are
+  locked by Roblox; `Content-Length` is computed. Errors (timeout/rejection) are raised → wrap in `pcall`.
+  `JSONEncode` "accepts buffers up to 50 MiB, which it encodes to base64 (and often compresses)". All three request
+  methods are `Yields`, `thread_safety: Unsafe`, no security restriction tag.
+- **Confidence**: high (generated API reference). **Limitations**: the docs do not state a maximum **response** size and
+  do not explicitly state that the response `Body` is binary-safe → **[UNVERIFIED]** must be tested in Studio
+  (fallback: base64 text payloads).
+- **Impact**: the Roblox **game server** is the only documented place that can fetch frames from outside Roblox; it
+  must pull with request/response HTTP (it cannot accept inbound connections). Frame payloads should be designed so that
+  a base64 fallback is possible if binary response bodies turn out to be mangled.
+- **Action**: T-0009 codec must support a binary body and a base64 text body; T-0012 server poller uses `RequestAsync`
+  inside `pcall` with an explicit `Timeout`.
+
+### F-0008 — External HTTP is limited to 500 requests per minute per game server [OFFICIAL]
+- **Question**: §10 Q4/Q9 (throughput budget). **Source**: S-0005 (`RequestAsync` → "Limitations"), S-0006 ("Rate limits").
+- **Finding**: "The current limitation for sending and receiving **external** HTTP requests is **500 requests per
+  minute**. There is also a separate limit of 2500 requests per minute for Open Cloud requests. Requests over these
+  thresholds will fail." The guide scopes the Open Cloud limit "For each Roblox game server" and says Open Cloud requests
+  "do not consume the same overall limit of 500 HTTP requests per minute enforced on all other requests".
+  `Enum.HttpError` additionally has `TooManyOutstandingRequests` (concurrent/pending request limit, value not
+  documented). Best practice in the guide: exponential backoff, batch requests.
+- **Impact** **[CALCULATED]**: 500/min = 8.33 requests/s per server for *all* external HTTP. A one-request-per-frame
+  design is capped below ~8 fps; a safe design budget is **≤ 4 requests/s for frames** (leaves headroom for retries
+  and control calls). Higher frame rates need **several frames/deltas per response** (batching) or long-poll semantics.
+  Each Roblox server has its own budget, so a relay must expect one poller per running server.
+- **Action**: T-0008/T-0011: relay API returns "all changes since frame N" (batched, size-capped) with a long-poll
+  wait; server poller enforces a client-side token bucket below the limit and backs off on errors.
+
+### F-0009 — HTTP must be enabled per experience; plugin-only localhost; restricted ports [OFFICIAL]
+- **Question**: §10 Q12/Q13 — required settings, Studio vs published, localhost reachability.
+- **Source**: S-0006 ("Enable HTTP requests", "Use in plugins", "Limitations"), S-0005 (`HttpEnabled`).
+- **Finding**: "The `GetAsync()`, `PostAsync()`, and `RequestAsync()` methods aren't enabled by default. To send requests,
+  you must **Allow HTTP Requests** under **File ⟩ Experience Settings ⟩ Security** in Studio." (`HttpService.HttpEnabled`,
+  write security `LocalUserSecurity`.) "**Plugins** can also communicate with other software running on the same computer
+  through the `localhost` and `127.0.0.1` hosts." Guide "Limitations" list: "Only the HTTPS protocol is supported";
+  "You cannot use port `1194` or any port below `1024`, except `80` and `443`" (blocked → `403 Forbidden` /
+  `ERR_ACCESS_DENIED`); in the same list, Open-Cloud-specific rules (`x-api-key` must be a `Secret`, no `..` in paths).
+  "Requests should provide a secure form of authentication, such as a pre-shared secret key, so that bad actors cannot
+  pose as one of your Roblox servers."
+- **Confidence**: high for the toggle and the plugin-only localhost statement. **Limitation**: the "Limitations" list
+  mixes Open Cloud and general rules (RequestAsync itself says http or https) → treat **HTTPS on port 443** as the only
+  safe production choice.
+- **Impact**: localhost is documented only for **Studio plugins on the same computer**; a published game server runs in
+  Roblox's data centre, so the owner's `localhost` is **not reachable** from it (confirms spec hard rule). The desktop
+  frames must be exposed through a **publicly reachable HTTPS endpoint** (relay or tunnel) on 443 (or a port ≥ 1024
+  other than 1194), protected by a pre-shared secret.
+- **Action**: deployment guide (T-0014) includes the Allow HTTP Requests toggle; relay (T-0011) is HTTPS-only with
+  bearer-secret auth.
+
+### F-0010 — `WebStreamClient` (SSE / chunked / WebSocket) exists but is **Studio-only** and limited to 4 clients [OFFICIAL]
+- **Question**: §10 Q3 — can a published experience hold a persistent WebSocket/SSE connection?
+- **Source**: S-0005 (`CreateWebStreamClient`), S-0007 (`WebStreamClient.yaml`), S-0008 (`WebStreamClientType`,
+  `WebStreamClientState`).
+- **Finding**: `HttpService:CreateWebStreamClient(streamClientType: Enum.WebStreamClientType, requestOptions:
+  Dictionary) -> WebStreamClient`; types `SSE` (requires `text/event-stream`), `RawStream` (chunked/any streaming HTTP),
+  `WebSocket` (bidirectional; `Send(data: string)` works only for this type); events `Opened(statusCode, headers)`,
+  `MessageReceived(message: string)`, `Error(statusCode, message)`, `Closed()`; property `ConnectionState`
+  (`Connecting/Open/Error/Closed`). Verbatim: "There is a limit of **four total clients** allowed at one time." "**This
+  method is available in Studio only.** If you use it inside scripts, make sure to remove any references before
+  publishing the experience. We encourage you to create plugins with this feature". `Enum.HttpError.InactivityTimeout`
+  exists for streaming requests.
+- **Confidence**: high (explicit statement). **Uncertainty**: Roblox may enable it for live games later → recheck the
+  docs at each research refresh.
+- **Impact**: **Answer to Q3: No** — per current official docs a *published* experience cannot rely on SSE/WebSocket;
+  spec §9 forbids Studio-only features in the essential path. Production transport = **HTTP polling / long-polling with
+  `RequestAsync`**. A WebStreamClient path may only be an optional Studio-development transport.
+- **Action**: DECISIONS (T-0008) must reject WebSocket/SSE for the production path; record a "recheck WebStreamClient
+  availability" item in TASKS.
+
+### F-0011 — Secrets store: server-only `HttpService:GetSecret`, domain-bound, URL/headers only [OFFICIAL]
+- **Question**: §10 Q11 — how to protect external credentials.
+- **Source**: S-0009 (`datatypes/Secret.yaml`), S-0010 (`cloud-services/secrets.md`), S-0005 (`GetSecret`).
+- **Finding**: Per-experience secrets are created by the **game owner / group owner** in **Creator Dashboard ⟩ (game) ⟩
+  Secrets ⟩ Create Secret** with a name, the value (≤ 1,024 characters) and an **applicable domain** (`my.example.com`,
+  `*.example.com`, or `*` — not recommended); ≤ 500 secrets per game; also manageable via Open Cloud.
+  `HttpService:GetSecret(key: string) -> Secret` must be called "within a **server script**"; "the secrets store for
+  each game is only available to **live servers** or **collaborative testing** environments … You receive an identical
+  error if you try to access secrets **from a client script**" (`Can't find secret with given key`). Local playtests use
+  **File ⟩ Experience Settings ⟩ Security ⟩ Local Secrets**. A `Secret` "cannot be printed or logged"
+  (`print` → `Secret(name)`); only `AddPrefix`/`AddSuffix`; usable as the `url` argument and in headers — "You can't
+  include secrets in the HTTP request body, only the URL and headers." Allow HTTP Requests must be on.
+- **Impact**: the relay credential lives only in the Roblox secrets store (domain-restricted to the relay host) and in the
+  owner's desktop config (git-ignored). Roblox sends it as `Authorization: Bearer <secret>` via
+  `GetSecret(...):AddPrefix("Bearer ")`. Clients never see it. Studio tests need a Local Secret.
+- **Action**: SECURITY.md safeguard 13/14/20 mapping; T-0012 server code uses `GetSecret` + header; deployment guide.
+
+### F-0012 — `Enum.HttpError` values usable for diagnostics [OFFICIAL]
+- **Source**: S-0011 (`enums/HttpError.yaml`).
+- **Finding**: `OK, InvalidUrl, DnsResolve, ConnectFail, OutOfMemory, TimedOut, TooManyRedirects, InvalidRedirect,
+  NetFail, Aborted, SslConnectFail, SslVerificationFail, Unknown, ConnectionClosed, ServerProtocolError,
+  CreatorEnvironmentsNotSupportedByService` (non-live environment such as Studio not supported by target service),
+  `InactivityTimeout` (streaming), `TooManyOutstandingRequests`, `InvalidRangeResponse`.
+- **Impact**: the server poller maps failures to user-visible states (relay unreachable / TLS error / rate limited)
+  without logging frame content; `TooManyOutstandingRequests` ⇒ keep **one** outstanding frame request per server.
