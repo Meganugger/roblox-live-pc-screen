@@ -43,14 +43,7 @@ fetched with `curl`/`git clone` (internet works; the private repo cannot be clon
 
 ## Exact next task
 
-**T-0005 — Icy-Monster `Screen-Sharing-in-Roblox`** (`TASKS.md`).
-- Method: locate it (`search_repositories` "Screen-Sharing-in-Roblox", expected `Icy-Monster/Screen-Sharing-in-Roblox`;
-  public → `git clone` in the sandbox); record licence, head commit + dates, archived flag, stars/forks; read the desktop
-  side (capture, encoding, transport, auth) and the Roblox side (`.lua`/`.luau`/`.rbxlx` are text; use
-  `scripts/agent/rbxl_dump_scripts.py` for binary `.rbxl`/`.rbxm`); note README performance claims; list forks for T-0007.
-- Record F-0034+, S-0032+ and a new §2 in `docs/research/EXISTING_PROJECTS.md` (same aspect table as §1: identity,
-  capture, encoding, transport, reconstruction, extras, security, defects, lessons).
-- Completion criteria: source examined; findings + sources recorded; checkpoint verified; T-0005 DONE. Then T-0006 (RSSP
-  by ssavnayt), T-0007 (Reddit "AnyDesk in Roblox", archived Screen-Sharing-in-Roblox forks, S-0030 thread, ScreenBlox
-  forks, CanvasDraw S-0031), T-0016 (official content-policy check), T-0008 (architecture decision → `DECISIONS.md`,
-  `ARCHITECTURE.md`), then T-0009 (wire protocol + codec with tests).
+**Superseded by the 10th session (2026-10-24 23:40 UTC)**: architecture selected (`DECISIONS.md` D-0002, `ARCHITECTURE.md`);
+surveys T-0005…T-0007 deferred (D-0003). Next: **T-0009** wire protocol + codec (`desktop/rlps/`, `docs/PROTOCOL.md`,
+tests), then T-0011 frame service, T-0010 capture app, T-0012 Roblox scripts + TV. Always check `list_commits` and the
+last rows of `WORK_LOG.md` first: later commits of the 10th session may already contain this code.
