@@ -413,3 +413,46 @@ R2 findings come from inspected public source code (**[CODE]**, static review un
   as a hex string in memory (≈ 154 KB per frame at 60 fps).
 - **Confidence**: medium-high (Python semantics; not run).
 - **Impact**: nothing is reused; lessons: load and type-check configuration before it drives behaviour; bound memory.
+
+### F-0027 — ScreenBlox Roblox side: a server `Script` polls with `GetAsync` + `JSONDecode` in a tight loop and paints one replicated GUI `Frame` per pixel (no EditableImage, no RemoteEvent frames) [CODE]
+- **Date**: 2026-10-24 · **Source**: S-0029 `v4.7.rbxl` (124,062 B) parsed with `scripts/agent/rbxl_dump_scripts.py` (LZ4
+  chunks; INST/PROP/PRNT): 96 classes, 225 instances, 24 LocalScripts, 3 Scripts, 5 ModuleScripts (third-party Adonis
+  admin loader/config, ignored), 3 RemoteEvents.
+- **Finding**: `Workspace/Monitor/Object_0/SurfaceGui/LocalRequest` is a **server `Script`** (despite its name) in a part's
+  SurfaceGui. Clicking the part `Workspace.Controls.ON` (ClickDetector) calls `GetData(url.."/res")`, `/vidsett`, then
+  `while IsClickedOn do Render(Image, GetData(url).HEX) end` — back-to-back `HttpService:GetAsync` + `JSONDecode` with
+  **no wait, pacing or backoff** (errors are caught by `pcall`, warned once per distinct message, and retried at once).
+  `Controls.PIX` builds the screen: a `UIGridLayout` plus one cloned `Pixel` Frame per pixel (`resx*resy` = **17,100
+  Frames** at 190×90, 1-px cells, `SurfaceGui.CanvasSize` = resolution). `Render` (inside `coroutine.wrap`) walks
+  `par:GetChildren()` and sets `BackgroundColor3 = Color3.fromHex(hex)` for every pixel whose string differs from the
+  previous frame. Because the Frames live in Workspace and are changed by the server, **every changed pixel is a
+  replicated property change sent to every client** — that is the whole "replication" mechanism. An FPS label counts
+  `Render` calls per second. Video mode downloads every pre-converted frame (`?frame=i`) into a server table, then loops.
+- **Evidence** [CALCULATED]: a full-change frame = 17,100 property replications per client + a ~154 KB JSON decode on the
+  server; polling is capped by 500 external requests/min (F-0008) ⇒ ≤ 8.3 polls/s, beyond which `GetAsync` fails and the
+  loop spins on errors.
+- **Static-review defects (not executed)**: (a) `GetChildren()` also returns the `UIGridLayout` (first child), so pixel
+  values are applied shifted by one child (the layout's failed assignment is hidden by `pcall`), and the code assumes
+  `GetChildren()` order equals the grid's `LayoutOrder` order (all clones share one LayoutOrder) — likely a 1-pixel shift,
+  unverified; (b) on HTTP failure `GetData` returns the string `"ERROR"`, `("ERROR").HEX` is `nil`, nothing renders and
+  the loop keeps requesting.
+- **Confidence**: high (code read); runtime behaviour not observed (KI-0002).
+- **Impact**: per-pixel Instances mutated on the server are the community's pre-EditableImage technique; they cost one
+  replicated property change per pixel and ~17k Instances per screen. With `EditableImage` (which does **not** replicate,
+  F-0005) the server must forward compact frame bytes (reliable `RemoteEvent` + `buffer`, F-0013/F-0015) and each client
+  reconstructs locally — the architecture already forced by R1. Polling must be paced (token bucket) and back off.
+
+### F-0028 — ScreenBlox lets any player set the server's HTTP target and trigger host-PC actions; no authorization anywhere [CODE]
+- **Source**: S-0029 `v4.7.rbxl` scripts `LocalRequest`, `StarterGui/AdminUI/UI/URLSet/LocalScript`,
+  `StarterGui/UI/KeyBoard/KeyHandler`, `StarterGui/UI/JoinGame/JoinHandler`, `ServerScriptService/GAMEJoinTimer`.
+- **Finding**: RemoteEvents `ReplicatedStorage.SendURL/SendKEY/SendGAME`. `SendURL.OnServerEvent(plr, url)` sets the
+  polling URL to **any client-supplied string** (no admin check, no allow-list) and prints it to the server log; the URL
+  textbox is in `StarterGui/AdminUI`, i.e. cloned to **every** player (no permission check exists in any script; the
+  bundled Adonis admin keeps its example config and gates nothing). `SendKEY` and `SendGAME` forward client strings to
+  `<url>/keysend?key=` and `<url>/robloxjoin?placeid=` by plain concatenation (no URL encoding; the 60-s join cooldown is
+  commented out in the handler). The ON/OFF/PIX ClickDetectors accept clicks from any player.
+- **Impact**: our server takes the relay host only from owner configuration (domain-bound secret, F-0011), **never** from
+  clients; any client→server control (e.g. owner-only start/stop) is authorized and rate-limited on the server
+  (exploiters can fire RemoteEvents without the GUI); nothing flows from Roblox to the PC except authenticated polling.
+- **Action**: SECURITY.md threats "client-controlled URL", "unauthorized remote use" (T-0011/T-0012); T-0012 server code
+  has no client-settable URL.
