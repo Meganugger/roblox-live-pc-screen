@@ -184,3 +184,75 @@ source of the pages on `create.roblox.com/docs` (the rendered page URL is given 
   `InactivityTimeout` (streaming), `TooManyOutstandingRequests`, `InvalidRangeResponse`.
 - **Impact**: the server poller maps failures to user-visible states (relay unreachable / TLS error / rate limited)
   without logging frame content; `TooManyOutstandingRequests` ⇒ keep **one** outstanding frame request per server.
+
+### F-0013 — Reliable `RemoteEvent`: ordered, retransmitted, queued; **no documented payload cap** [OFFICIAL]
+- **Date**: 2026-10-24 · **Question**: §10 Q9/Q10 — server→client payload limits and delivery semantics.
+- **Source**: S-0012 (`classes/RemoteEvent.yaml`), S-0014 (`scripting/events/remote.md` "Delivery guarantees",
+  "Throttling and size limits", "Argument limitations"). Snapshot `4e795e6`.
+- **Finding**: RemoteEvents are "reliable and ordered": lost messages are retransmitted while the recipient stays connected;
+  messages arrive in firing order "**including across different RemoteEvent instances**" (per connection and direction,
+  for `FireClient` and `FireAllClients`). If no handler is connected, messages are queued ("limited in both count and
+  memory", then discarded with a `Remote event invocation` error); undelivered messages are lost when the client leaves.
+  Client→server throttling: "approximately **500 requests per second, per client**", shared by all remotes of the same type
+  (excess RemoteEvent messages are delayed, not dropped). Any Roblox/Luau type may be passed (buffers included; mixed
+  tables, metatables and functions are not preserved). **No maximum payload size is documented for reliable
+  RemoteEvents** (only for UnreliableRemoteEvent, F-0014).
+- **Confidence**: high for semantics; **[UNVERIFIED]** practical per-event size/throughput ceiling (must be measured).
+- **Impact**: frame data goes server→client over **one reliable RemoteEvent** with a `buffer` argument; ordering lets the
+  client apply deltas safely; a client that joins late or misses data (queue overflow, reconnect) needs a fresh keyframe.
+  Chunk large frames into several events (configurable chunk size) instead of one huge event.
+- **Action**: T-0009 protocol carries frame IDs + chunk index/count; T-0012 server caches the latest keyframe for late
+  joiners; benchmark the per-event size in Studio (TEST plan).
+
+### F-0014 — `UnreliableRemoteEvent` drops payloads > **1,000 bytes**, unordered, no queue → unsuitable for frames [OFFICIAL]
+- **Source**: S-0013 (`classes/UnreliableRemoteEvent.yaml`, `BaseRemoteEvent.yaml`), S-0014.
+- **Finding**: "Events with payloads larger than **1000 bytes are dropped**" (each Fire* method: "Has a 1000 byte limit to
+  the payload of the event"). Engine encodes/compresses some types "such as buffers", so the on-wire size is hard to
+  predict. Messages may be lost, reordered, dropped under congestion, dropped when no handler is connected (no queue), and
+  client→server excess is dropped.
+- **Impact**: never use UnreliableRemoteEvent for pixel data; at most for tiny ephemeral status pings (not needed).
+- **Action**: DECISIONS T-0008 rejects it for the frame path.
+
+### F-0015 — `buffer` library: fixed-size little-endian binary memory; copied when sent through remotes [OFFICIAL]
+- **Source**: S-0015 (`libraries/buffer.yaml`).
+- **Finding**: `buffer.create/fromstring/tostring/len`, `read/write{i8,u8,i16,u16,i32,u32,f32,f64}` (**little-endian**),
+  `readbits/writebits`, `readstring/writestring`, `copy(target, targetOffset, source, sourceOffset?, count?)`,
+  `fill(b, offset, value, count?)`. Out-of-bounds access throws. "When passed through Roblox APIs, including sending a
+  buffer through custom events, the identity of the buffer object is not preserved and the target will receive a copy";
+  a buffer cannot be shared between Actor scripts.
+- **Impact**: the wire format is little-endian; the Luau decoder reads headers with `readu16/readu32` and bulk-copies
+  pixel runs with `buffer.copy`/`buffer.fill`-style loops into the RGBA8 frame buffer passed to `WritePixelsBuffer`
+  (F-0001). Out-of-bounds reads throw → decoder must bounds-check first and wrap decoding in `pcall`.
+
+### F-0016 — `EncodingService`: native **Zstd** compress/decompress, Base64, hashes — on buffers [OFFICIAL]
+- **Source**: S-0016 (`classes/EncodingService.yaml`, `enums/CompressionAlgorithm.yaml`, `enums/HashAlgorithm.yaml`).
+- **Finding**: `Base64Encode(buffer) -> buffer`, `Base64Decode(buffer) -> buffer` (throws on invalid Base64);
+  `CompressBuffer(input, Enum.CompressionAlgorithm.Zstd, level=1)` (Zstd levels −7…22); `DecompressBuffer(input, Zstd)`
+  ("might throw an error if the compressed data doesn't contain expected decompressed size, if it is larger than 1GB or if
+  it is invalid"); `GetDecompressedBufferSize(input, Zstd) -> int?` (nil if size missing/corrupt/> 1 GB; "very important if
+  the input buffer contents are outside of your control"); `ComputeBufferHash/ComputeStringHash` with `Enum.HashAlgorithm`
+  `Blake2b`, `Blake3`, `Md5`, `Sha1`, `Sha256` (not for passwords). `CompressionAlgorithm` has only `Zstd`. All methods
+  `thread_safety: Safe`, **no security tag**; class tags `NotCreatable, Service, NotReplicated`.
+- **Confidence**: high (API reference). **[UNVERIFIED]**: availability from client LocalScripts is implied (no security
+  restriction) but not runtime-tested; decompression speed on low-end clients not measured.
+- **Impact**: the desktop encoder compresses with standard **zstd frames that include the content size**; Roblox
+  decompresses natively (C++) — no Luau decompressor is needed, removing the main CPU bottleneck of earlier community
+  projects (RLE/palette decoding in Luau). The Base64 fallback for HTTP bodies is native too. Before decompressing, the
+  receiver checks `GetDecompressedBufferSize` against the protocol maximum (anti decompression-bomb).
+- **Action**: T-0009 codec = custom tile/rect format → zstd; Python side uses the `zstandard` package
+  (`write_content_size=True`). T-0012 client: `GetDecompressedBufferSize` ≤ limit → `DecompressBuffer` → decode.
+
+### F-0017 — Network budget: official guidance is "avoid large remote traffic"; ~**50 KB/s** receive per client was a 2024 planning target [OFFICIAL]
+- **Source**: S-0017 (`performance-optimization/improve.md` "Networking and replication"; `resources/performance/
+  resource.yaml`).
+- **Finding**: "Sending a large amount of data through RemoteEvent or RemoteFunction objects or invoking them very
+  frequently can lead to a large amount of CPU time being spent processing incoming packets each frame." Mitigation:
+  "Avoid sending large amounts of data at once through remote events." The performance resource: the 2024 notebook "aimed
+  … below roughly **50 KB/s of receive traffic**. Those last two numbers are historical planning targets; device memory
+  pressure and network behavior cannot be reduced to a universal ceiling."
+- **Confidence**: medium (guidance, not a limit). **[UNVERIFIED]** real ceiling — measure with Studio network stats and
+  in a published server.
+- **Impact** **[CALCULATED]**: at 50 KB/s a raw 320×180 RGBA frame (230,400 B) would take 4.6 s; compression + changed-region
+  deltas are mandatory. Design default: average ≤ 50 KB/s per client (Balanced profile), keyframes chunked and paced;
+  profiles may exceed it only when measured to work.
+- **Action**: PERFORMANCE.md budget; server pacing/backpressure in T-0012; quality profiles in T-0010.

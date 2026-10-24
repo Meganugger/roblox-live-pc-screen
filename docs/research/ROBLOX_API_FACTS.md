@@ -1,8 +1,8 @@
 # ROBLOX_API_FACTS.md — Official Roblox API verification (task T-0003)
 
-**Status: IN PROGRESS.** Done: R1a (EditableImage group), R1b (HttpService, WebStreamClient, secrets). Still to do:
-R1c (RemoteEvent / UnreliableRemoteEvent / buffer / EncodingService), R1d (VideoFrame / VideoPlayer / SurfaceGui,
-Studio vs published, desktop-capture question).
+**Status: IN PROGRESS.** Done: R1a (EditableImage group), R1b (HttpService, WebStreamClient, secrets), R1c (RemoteEvent /
+UnreliableRemoteEvent / buffer / EncodingService / network budget). Still to do: R1d (VideoFrame / VideoPlayer /
+SurfaceGui, Studio vs published, desktop-capture question).
 
 **Method.** Official Creator Docs source files were downloaded from the public `Roblox/creator-docs` repository
 (snapshot `4e795e65a41fd48624fd85442292a81baa6bb3f5`, main, committed 2026-10-24T10:11:10Z) and parsed with PyYAML.
@@ -22,8 +22,8 @@ These files generate the pages on `https://create.roblox.com/docs/...`. Each ans
 | 6 | Can it build/modify images from raw pixels at runtime? | **Yes** — `AssetService:CreateEditableImage` + `EditableImage:WritePixelsBuffer` (RGBA8 buffer). | F-0001 |
 | 7 | Exact EditableImage APIs, parameter types, pixel formats, memory limits, restrictions? | `CreateEditableImage(options: Dictionary?) -> EditableImage?` (default 512×512, **max 1024×1024**, not resizable); `WritePixelsBuffer(position: Vector2, size: Vector2, buffer)`; `ReadPixelsBuffer(position, size) -> buffer`; 4 bytes/pixel **R,G,B,A**, top-left origin; strict **client** memory budget (returns `nil` when exhausted; server/Studio unlimited); **only one displayed EditableImage updates per frame**; **disabled by default in published games** (Enable Mesh / Image APIs). | F-0001…F-0004 |
 | 8 | Do dynamic image changes replicate? | **No.** `Content.Object` values are not replicated; clients receive an unusable checkerboard placeholder. Each client must build its own EditableImage. | F-0005 |
-| 9 | Practical RemoteEvent / binary payload and bandwidth limits? | _Pending R1c._ | — |
-| 10 | Efficient multi-client delivery? | _Pending R1c_ (consequence of Q8: server must forward bytes to every client). | F-0005 |
+| 9 | Practical RemoteEvent / binary payload and bandwidth limits? | **Reliable `RemoteEvent`**: ordered + retransmitted, `buffer` arguments allowed (copied, engine-compressed), **no documented payload cap**; client→server ≈ 500 msgs/s per client per remote type. **`UnreliableRemoteEvent`: payloads > 1,000 bytes are dropped**, unordered, no queue. Official guidance: avoid large remote traffic; ~**50 KB/s** receive traffic per client was a 2024 planning target (not a hard limit). Practical ceiling **[UNVERIFIED]** → measure. Native `EncodingService` Zstd/Base64 makes compact binary payloads cheap to decode. | F-0013…F-0017 |
+| 10 | Efficient multi-client delivery? | Each client must rebuild its own image (Q8), and clients cannot make HTTP requests (Q5), so **one server poller fetches each frame once and fans it out** with `RemoteEvent:FireAllClients(buffer)` (or `FireClient` for subscribed/nearby players). Forward the **compressed** payload unchanged (server validates header/size only; clients decompress natively); cache the latest keyframe for late joiners/resync; pace by the per-client budget. Server egress grows linearly with players **[CALCULATED]**. | F-0005, F-0013, F-0016, F-0017 |
 | 11 | Protecting external credentials? | Experience **secrets store** (Creator Dashboard ⟩ Secrets; owner only; value ≤ 1,024 chars; bound to a domain pattern). `HttpService:GetSecret(key)` → non-printable `Secret`, server-only, usable in URL/headers via `AddPrefix`/`AddSuffix` (not in body). Studio playtests need **Local Secrets** (Experience Settings ⟩ Security). | F-0011 |
 | 12 | Required HTTP/domain/permission settings? | **Allow HTTP Requests** (Studio ⟩ File ⟩ Experience Settings ⟩ Security) **and** **Enable Mesh / Image APIs** (Creator Dashboard ⟩ Configure ⟩ Settings, or Studio ⟩ Experience Settings ⟩ Security ⟩ Allow Mesh / Image APIs); a secret whose domain matches the relay host; relay on HTTPS port 443. | F-0003, F-0009, F-0011 |
 | 13 | Studio vs published differences? | Partial: EditableImage fails by default when published until the toggle is on; Studio/server have unlimited editable memory, clients do not. | F-0003, F-0004 |
@@ -54,6 +54,14 @@ These files generate the pages on `https://create.roblox.com/docs/...`. Each ans
   environments … You receive an identical error if you try to access secrets from a client script." "You can't include
   secrets in the HTTP request body, only the URL and headers."
 
+- UnreliableRemoteEvent: "Events with payloads larger than 1000 bytes are dropped."
+- Remote guide: RemoteEvent messages "arrive in the order you fire them, including across different RemoteEvent
+  instances".
+- EncodingService.GetDecompressedBufferSize: use it before decompressing — "very important if the input buffer contents
+  are outside of your control".
+- buffer: "When passed through Roblox APIs, including sending a buffer through custom events, the identity of the buffer
+  object is not preserved and the target will receive a copy."
+
 ## Design consequences so far
 
 1. Reconstruction happens **in a client script**, one EditableImage per client per screen (F-0005).
@@ -66,3 +74,10 @@ These files generate the pages on `https://create.roblox.com/docs/...`. Each ans
 7. Request budget ≤ 500/min/server ⇒ batch several frame updates per response + long-poll; keep one outstanding request
    (F-0008, F-0012).
 8. Relay credential = experience secret, sent as `Authorization: Bearer …` by the server only (F-0011).
+9. Server→client frame path = one reliable `RemoteEvent` carrying `buffer` payloads (never JSON number arrays);
+   UnreliableRemoteEvent is excluded (1,000-byte cap) (F-0013, F-0014).
+10. Compression = standard zstd frames (content size included) made on the PC; Roblox decompresses with
+    `EncodingService:DecompressBuffer` after a `GetDecompressedBufferSize` bound check; Base64 fallback is native (F-0016).
+11. The game server forwards compressed payloads without decompressing them (header/size validation only) and caches
+    the latest keyframe for late joiners (F-0013, F-0016).
+12. Default bandwidth budget ≈ 50 KB/s average per client; large keyframes are chunked and paced (F-0017).
