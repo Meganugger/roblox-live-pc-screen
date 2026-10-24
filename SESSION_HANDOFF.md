@@ -1,6 +1,6 @@
 # SESSION_HANDOFF.md — Resume from a completely clean conversation
 
-_Last updated: 2026-10-24, end of checkpoint 1 (initial memory system)._
+_Last updated: 2026-10-24, checkpoint 1b (initial memory system verified at `67a6e4a`)._
 
 - **Repository**: https://github.com/Meganugger/roblox-live-pc-screen (private) · **Branch**: `main`
 - **Latest verified commit**: see `PROJECT_STATE.md` and the last entry of `WORK_LOG.md` (authoritative).
@@ -19,7 +19,7 @@ _Last updated: 2026-10-24, end of checkpoint 1 (initial memory system)._
 ## Exact next task
 
 **T-0003 — Verify official Roblox API facts** (see `TASKS.md`).
-- Dependencies: none (checkpoint 1 must be verified first — confirm with `list_commits`).
+- Dependencies: checkpoint 1 verified (`67a6e4a`).
 - Do: read current Roblox Creator docs for `EditableImage`, `AssetService:CreateEditableImage`, `HttpService`
   (limits, contexts, `GetSecret`, streaming clients if any), `RemoteEvent`, `UnreliableRemoteEvent`, `buffer`,
   `VideoFrame`, `SurfaceGui`/`ImageLabel` content APIs, any compression/encoding service; record each fact as `F-xxxx`

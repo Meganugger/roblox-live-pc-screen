@@ -22,10 +22,10 @@ its real status. Update this file when a capability is verified, fails, or chang
 | Repo metadata/visibility | `search_repositories` with `minimal_output:false` | ✅ verified: `private: true`, `visibility: private`, default branch `main`, permissions admin/push |
 | Branches | `list_branches` | ✅ verified (`main` @ `ef29fbf…` initial commit) |
 | Commit history | `list_commits` (`fields` filter supported) | ✅ verified |
-| Multi-file commit | `push_files` (via `arguments_file_path` JSON built by `scripts/agent/make_push_payload.py`) | ⏳ to be verified at checkpoint 1 (see WORK_LOG) |
+| Multi-file commit | `push_files` (via `arguments_file_path` JSON built by `scripts/agent/make_push_payload.py`) | ✅ verified: checkpoint 1 pushed 25 files (107 KB payload) in one commit `67a6e4a`; returns the new ref SHA |
 | Single-file create/update | `create_or_update_file` (requires blob `sha` for updates) | available, not yet exercised |
-| Commit details / changed files | `get_commit` (`detail: stats`) | available, not yet exercised |
-| Read file / directory | `get_file_contents` (returns blob `sha`; directories list entries) | ✅ verified for `/` |
+| Commit details / changed files | `get_commit` (`detail: stats`) | ✅ verified (file list + additions for `67a6e4a`) |
+| Read file / directory | `get_file_contents` (returns blob `sha`; `fields` filter works for dirs) | ✅ verified for `/`, `docs`, `scripts/agent`; `verify_remote.py` reported MATCH for all 20 files listed |
 | Create branch | `create_branch` | available, not exercised (work happens on `main`; no PR review loop needed) |
 | Delete file | `delete_file` | available, not exercised |
 | Code search (public GitHub) | `search_code` | available (used for research) |
