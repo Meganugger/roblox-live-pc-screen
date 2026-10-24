@@ -1,10 +1,10 @@
 # SESSION_HANDOFF.md — Resume from a completely clean conversation
 
-_Last updated: 2026-10-24 18:46 UTC, checkpoint R1d — official API research (T-0003) complete; existing-project research next._
+_Last updated: 2026-10-24 19:06 UTC, 6th session start — R1d verified; T-0004 (ScreenBlox) in progress._
 
 - **Repository**: https://github.com/Meganugger/roblox-live-pc-screen (private) · **Branch**: `main`
-- **Latest verified commit**: `9a6b1f48d2654633e62edc8384a3923238defd4a` ("Research R1c …"). The commit carrying this file is
-  "Research R1d …". Newer commits may exist: always run `list_commits` first and read the last rows of `WORK_LOG.md`.
+- **Latest verified commit**: `5485293cd99349b6d8a3ae8fa6385e8a2f43edc9` ("Research R1d …", verified by the 6th session).
+  Newer commits may exist: always run `list_commits` first and read the last rows of `WORK_LOG.md`.
 - **Objective**: real Windows desktop → physical screen in a published Roblox experience (`PROJECT_SPEC.md`).
 - **Selected architecture**: not formally chosen (T-0008). Forced by official docs: native Windows capture app (F-0020) →
   public HTTPS endpoint polled by the Roblox server with `RequestAsync` (F-0007…F-0010) → reliable `RemoteEvent` + `buffer`
