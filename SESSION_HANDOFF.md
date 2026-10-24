@@ -1,32 +1,35 @@
 # SESSION_HANDOFF.md — Resume from a completely clean conversation
 
-_Last updated: 2026-10-24 20:13 UTC, 8th session — R2a `30e2cea` verified; T-0004 part 2a checkpointed (ScreenBlox Roblox side read, F-0027/F-0028)._
+_Last updated: 2026-10-24 20:26 UTC, 9th session — R2b `a00eee6` verified; T-0004 DONE (DevForum thread read, F-0029…F-0033)._
 
 - **Repository**: https://github.com/Meganugger/roblox-live-pc-screen (private) · **Branch**: `main`
-- **Latest verified commit**: `30e2cea17d0953f82ea9497d2d2c7e03fceff532` ("Research R2a …", verified by the 8th session).
-  This file is carried by the newer "Research R2b …" commit (or later ones): always run `list_commits` first and read the
+- **Latest verified commit**: `a00eee67562e55c97176830d25f5be75370e2f13` ("Research R2b …", verified by the 9th session).
+  This file is carried by the newer "Research R2c …" commit (or later ones): always run `list_commits` first and read the
   last rows of `WORK_LOG.md`.
 - **Objective**: real Windows desktop → physical screen in a published Roblox experience (`PROJECT_SPEC.md`).
 - **Selected architecture**: not formally chosen (T-0008). Forced by official docs: native Windows capture app (F-0020) →
   public HTTPS endpoint polled by the Roblox server with `RequestAsync` (F-0007…F-0010) → reliable `RemoteEvent` + `buffer`
   fan-out, zstd via `EncodingService` (F-0013…F-0016) → client `EditableImage` on a client-owned `SurfaceGui` (F-0005,
   F-0021). Rejected: Roblox-only capture (F-0020), WebSocket/SSE (F-0010), UnreliableRemoteEvent (F-0014), VideoFrame /
-  VideoPlayer (F-0018, F-0019). ScreenBlox (F-0024) confirms the community uses the same topology (desktop HTTP server +
-  tunnel + HttpService polling) with JSON-per-pixel payloads and no security.
-- **Completed work**: tool inspection; repo + memory system; T-0003 R1a–R1d (F-0001…F-0022, S-0001…S-0027); T-0004 parts 1
-  + 2a: ScreenBlox = GitHub `Reb0rnEnder/ScreenBlox` (GPL-3.0, head `b873f78`) = the 2024 DevForum "ScreenShare | Free Game
-  Source" resource; Python side (F-0023…F-0026) and Roblox place `v4.7.rbxl` (F-0027/F-0028: server `GetAsync` tight loop,
-  one replicated GUI Frame per pixel, no EditableImage, any player can set the URL / send keys) read; notes in
-  `docs/research/EXISTING_PROJECTS.md`; reusable place-file reader `scripts/agent/rbxl_dump_scripts.py`.
-- **Recently changed files**: `FINDINGS_LOG.md`, `SOURCE_REGISTER.md`, `docs/research/EXISTING_PROJECTS.md`, `scripts/agent/rbxl_dump_scripts.py` (new),
-  `TASKS.md`, `KNOWN_ISSUES.md`, `WORK_LOG.md`, `PROJECT_STATE.md`, `SESSION_HANDOFF.md`.
+  VideoPlayer (F-0018, F-0019). ScreenBlox (F-0024, F-0027) uses the same topology (desktop HTTP server + tunnel +
+  HttpService polling) with JSON-per-pixel payloads, one replicated Frame per pixel and no security.
+- **Completed work**: tool inspection; repo + memory system; T-0003 R1a–R1d (F-0001…F-0022, S-0001…S-0027); **T-0004
+  DONE**: ScreenBlox = GitHub `Reb0rnEnder/ScreenBlox` (GPL-3.0, head `b873f78`; a partial backup created after the
+  original repo was lost in Aug 2024, F-0033) = the 2024 DevForum "ScreenShare | Free Game Source" resource. Python side
+  (F-0023…F-0026), Roblox place `v4.7.rbxl` (F-0027/F-0028) and the full DevForum thread (33 posts; F-0029 no fps data
+  anywhere; F-0030 "RemoteEvent limit 900 Bytes" claim contradicts the docs for reliable remotes; F-0031 playit.gg/ngrok
+  tunnels + "works in Studio, server offline live"; F-0032 ToS remark → T-0016) read; notes in
+  `docs/research/EXISTING_PROJECTS.md` §1 (8 lessons adopted).
+- **Recently changed files**: `FINDINGS_LOG.md`, `SOURCE_REGISTER.md` (S-0028 → Read, S-0031 CanvasDraw discovered),
+  `docs/research/EXISTING_PROJECTS.md`, `TASKS.md` (T-0004 DONE, T-0007 scope extended, T-0016 added), `WORK_LOG.md`,
+  `PROJECT_STATE.md`, `SESSION_HANDOFF.md`.
 - **Decisions**: D-0001 (private repo, `main` only, push via MCP `push_files`). No architecture decision yet.
-- **Tests actually executed**: none (research phase; ScreenBlox code was read, not run). **Unverified**: binary-safe HTTP
-  response bodies / max response size (F-0007); practical RemoteEvent size ceiling (F-0013, F-0017); EncodingService on
-  clients (F-0016); all runtime behaviour.
+- **Tests actually executed**: none (research phase; third-party code was read, not run). **Unverified**: binary-safe
+  HTTP response bodies / max response size (F-0007); practical reliable-RemoteEvent size ceiling (F-0013, F-0017,
+  F-0030); EncodingService on clients (F-0016); all runtime behaviour.
 - **Known issues**: KI-0001 (no Windows), KI-0002 (no Roblox runtime), KI-0003 (no CI inspection tool), KI-0004 (work lost
-  when a chat ends — recurred in the 6th **and** 7th sessions: no start-only commits, read only the files you will edit,
-  push the first findings within ~10 minutes, then after every source / sub-step).
+  when a chat ends — no start-only commits, read only the files you will edit, push the first findings within ~10
+  minutes, then after every source / sub-step; the 9th session pushed its first findings ~8 minutes after starting).
 
 ## How to recover a working copy (no git credentials in the agent sandbox)
 
@@ -40,14 +43,14 @@ fetched with `curl`/`git clone` (internet works; the private repo cannot be clon
 
 ## Exact next task
 
-**T-0004 part 2b — ScreenBlox DevForum thread** (`TASKS.md`), then close T-0004.
-- Method: `curl -s https://devforum.roblox.com/t/2823814.json` (Discourse JSON; posts in `post_stream.posts[].cooked`;
-  more post IDs in `post_stream.stream` → `/t/2823814/posts.json?post_ids[]=…`), or `web_load_page` on
-  https://devforum.roblox.com/t/screenshare-free-game-source-updated-overhaul/2823814.
-- Record (F-0029+, update S-0028 and `docs/research/EXISTING_PROJECTS.md` §1): reported fps / lag / resolution, tunnel
-  setup (playit etc.) and problems, ToS / moderation remarks, EditableImage migration, successors / forks.
-- Completion criteria: thread read; findings + sources recorded; checkpoint verified; T-0004 DONE. Then T-0005
-  (Icy-Monster/Screen-Sharing-in-Roblox: `git clone`, read source; use `scripts/agent/rbxl_dump_scripts.py` for any
-  `.rbxl`/`.rbxm`), T-0006 (RSSP by ssavnayt), T-0007 (Reddit "AnyDesk in Roblox", archived Screen-Sharing-in-Roblox forks,
-  S-0030 thread, successors), T-0008 (architecture decision → `DECISIONS.md`, `ARCHITECTURE.md`), then T-0009 (wire
-  protocol + codec with tests).
+**T-0005 — Icy-Monster `Screen-Sharing-in-Roblox`** (`TASKS.md`).
+- Method: locate it (`search_repositories` "Screen-Sharing-in-Roblox", expected `Icy-Monster/Screen-Sharing-in-Roblox`;
+  public → `git clone` in the sandbox); record licence, head commit + dates, archived flag, stars/forks; read the desktop
+  side (capture, encoding, transport, auth) and the Roblox side (`.lua`/`.luau`/`.rbxlx` are text; use
+  `scripts/agent/rbxl_dump_scripts.py` for binary `.rbxl`/`.rbxm`); note README performance claims; list forks for T-0007.
+- Record F-0034+, S-0032+ and a new §2 in `docs/research/EXISTING_PROJECTS.md` (same aspect table as §1: identity,
+  capture, encoding, transport, reconstruction, extras, security, defects, lessons).
+- Completion criteria: source examined; findings + sources recorded; checkpoint verified; T-0005 DONE. Then T-0006 (RSSP
+  by ssavnayt), T-0007 (Reddit "AnyDesk in Roblox", archived Screen-Sharing-in-Roblox forks, S-0030 thread, ScreenBlox
+  forks, CanvasDraw S-0031), T-0016 (official content-policy check), T-0008 (architecture decision → `DECISIONS.md`,
+  `ARCHITECTURE.md`), then T-0009 (wire protocol + codec with tests).

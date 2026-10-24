@@ -456,3 +456,86 @@ R2 findings come from inspected public source code (**[CODE]**, static review un
   (exploiters can fire RemoteEvents without the GUI); nothing flows from Roblox to the PC except authenticated polling.
 - **Action**: SECURITY.md threats "client-controlled URL", "unauthorized remote use" (T-0011/T-0012); T-0012 server code
   has no client-settable URL.
+
+### F-0029 — The ScreenShare DevForum thread reports no frame rate, latency or bandwidth figures; its performance claims are qualitative and partly absent from the available code [COMMUNITY]
+- **Date**: 2026-10-24 · **Question**: T-0004 part 2b — what performance (fps, lag, resolution) did the ScreenBlox
+  community report?
+- **Method**: Discourse JSON API: `curl https://devforum.roblox.com/t/2823814.json` (first 20 posts) +
+  `/t/2823814/posts.json?post_ids[]=…` (remaining 13); `cooked` HTML converted to text with BeautifulSoup; all 33 visible
+  posts read (post numbers 1–34, #30 not in the stream = deleted/hidden). Topic created 2024-02-05, last post
+  2024-08-29, 7,848 views, 65 likes at access time. Attached screenshots and the demo video (#3) were **not** analysed.
+- **Source**: S-0028.
+- **Finding**: no post gives an fps, latency, bandwidth or resolution-vs-speed figure (#14 asks "how much fps have you
+  managed so far"; #15 answers "didn't add that yet"). Only qualitative statements: #3 (author, 2024-02-05) "changing the
+  resolution to a higher one might crash the roblox client! (OLD VERSION ONLY)"; #19 (author, 2024-02-06, during a
+  CanvasDraw/EditableImage experiment that #15 says was tested with `math.random` pixels) "i have 480p now (no lag)";
+  #23 (2024-02-22) "New map and huge performance upgrades released". The author first could not adopt EditableImage (#8
+  "idk how to", #10 "almost no documentation", #12 "editableimage is a studio only beta feature i think?") and then tried
+  the CanvasDraw module (#11–#13 "this module is so fast"). The inspected backup `v4.7.rbxl` still paints one replicated
+  `Frame` per pixel at 190×90 and contains no EditableImage/CanvasDraw (F-0027): the "480p (no lag)" claim is **not
+  reflected in the available code**.
+- **Confidence**: high that the thread contains no measurements; low for the qualitative claims (no method, 2024 engine,
+  possibly Studio-only).
+- **Impact**: ScreenBlox gives **no usable performance baseline**; fps/latency targets must come from our own
+  measurements (T-0009 codec benchmarks, T-0013). Client crashes at higher resolutions with per-pixel Frames support
+  rendering through one `EditableImage` (F-0001) instead of thousands of GUI objects.
+- **Action**: T-0009/T-0013 record measured fps, latency and bytes per frame; `PERFORMANCE.md` cites measurements only.
+
+### F-0030 — Thread claims about transport limits: "no HttpService in a LocalScript" agrees with the docs; "the RemoteEvent data limit is 900 Bytes" contradicts them for reliable RemoteEvents [COMMUNITY]
+- **Date**: 2026-10-24 · **Source**: S-0028 posts #15–#19 (author, 2024-02-06).
+- **Finding**: #15: "you can't do httpservice on localscript and the remoteevent data limit is 900 Bytes but the screen
+  pixel data is ~1MB"; #16 suggests chunking; #17/#18 "that would be slow … every solution is extremely slow"; #19 "i
+  didn't actually need to chunk the data cuz i sent the date and the client did the work" (unexplained). The HttpService
+  statement matches F-0007 (server-side `RequestAsync`). A 900-byte limit is **not** documented for the reliable
+  `RemoteEvent` (no documented cap, F-0013); the only per-event size limit in the current docs is the
+  `UnreliableRemoteEvent` drop above 1,000 B (F-0014). "~1MB" matches uncompressed 640×480 RGBA = 1,228,800 B
+  [CALCULATED].
+- **Confidence**: low (2024 statement without a test). The official docs stay authoritative, but the practical
+  reliable-RemoteEvent ceiling remains **unverified** (assumption already listed with F-0013/F-0017).
+- **Impact**: the frame transport stays reliable `RemoteEvent` + `buffer`, with compressed, size-bounded chunks so the
+  design works whether or not a practical per-event ceiling exists.
+- **Action**: T-0009 wire protocol: explicit chunking with a configurable maximum chunk size; T-0013 runtime test
+  "largest reliable RemoteEvent payload delivered" (Studio + published) before tuning chunk sizes.
+
+### F-0031 — Live-server reachability in practice: third-party TCP tunnels (playit.gg, ngrok) and a "works in Studio, server offline in Roblox" failure [COMMUNITY]
+- **Date**: 2026-10-24 · **Source**: S-0028 posts #20, #22, #24–#26.
+- **Finding**: the author exposes the local server through **playit.gg** ("set tcp on port 8080", #20; #22 points out
+  playit is a tunnelling proxy, not port forwarding) or **ngrok** (#25). A user using playit.gg reported (#24/#26) it
+  "only works in studio … When I try in roblox it says: server offline", then "found the issue and now it's fixed" (cause
+  not stated). The author: "it works in a game (except OLD_hi2.rbxl) … You just need to make the server open to the
+  global web" (#25).
+- **Confidence**: medium (two people, consistent; root cause unknown).
+- **Impact**: (1) Studio success does **not** prove live-server connectivity (consistent with F-0008, F-0009, F-0022) → the
+  setup guide needs a live-server connectivity check and the screen needs a distinct "relay unreachable" state;
+  (2) ScreenBlox sends frames as plain HTTP through a third-party tunnel, so the tunnel operator and any on-path observer
+  can see the desktop → our transport must be HTTPS + authenticated end to end, and any tunnel/relay provider must be
+  disclosed to the owner (spec: no undisclosed third-party transmission). Hosted relay vs TLS tunnel is part of T-0008.
+- **Action**: T-0008 compares relay hosting options; T-0012 status states include "relay unreachable"; T-0014 guide
+  includes the live check.
+
+### F-0032 — Content-policy remark: the author considers screen sharing ToS-compliant only while the displayed content is "Roblox friendly"; no official position in the thread [COMMUNITY]
+- **Date**: 2026-10-24 · **Source**: S-0028 posts #1 (disclaimer), #4, #7.
+- **Finding**: #4 recommends "checking the Terms Of Service just incase this breaks it"; #7 (author): "This shouldn't be
+  against tos however it will be if you show some not Roblox friendly images on screen." The first-post disclaimer argues
+  it is allowed because the screen is only converted "to colours … loaded by the game to color frames". No Roblox staff
+  reply or policy document is cited.
+- **Confidence**: low (opinion); the underlying risk is real: whatever the desktop shows is visible to every player in
+  the server.
+- **Impact**: the owner is responsible for what the in-world screen shows; the design must make accidental exposure
+  unlikely (explicit start, visible sharing indicator, instant stop — spec safeguards) and should support limiting the
+  experience/screen to trusted players. An official policy check is needed before any publishing guidance.
+- **Action**: new task T-0016 (official Terms of Use / Community Standards check); threat "inappropriate or private
+  content shown to other players" for `SECURITY.md` (T-0008/T-0011).
+
+### F-0033 — ScreenBlox provenance and successors: the original repository was lost in Aug 2024; the inspected repo is a partial backup; no successor is linked [COMMUNITY][CODE]
+- **Date**: 2026-10-24 · **Source**: S-0028 posts #25, #31–#34; S-0029 history (F-0023).
+- **Finding**: #31 (2024-08-19) "The github is gone"; #32 (author, 2024-08-22) "My account got locked, meanwhile heres the
+  backup one. (It dosent have some things)" linking `Reb0rnEnder/ScreenBlox` — matching its first commit "(backup)
+  Initial commit" of 2024-08-17 (F-0023). #25 mentions an older place `OLD_hi2.rbxl` that does not work in live games (not
+  in the backup). Successors: #33 (SuperWoahGuy64, 2024-08-27) posts only a screenshot, "i modified it : D" (no code or
+  link); no fork, successor or EditableImage version is linked. Thread links (clicks): the GitHub repo (842), the
+  CanvasDraw DevForum thread (61, S-0031), EditableImage docs (59 + 36).
+- **Confidence**: high for what the thread says; pre-backup history unavailable.
+- **Impact**: the inspected code (F-0024…F-0028) is the only available ScreenBlox implementation; claims about lost
+  versions (CanvasDraw/480p, F-0029) cannot be verified. GitHub forks of `Reb0rnEnder/ScreenBlox` remain unchecked.
+- **Action**: T-0004 DONE; T-0007 checks ScreenBlox forks and CanvasDraw (S-0031) as an EditableImage usage reference.

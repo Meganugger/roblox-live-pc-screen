@@ -6,8 +6,8 @@ licences are recorded per project). Labels: **[CODE]** source read (static revie
 
 ## 1. ScreenBlox / "ScreenShare | Free Game Source" — Reb0rnEnder (T-0004)
 
-Status: **in progress** — Python side (S-0029 @ `b873f78`) and Roblox side (`v4.7.rbxl`, parsed with
-`scripts/agent/rbxl_dump_scripts.py`) inspected; the full DevForum thread (S-0028) is still to read.
+Status: **done** (T-0004) — Python side (S-0029 @ `b873f78`), Roblox side (`v4.7.rbxl`, parsed with
+`scripts/agent/rbxl_dump_scripts.py`) and the full DevForum thread (S-0028, 33 posts) inspected.
 
 | Aspect | What the code does | Evidence |
 | --- | --- | --- |
@@ -18,6 +18,7 @@ Status: **in progress** — Python side (S-0029 @ `b873f78`) and Roblox side (`v
 | Reconstruction | **One GUI `Frame` per pixel** (UIGridLayout, 17,100 Frames at 190×90) on a SurfaceGui in Workspace; the server sets `BackgroundColor3 = Color3.fromHex()` for changed pixels, so each changed pixel replicates to every client as a property change. No EditableImage, no RemoteEvent frame transport (a forum reply recommends EditableImage `WritePixels`) | F-0023, F-0027 |
 | Extra features | Video mode (local video pre-converted to 60 fps hex frames = pre-recorded media), remote key presses, remote mouse clicks, kill/relaunch Roblox | F-0024, F-0025 |
 | Security | No authentication anywhere; input injection and process control gated only by local config flags; `Launcher.py` runs code downloaded at run time without any integrity check; in Roblox any player can set the polling URL (`SendURL`), send key presses (`SendKEY`) and trigger Roblox relaunch (`SendGAME`) — no authorization | F-0025, F-0028 |
+| Community reports (thread) | No fps/latency/bandwidth figure anywhere; higher resolutions crashed clients (old version); a Feb 2024 "480p (no lag)" CanvasDraw/EditableImage experiment is not in the released backup code; "RemoteEvent limit 900 Bytes" claim (contradicts the docs for reliable remotes); playit.gg/ngrok tunnels; "works in Studio, server offline in Roblox" (fixed, cause unstated); ToS "unless not Roblox-friendly images"; original repo lost Aug 2024 → GitHub repo is a partial backup; no successor linked | F-0029…F-0033 |
 | Defects (static review) | Python: import-time route selection ignores saved `video_mode`; numeric config edits stored as strings. Luau: `GetChildren()` includes the UIGridLayout → likely 1-pixel shift hidden by `pcall`; `"ERROR"` string result → silent spin without backoff | F-0026, F-0027 |
 
 ### Lessons adopted for this project
@@ -29,7 +30,12 @@ Status: **in progress** — Python side (S-0029 @ `b873f78`) and Roblox side (`v
 4. **No inbound control surface on the PC**: no input injection, no process control, no self-updater that executes
    downloaded code (spec safeguards, `SECURITY.md`).
 5. Load and type-check configuration before it drives behaviour; bound memory use.
+6. **Measure our own fps, latency and bytes per frame** — the community reports none (F-0029).
+7. Check live-server connectivity separately from Studio and show a "relay unreachable" state (F-0031).
+8. Treat the in-world screen as public: explicit start, visible indicator, instant stop, optional trusted-player
+   restriction; content-policy check before publishing guidance (F-0032, T-0016).
 
-### Open questions (T-0004 part 2)
+### Open questions
 - ~~Roblox side (`v4.7.rbxl`)~~ — answered by F-0027/F-0028 (server polls; per-pixel replicated Frames; no auth).
-- DevForum thread (S-0028): reported frame rates/lag, tunnel problems, ToS/moderation discussion, successor versions.
+- ~~DevForum thread (S-0028)~~ — answered by F-0029…F-0033 (no fps data; tunnels; ToS remark; repo backup history).
+- Remaining (T-0007): forks of `Reb0rnEnder/ScreenBlox`; SuperWoahGuy64's modification (screenshot only, no code).
