@@ -1,9 +1,9 @@
 # SESSION_HANDOFF.md — Resume from a completely clean conversation
 
-_Last updated: 2026-10-24 19:06 UTC, 6th session start — R1d verified; T-0004 (ScreenBlox) in progress._
+_Last updated: 2026-10-24 19:56 UTC, 7th session start — `a5dc5ee` verified; T-0004 (ScreenBlox) restarted (6th session's T-0004 work was lost, KI-0004)._
 
 - **Repository**: https://github.com/Meganugger/roblox-live-pc-screen (private) · **Branch**: `main`
-- **Latest verified commit**: `5485293cd99349b6d8a3ae8fa6385e8a2f43edc9` ("Research R1d …", verified by the 6th session).
+- **Latest verified commit**: `a5dc5ee38a88b969c8281d16c8842649c61f1a55` ("Session 6 start …", verified by the 7th session).
   Newer commits may exist: always run `list_commits` first and read the last rows of `WORK_LOG.md`.
 - **Objective**: real Windows desktop → physical screen in a published Roblox experience (`PROJECT_SPEC.md`).
 - **Selected architecture**: not formally chosen (T-0008). Forced by official docs: native Windows capture app (F-0020) →
@@ -18,7 +18,9 @@ _Last updated: 2026-10-24 19:06 UTC, 6th session start — R1d verified; T-0004 
 - **Decisions**: D-0001 (private repo, `main` only, push via MCP `push_files`). No architecture decision yet.
 - **Tests actually executed**: none (research phase). **Unverified**: binary-safe HTTP response bodies / max response size
   (F-0007); practical RemoteEvent size ceiling (F-0013, F-0017); EncodingService on clients (F-0016); all runtime behaviour.
-- **Known issues**: KI-0001 (no Windows), KI-0002 (no Roblox runtime), KI-0003 (no CI inspection tool). Failed approaches: none.
+- **Known issues**: KI-0001 (no Windows), KI-0002 (no Roblox runtime), KI-0003 (no CI inspection tool), KI-0004 (a session's
+  unpushed work is lost when the chat ends — checkpoint after **every** source / sub-step, not at the end). Failed
+  approaches: none.
 
 ## How to recover a working copy (no git credentials in the agent sandbox)
 
