@@ -1,0 +1,24 @@
+# Secrets and local configuration (never commit real tokens)
+*.env
+.env
+.env.*
+!.env.example
+config.local.json
+desktop/config.json
+relay/config.json
+secrets/
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+# Build outputs / local tooling
+build/
+dist/
+tools/bin/
+*.log
+# Captured frames must never be committed (privacy)
+captures/
+*.capture.bin
