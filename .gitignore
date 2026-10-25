@@ -22,3 +22,7 @@ tools/bin/
 # Captured frames must never be committed (privacy)
 captures/
 *.capture.bin
+
+# agent/dev tool downloads and build output
+.tools/
+build/

@@ -183,8 +183,9 @@ local function ensureImage(w: number, h: number): EditableImage?
 		return img
 	end
 	dropPicture()
-	local ok, res = pcall(function(): EditableImage
-		return AssetService:CreateEditableImage({ Size = Vector2.new(w, h) })
+	local ok, res = pcall(function(): EditableImage?
+		-- nil (or an error) when the device's EditableImage memory budget is exhausted
+		return AssetService:CreateEditableImage({ Size = Vector2.new(w, h) }) :: EditableImage?
 	end)
 	if not ok or res == nil then
 		setState("error", "cannot create the screen image (" .. tostring(res) .. ")")

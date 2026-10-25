@@ -67,3 +67,23 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
 - **Python suite**: `cd desktop && python3 -m unittest discover -s tests -t .` → `Ran 63 tests in 12.0s — OK` → **PASS**.
 - **Limits**: `RlpsServer.server.luau` / `RlpsClient.client.luau` are not analyzed or executed by this harness (they need
   Roblox globals); still no Roblox runtime (KI-0002).
+
+## TR-0006 — Rojo build + strict Roblox-API type check of every Roblox script (23rd session)
+
+- **Purpose**: first static check of `RlpsServer.server.luau` / `RlpsClient.client.luau` against the real Roblox API surface
+  (they were never analyzed: TR-0005 limit) and first build of the Rojo project.
+- **Environment**: agent sandbox (Linux x86_64), Rojo 7.7.1, luau-lsp 1.70.1 + its `globalTypes.d.luau` (Roblox API
+  definitions), Luau CLI latest release (2026-10-25).
+- **Command**: `scripts/check_roblox.sh` (downloads the pinned tools, `rojo build` → `build/RlpsDemo.rbxlx`, `rojo sourcemap`,
+  `luau-lsp analyze --platform=roblox --definitions=@roblox=… --sourcemap=… roblox/src`).
+- **Result before fixes (`55c9793`)**: **FAIL** — (1) `rojo build`: "File is not a valid JSON model: RlpsTV.model.json …
+  data did not match any variant of untagged enum UnresolvedValue" (CFrame written as `{position, orientation}`; Rojo's
+  implicit CFrame is 12 numbers; the attribute must be the lowercase top-level `attributes` key); (2) luau-lsp:
+  `RlpsServer.server.luau(105)` "Cannot call a value of type {Message} in union" (`for … in messages or {}`),
+  `RlpsClient.client.luau(189)` "Types EditableImage and nil cannot be compared" (nil-budget check).
+- **Fixes**: model CFrames → 12-number form, `attributes.RlpsFace = "Front"` (verified in the built place:
+  `AttributesSerialize` decodes to `RlpsFace = "Front"`; `Tags` = `RlpsScreen`); `broadcast` guards `nil`;
+  `CreateEditableImage` result typed `EditableImage?`.
+- **Result after fixes**: `Built project to RlpsDemo.rbxlx` (21 items) and
+  `luau-lsp analyze (Roblox definitions, roblox/src): OK` → **PASS**. Luau harness rerun: 5660 passed / 0 failed; Python 63/63 OK.
+- **Limits**: static only — no Roblox runtime (KI-0002).

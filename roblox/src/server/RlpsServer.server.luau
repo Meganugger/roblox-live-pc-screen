@@ -102,8 +102,10 @@ local function send(target: Player?, m: RelayCore.Message)
 end
 
 local function broadcast(messages: { RelayCore.Message }?)
-	for _, m in messages or {} do
-		send(nil, m)
+	if messages then
+		for _, m in messages do
+			send(nil, m)
+		end
 	end
 	script:SetAttribute("Status", relay.status)
 	script:SetAttribute("StatusDetail", relay.detail or "")
