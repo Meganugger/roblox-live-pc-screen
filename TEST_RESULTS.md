@@ -56,3 +56,13 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   rule `<=` → `<` → 8 failures (duplicate index accepted). Both reverted (decoder blob `1cfdac3` = remote).
 - **Limits**: zstd parts use a test shim mapping each Python-compressed payload to its raw bytes — the real
   `EncodingService:DecompressBuffer` path is unverified until Studio (KI-0002). Not a Roblox runtime test.
+
+## TR-0005 — Luau suite rerun at session start (22nd session, recovery baseline)
+
+- **Purpose**: confirm the recovered remote head `0d12851` still passes every automated Luau check before new work.
+- **Environment**: agent sandbox (Linux x86_64), Luau CLI 0.744, Python 3.13.15, numpy 2.5.4, zstandard 0.25.0 (2026-10-25).
+- **Command**: `python3 roblox/tests/run_luau_tests.py --luau <luau> --analyze`
+- **Result**: vectors 7 sequences / 17 containers, 5,316 corruption cases, 7 payloads; `luau-analyze (5 modules): OK`;
+  Base64 67/67, ClientCore 154/154, Decoder 5344/5344, RelayCore 95/95 → **TOTAL 5660 passed, 0 failed → PASS**.
+- **Limits**: `RlpsServer.server.luau` / `RlpsClient.client.luau` are not analyzed or executed by this harness (they need
+  Roblox globals); still no Roblox runtime (KI-0002).
