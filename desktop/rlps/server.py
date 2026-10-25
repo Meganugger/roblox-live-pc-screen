@@ -212,6 +212,9 @@ class FrameService:
 
             do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _not_allowed
 
+        self.responses = 0  # counters for the app's status line (bandwidth measurement)
+        self.bytes_sent = 0
+        self._count_lock = threading.Lock()
         self.httpd = ThreadingHTTPServer((host, port), Handler)
         self.httpd.daemon_threads = True
         self._thread: threading.Thread | None = None
@@ -270,7 +273,11 @@ class FrameService:
             container = self.store.respond(after, session, key, wait_ms / 1000.0)
         finally:
             self._slots.release()
-        self._send(h, 200, codec.to_body(container))
+        body = codec.to_body(container)
+        self._send(h, 200, body)
+        with self._count_lock:
+            self.responses += 1
+            self.bytes_sent += len(body)
 
 
 def parse_query(query: str) -> tuple[int, int, bool, int]:

@@ -24,3 +24,16 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
 - **Environment**: agent sandbox (Linux, Python 3.13, numpy 2.5.4, zstandard 0.25.0), 11th session.
 - **Command**: `cd desktop && python3 -m unittest discover -s tests -t .` → `Ran 41 tests in 9.0s — OK` (25 codec + 16
   service) → **PASS**. Not tested: public tunnel/HTTPS, Roblox `RequestAsync` against it.
+
+## TR-0003 — Capture + desktop app tests (T-0010)
+
+- **Purpose**: `fit_size`/box+bilinear resize/BGRA→RGB, mss monitor + region selection, missing monitor, grab error →
+  reopen, geometry refresh (resolution change), profiles, nothing captured before Start, start/stop idempotence, stop
+  closes the source + drops frames + no grabs afterwards, new session on restart, interruption backoff/recovery, profile
+  change, token config create/reuse/rotate/0600/short-token rejection, console commands, and a test-double screen →
+  capture loop → real HTTP frame service → reference decoder (keyframe equals the stored frame, 1-tile delta, STOPPED
+  after stop).
+- **Environment**: agent sandbox (Linux, Python 3.13.15, numpy 2.5.4, zstandard 0.25.0, mss 10.2.0 installed but no
+  display), 12th session. **Code tested**: working tree of checkpoint "feat(desktop): sharing app …".
+- **Command**: `cd desktop && python3 -m unittest discover -s tests -t .` → `Ran 63 tests in 12.2s — OK` (25 codec + 16
+  service + 12 capture + 10 app) → **PASS**. Not run: real `mss` capture (no display/Windows, KI-0001), Tk window.
