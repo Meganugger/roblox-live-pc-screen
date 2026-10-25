@@ -1,0 +1,52 @@
+{
+  "ClassName": "Model",
+  "Children": [
+    {
+      "Name": "Screen",
+      "ClassName": "Part",
+      "Properties": {
+        "Anchored": true,
+        "CastShadow": false,
+        "Size": [16, 9, 0.2],
+        "CFrame": { "position": [0, 8, -30], "orientation": [[-1, 0, 0], [0, 1, 0], [0, 0, -1]] },
+        "Color": [0.03, 0.03, 0.03],
+        "Material": "SmoothPlastic",
+        "Tags": ["RlpsScreen"]
+      },
+      "Attributes": { "RlpsFace": "Front" }
+    },
+    {
+      "Name": "Bezel",
+      "ClassName": "Part",
+      "Properties": {
+        "Anchored": true,
+        "Size": [16.8, 9.8, 0.6],
+        "CFrame": { "position": [0, 8, -30.4], "orientation": [[-1, 0, 0], [0, 1, 0], [0, 0, -1]] },
+        "Color": [0.1, 0.1, 0.11],
+        "Material": "SmoothPlastic"
+      }
+    },
+    {
+      "Name": "Neck",
+      "ClassName": "Part",
+      "Properties": {
+        "Anchored": true,
+        "Size": [1.2, 3.1, 0.6],
+        "CFrame": { "position": [0, 1.75, -30.6], "orientation": [[1, 0, 0], [0, 1, 0], [0, 0, 1]] },
+        "Color": [0.1, 0.1, 0.11],
+        "Material": "Metal"
+      }
+    },
+    {
+      "Name": "Base",
+      "ClassName": "Part",
+      "Properties": {
+        "Anchored": true,
+        "Size": [6, 0.4, 3],
+        "CFrame": { "position": [0, 0.2, -30.6], "orientation": [[1, 0, 0], [0, 1, 0], [0, 0, 1]] },
+        "Color": [0.1, 0.1, 0.11],
+        "Material": "Metal"
+      }
+    }
+  ]
+}

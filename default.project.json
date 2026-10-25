@@ -1,0 +1,32 @@
+{
+  "name": "roblox-live-pc-screen",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Rlps": {
+        "$className": "Folder",
+        "RlpsProtocol": { "$path": "roblox/src/shared/RlpsProtocol.luau" },
+        "RlpsDecoder": { "$path": "roblox/src/shared/RlpsDecoder.luau" },
+        "RlpsClientCore": { "$path": "roblox/src/shared/RlpsClientCore.luau" }
+      }
+    },
+    "ServerScriptService": {
+      "Rlps": {
+        "$className": "Folder",
+        "RlpsServer": { "$path": "roblox/src/server/RlpsServer.server.luau" },
+        "RlpsRelayCore": { "$path": "roblox/src/server/RlpsRelayCore.luau" },
+        "RlpsProtocol": { "$path": "roblox/src/shared/RlpsProtocol.luau" },
+        "RlpsDecoder": { "$path": "roblox/src/shared/RlpsDecoder.luau" },
+        "RlpsBase64": { "$path": "roblox/src/shared/RlpsBase64.luau" }
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "RlpsClient": { "$path": "roblox/src/client/RlpsClient.client.luau" }
+      }
+    },
+    "Workspace": {
+      "RlpsTV": { "$path": "roblox/models/RlpsTV.model.json" }
+    }
+  }
+}
