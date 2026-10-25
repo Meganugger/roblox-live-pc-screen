@@ -14,7 +14,7 @@ Statuses: `TODO` · `IN_PROGRESS` · `BLOCKED` · `DONE` · `NEEDS_RETEST`. A ta
 | T-0008 | Architecture comparison A–F and decision — D-0002 (10th session) | DONE | T-0003..T-0007 | `DECISIONS.md`, `ARCHITECTURE.md` | Decision recorded before implementation |
 | T-0009 | Wire protocol + codec (Python encoder, Luau decoder) | IN_PROGRESS | T-0008 | `desktop/`, `roblox/` | Round-trip tests pass |
 | T-0010 | Desktop capture application (Windows) | TODO | T-0008 | `desktop/` | Real capture tested where possible |
-| T-0011 | Relay / frame service with auth and rate limits | TODO | T-0008 | `relay/` | Auth + invalid-request tests pass |
+| T-0011 | Frame service with auth and rate limits (`desktop/rlps/server.py`: `FrameStore` ring + on-demand delta/keyframe/UNCHANGED/STOPPED containers, Bearer auth with `hmac.compare_digest`, request + failed-auth token buckets, concurrency cap, strict query parsing, long-poll ≤ 25 s, stop wakes waiters and drops frames) — 16 tests (TR-0002); remaining: tunnel/HTTPS deployment guide (T-0014) | DONE (code + local tests) | T-0008 | `desktop/rlps/server.py`, `desktop/tests/test_server.py` | Auth + invalid-request tests pass |
 | T-0012 | Roblox server + client + physical screen | TODO | T-0008 | `roblox/` | Static analysis + harness tests pass |
 | T-0013 | Test suites, benchmarks, CI workflow | TODO | T-0009..T-0012 | `tests/`, `.github/workflows/` | Results recorded |
 | T-0014 | Packaging: guides, reports, archive, final audit | TODO | all | `docs/` | Final verified checkpoint |

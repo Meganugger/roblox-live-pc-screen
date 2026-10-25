@@ -12,3 +12,15 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
 - **Code tested**: `desktop/rlps/{protocol,codec}.py` + `desktop/tests/test_codec.py` at `c02868a`.
 - **Command**: `cd desktop && python3 -m unittest discover -s tests -t .`
 - **Result**: `Ran 25 tests in 0.404s — OK` → **PASS** (automated unit tests only; no Windows capture, no Roblox runtime).
+
+## TR-0002 — Frame service tests (T-0011)
+
+- **Purpose**: real HTTP on 127.0.0.1 (ephemeral port): 401 without/with wrong token, 404/405/400 (unknown path, other
+  methods, malformed/unknown/repeated/out-of-range params), failed-auth and request rate limits (429), STOPPED while not
+  sharing, LIVE+UNCHANGED before the first frame and at long-poll timeout, keyframe → delta (1 changed tile) →
+  reconstruction equals the source, identical frames not republished, long-poll wake-up on publish, stop wakes waiters
+  and drops frames, keyframes for unknown session / evicted base / `key=1`, new session id after restart, resolution
+  change → keyframe, reverted change → UNCHANGED advancing the base, 6 concurrent pollers get one cached body.
+- **Environment**: agent sandbox (Linux, Python 3.13, numpy 2.5.4, zstandard 0.25.0), 11th session.
+- **Command**: `cd desktop && python3 -m unittest discover -s tests -t .` → `Ran 41 tests in 9.0s — OK` (25 codec + 16
+  service) → **PASS**. Not tested: public tunnel/HTTPS, Roblox `RequestAsync` against it.
