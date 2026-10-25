@@ -1,8 +1,9 @@
 # PROJECT_STATE.md — Canonical project status
 
-_Last updated: 2026-10-25 ~16:57 UTC (20th session, start). The 19th session pushed `0ccbd08` (start record), `b1b95fa`
-(WIP `RlpsRelayCore`) and `2608039` (`RlpsRelayCore` spec) but did not update the state files afterwards; any later work
-is lost (KI-0004 pattern). The 20th session started in a fresh sandbox (`/data` empty): nothing unpushed was recoverable.
+_Last updated: 2026-10-25 ~19:10 UTC (21st session, start). The 20th session pushed only its start record `661cf06`;
+everything it did afterwards was lost (KI-0004 again: it pushed too late). The 21st session started in a fresh sandbox
+(`/data` empty, nothing unpushed recoverable) and verified `661cf06` as baseline (`list_branches` head = `list_commits` head,
+11 fetched blobs hash-identical). Rule from the owner (2026-10-25): push every file as soon as it exists — WIP is fine.
 Always run `list_commits` first: newer commits may exist._
 
 | Field | Value |
