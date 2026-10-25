@@ -77,6 +77,18 @@ def fields(c: C.Container) -> dict:
                 height=c.height, format=c.fmt, tileSize=c.tile_size, partCount=len(c.parts))
 
 
+def dirty_rect(c: C.Container) -> list[int]:
+    """[x, y, w, h] = union of the tile rectangles carried by every part (what RlpsClientCore.takeDirty reports)."""
+    x0 = y0 = 1 << 30
+    x1 = y1 = -1
+    for part in c.parts:
+        raw = C.decompress_part(part)
+        for idx in np.frombuffer(raw, dtype="<u2", count=part.tile_count).tolist():
+            tx, ty, tw, th = P.tile_rect(idx, c.width, c.height, c.tile_size)
+            x0, y0, x1, y1 = min(x0, tx), min(y0, ty), max(x1, tx + tw), max(y1, ty + th)
+    return [x0, y0, x1 - x0, y1 - y0]
+
+
 def frame_crc(frame: np.ndarray) -> int:
     return zlib.crc32(np.ascontiguousarray(frame).tobytes()) & 0xFFFFFFFF
 
@@ -174,7 +186,7 @@ def sequences():
             c = C.parse_container(data)
             ref = C.apply_container(ref, c)
             assert np.array_equal(ref[..., :3] >> 3, C.expand_to_rgba(q, fmt)[..., :3] >> 3)
-            steps.append({"data": data, "fields": fields(c), "crc": frame_crc(ref)})
+            steps.append({"data": data, "fields": fields(c), "crc": frame_crc(ref), "dirty": dirty_rect(c)})
             prev_q = q
         out.append({"name": name, "steps": steps})
     return out
@@ -291,7 +303,7 @@ def write_vectors(path):
         for s in seqs:
             fh.write(f"\t\t{{ name = {lval(s['name'])}, steps = {{\n")
             for st in s["steps"]:
-                fh.write(f"\t\t\t{{ data = {lstr(st['data'])}, fields = {lval(st['fields'])}, crc = {st['crc']} }},\n")
+                fh.write(f"\t\t\t{{ data = {lstr(st['data'])}, fields = {lval(st['fields'])}, crc = {st['crc']}, dirty = {lval(st['dirty'])} }},\n")
             fh.write("\t\t} },\n")
         fh.write("\t},\n\tblobs = {\n")
         for k, b in blobs.items():
