@@ -38,6 +38,9 @@ export type PartHeader = {
 
 export type PartRef = { header: PartHeader, offset: number, length: number } -- record = header + payload
 
+-- Union of the pixel rectangles written by applyRecord (x1/y1 exclusive); start from Decoder.emptyBounds().
+export type Bounds = { x0: number, y0: number, x1: number, y1: number }
+
 export type Container = {
 	state: number,
 	flags: number,
@@ -286,14 +289,28 @@ local function getLut565(): { number }
 	return t
 end
 
+function Decoder.emptyBounds(): Bounds
+	return { x0 = math.huge, y0 = math.huge, x1 = -1, y1 = -1 }
+end
+
+local function grow(bounds: Bounds?, x0: number, y0: number, tw: number, th: number)
+	if bounds then
+		bounds.x0 = math.min(bounds.x0, x0)
+		bounds.y0 = math.min(bounds.y0, y0)
+		bounds.x1 = math.max(bounds.x1, x0 + tw)
+		bounds.y1 = math.max(bounds.y1, y0 + th)
+	end
+end
+
 -- Decode one part record into `frame` (width*height*4 RGBA8 bytes). Validates everything before writing.
--- Returns the number of tiles written, or nil + reason.
+-- Returns the number of tiles written, or nil + reason. When `bounds` is given it is grown to cover every written tile.
 function Decoder.applyRecord(
 	frame: buffer,
 	frameWidth: number,
 	frameHeight: number,
 	record: buffer,
-	decompress: Decompress?
+	decompress: Decompress?,
+	bounds: Bounds?
 ): (number?, string?)
 	local h, herr = Decoder.parseRecord(record)
 	if h == nil then
@@ -330,6 +347,7 @@ function Decoder.applyRecord(
 		local lut = getLut565()
 		for i = 0, n - 1 do
 			local x0, y0, tw, th = Protocol.tileRect(readu16(raw, 2 * i), w, hgt, ts)
+			grow(bounds, x0, y0, tw, th)
 			for row = 0, th - 1 do
 				local dst = (y0 + row) * stride + x0 * 4
 				for _ = 1, tw do
@@ -342,6 +360,7 @@ function Decoder.applyRecord(
 	else
 		for i = 0, n - 1 do
 			local x0, y0, tw, th = Protocol.tileRect(readu16(raw, 2 * i), w, hgt, ts)
+			grow(bounds, x0, y0, tw, th)
 			for row = 0, th - 1 do
 				local dst = (y0 + row) * stride + x0 * 4
 				for _ = 1, tw do

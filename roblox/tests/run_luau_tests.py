@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Cross-language test of the Luau RLPS decoder against the Python reference codec (T-0009).
+"""Cross-language tests of the Luau RLPS modules against the Python reference codec (T-0009, T-0012).
 
 1. Encodes test frames with ``desktop/rlps`` (the real encoder) and computes the expected outcome of every case with the
    Python reference decoder (``parse_container`` / ``apply_part``): parsed fields, exact error strings, frame CRC-32.
-2. Writes the vectors as a Luau module, copies ``roblox/src/shared/*.luau`` into a temp dir (rewriting Roblox-style
-   ``require(script.Parent.X)`` to ``require("./X")``) and runs ``RlpsDecoder.spec.luau`` with the standalone ``luau`` CLI.
-3. Optionally type-checks the shared modules with ``luau-analyze`` (``--analyze``).
+2. Writes the vectors as a Luau module, copies the ModuleScripts of ``roblox/src/{shared,server,client}`` into one temp
+   dir (rewriting Roblox-style ``require(script.Parent.X)`` to ``require("./X")``) and runs every
+   ``roblox/tests/*.spec.luau`` with the standalone ``luau`` CLI.
+3. Optionally type-checks those modules with ``luau-analyze`` (``--analyze``).
 
 zstd parts: standalone Luau has no zstd, so the spec injects a decompressor shim that maps each compressed payload produced
 here to its raw bytes (on Roblox the same hook is ``EncodingService:DecompressBuffer``). Every other check runs for real.
@@ -254,6 +255,29 @@ def payload_cases():
     return cases
 
 
+def base64_cases():
+    """Canonical bodies (codec.to_body) of random bytes + malformed inputs, with Python's validate=True verdict."""
+    import base64
+    import binascii
+    import random
+
+    r = random.Random(7)
+    inputs = [base64.b64encode(bytes(r.randrange(256) for _ in range(n))) for n in [*range(40), 255, 256, 257, 4096]]
+    inputs += [b"A", b"AB", b"ABC", b"====", b"A===", b"AB=C", b"QQ==QQ==", b"QQ= =", b" QQ==", b"QQ==\n", b"QUJD\n",
+               b"QU*D", b"QR==", b"QUJ=", b"Zm9v", b"Zm9vYg==", b"Zm9vYmE=", b"-_8=", b"\x00\x00\x00\x00", b"\xff\xff\xff\xff",
+               b"=QUJ", b"Q===", b"QUJDRA=="]
+    out = []
+    for s in inputs:
+        canonical = False
+        try:
+            dec = base64.b64decode(s, validate=True)
+            canonical = base64.b64encode(dec) == s
+            out.append({"s": s, "out": dec, "canonical": canonical})
+        except (binascii.Error, ValueError):
+            out.append({"s": s, "err": True})
+    return out
+
+
 def write_vectors(path):
     seqs = sequences()
     blobs, ccases = corruption_cases()
@@ -278,6 +302,9 @@ def write_vectors(path):
         fh.write("\t},\n\tpayload = {\n")
         for c in pcases:
             fh.write("\t\t" + lval(c) + ",\n")
+        fh.write("\t},\n\tbase64 = {\n")
+        for c in base64_cases():
+            fh.write("\t\t" + lval(c) + ",\n")
         fh.write("\t},\n}\n")
     return len(seqs), sum(len(s["steps"]) for s in seqs), len(ccases), len(pcases)
 
@@ -299,33 +326,44 @@ def main():
     luau = find_tool("luau", a.luau)
     tmp = tempfile.mkdtemp(prefix="rlps-luau-")
     try:
-        shared = os.path.join(REPO, "roblox", "src", "shared")
-        for fn in sorted(os.listdir(shared)):
-            if fn.endswith(".luau"):
-                src = open(os.path.join(shared, fn), encoding="utf-8").read()
-                src = re.sub(r"require\(script\.Parent\.(\w+)\)", r'require("./\1")', src)
-                open(os.path.join(tmp, fn), "w", encoding="utf-8").write(src)
-        shutil.copy(os.path.join(HERE, "RlpsDecoder.spec.luau"), tmp)
+        modules = []
+        for sub in ("shared", "server", "client"):
+            d = os.path.join(REPO, "roblox", "src", sub)
+            for fn in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+                # Scripts (*.server.luau / *.client.luau) use Roblox globals: type-checked separately, never run here.
+                if fn.endswith(".luau") and not fn.endswith((".server.luau", ".client.luau")):
+                    src = open(os.path.join(d, fn), encoding="utf-8").read()
+                    src = re.sub(r"require\(script\.Parent\.(\w+)\)", r'require("./\1")', src)
+                    open(os.path.join(tmp, fn), "w", encoding="utf-8").write(src)
+                    modules.append(fn)
+        specs = sorted(fn for fn in os.listdir(HERE) if fn.endswith(".spec.luau"))
+        for fn in specs + [f for f in os.listdir(HERE) if f.endswith("_helpers.luau")]:
+            shutil.copy(os.path.join(HERE, fn), tmp)
         counts = write_vectors(os.path.join(tmp, "vectors.luau"))
         print("vectors: %d sequences / %d containers, %d corruption cases, %d payload cases" % counts)
         rc = 0
         if a.analyze:
             analyze = os.path.join(os.path.dirname(luau), "luau-analyze")
-            r = subprocess.run([analyze, "RlpsProtocol.luau", "RlpsDecoder.luau"], cwd=tmp, capture_output=True,
-                               text=True)
-            print("luau-analyze:", "OK" if r.returncode == 0 else "FAIL")
+            r = subprocess.run([analyze, *modules], cwd=tmp, capture_output=True, text=True)
+            print("luau-analyze (%d modules):" % len(modules), "OK" if r.returncode == 0 else "FAIL")
             if r.returncode:
                 print(r.stdout + r.stderr)
                 rc = 1
-        r = subprocess.run([luau, "RlpsDecoder.spec.luau"], cwd=tmp, capture_output=True, text=True)
-        out = r.stdout + r.stderr
-        fails = [ln for ln in out.splitlines() if ln.startswith("FAIL")]
-        for ln in fails[:40]:
-            print(ln)
-        summary = [ln for ln in out.splitlines() if ln.startswith("SUMMARY")]
-        print(summary[-1] if summary else out[-2000:])
-        if r.returncode or fails or not summary:
-            rc = 1
+        total_pass = total_fail = 0
+        for spec in specs:
+            r = subprocess.run([luau, spec], cwd=tmp, capture_output=True, text=True)
+            out = r.stdout + r.stderr
+            fails = [ln for ln in out.splitlines() if ln.startswith("FAIL")]
+            for ln in fails[:40]:
+                print(ln)
+            summary = [ln for ln in out.splitlines() if ln.startswith("SUMMARY")]
+            print(spec + ":", summary[-1] if summary else out[-2000:])
+            m = re.search(r"passed=(\d+) failed=(\d+)", summary[-1]) if summary else None
+            if m:
+                total_pass, total_fail = total_pass + int(m.group(1)), total_fail + int(m.group(2))
+            if r.returncode or fails or not summary:
+                rc = 1
+        print("TOTAL passed=%d failed=%d (%d specs)" % (total_pass, total_fail, len(specs)))
         return rc
     finally:
         if a.keep:
