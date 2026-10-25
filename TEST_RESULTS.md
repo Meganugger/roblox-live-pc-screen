@@ -37,3 +37,22 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   display), 12th session. **Code tested**: working tree of checkpoint "feat(desktop): sharing app …".
 - **Command**: `cd desktop && python3 -m unittest discover -s tests -t .` → `Ran 63 tests in 12.2s — OK` (25 codec + 16
   service + 12 capture + 10 app) → **PASS**. Not run: real `mss` capture (no display/Windows, KI-0001), Tk window.
+
+## TR-0004 — Luau decoder vs Python reference codec (T-0009)
+
+- **Purpose**: prove `roblox/src/shared/RlpsDecoder.luau` + `RlpsProtocol.luau` decode exactly what `desktop/rlps/codec.py`
+  encodes and reject exactly what the reference decoder rejects, with identical error strings: 7 keyframe→delta sequences
+  (17 containers: 1×1 … 320×180, RGB565/RGB888, tiles 8/16/32, zstd + none, one-tile-per-part splits, resolution change)
+  compared by CRC-32 of the reconstructed RGBA frame after every container; 5,316 corruption cases (every truncation,
+  every truncation with a re-fixed `bodyLength`, every single-byte mutation with 4–5 values of a 2-part keyframe and a
+  delta, trailing byte, STOPPED/UNCHANGED status containers and their mutations); 7 hand-built payloads (duplicate,
+  decreasing, out-of-range tile indices, short/long tile data, tile-count mismatch); record-level checks (trailing byte,
+  frame-size mismatch); and "a failed part never modifies the frame".
+- **Environment**: agent sandbox (Linux x86_64), Luau CLI **0.744** (`luau`, `luau-analyze` from luau-lang releases),
+  Python 3.13, numpy 2.5.4, zstandard 0.25.0 (14th session, 2026-10-25).
+- **Command**: `python3 roblox/tests/run_luau_tests.py --analyze` → `luau-analyze: OK`, `SUMMARY passed=5344 failed=0`
+  (0.9 s) → **PASS**.
+- **Negative controls** (harness can fail): G6 bit-replication shift changed 4→5 → 5 failures (CRC mismatch); tile-index
+  rule `<=` → `<` → 8 failures (duplicate index accepted). Both reverted (decoder blob `1cfdac3` = remote).
+- **Limits**: zstd parts use a test shim mapping each Python-compressed payload to its raw bytes — the real
+  `EncodingService:DecompressBuffer` path is unverified until Studio (KI-0002). Not a Roblox runtime test.
