@@ -105,7 +105,8 @@ def _default_factory():
         import mss  # imported lazily: tests and the codec do not need it
     except ImportError as exc:  # pragma: no cover - depends on the machine
         raise CaptureError("the 'mss' package is required for screen capture (pip install mss)") from exc
-    return mss.mss()
+    factory = getattr(mss, "MSS", None) or mss.mss  # mss >= 10 names the class MSS; mss.mss() is deprecated there
+    return factory()
 
 
 class MssSource:
