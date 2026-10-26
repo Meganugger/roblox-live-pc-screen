@@ -2,6 +2,9 @@
   "name": "roblox-live-pc-screen",
   "tree": {
     "$className": "DataModel",
+    "HttpService": {
+      "$properties": { "HttpEnabled": true }
+    },
     "ReplicatedStorage": {
       "Rlps": {
         "$className": "Folder",
