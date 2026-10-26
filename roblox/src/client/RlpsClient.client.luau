@@ -25,6 +25,7 @@ local SCREEN_TAG = "RlpsScreen"
 local SYNC_COOLDOWN = 3 -- seconds between sync requests (startup retry / desync recovery)
 local RENDER_DISTANCE = 300 -- studs; farther away the picture is not redrawn (frames are still assembled)
 local PIXELS_PER_STUD = 50
+local IMAGE_RETRY = 5 -- seconds between EditableImage creation attempts after a failure
 
 type State = "connecting" | "live" | "stopped" | "error"
 
@@ -50,6 +51,7 @@ local core = ClientCore.new(decompress)
 local editable: EditableImage? = nil
 local needFullRedraw = false
 local renderPending = false
+local imageRetryAt = 0
 
 -- ----------------------------------------------------------------------------------------------------- screen GUIs
 
@@ -182,13 +184,18 @@ local function ensureImage(w: number, h: number): EditableImage?
 	if img and img.Size.X == w and img.Size.Y == h then
 		return img
 	end
+	if os.clock() < imageRetryAt then
+		return nil -- creation failed recently: retry later instead of on every frame
+	end
 	dropPicture()
 	local ok, res = pcall(function(): EditableImage?
-		-- nil (or an error) when the device's EditableImage memory budget is exhausted
+		-- nil when the device's EditableImage memory budget is exhausted; an error when the API is disabled
 		return AssetService:CreateEditableImage({ Size = Vector2.new(w, h) }) :: EditableImage?
 	end)
 	if not ok or res == nil then
-		setState("error", "cannot create the screen image (" .. tostring(res) .. ")")
+		imageRetryAt = os.clock() + IMAGE_RETRY
+		local why = if ok then "image memory budget exhausted" else tostring(res)
+		setState("error", "cannot create the screen image (" .. why .. "); published games need Allow Mesh / Image APIs")
 		return nil
 	end
 	editable = res

@@ -310,7 +310,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.host not in ("127.0.0.1", "::1", "localhost"):
         log.warning("binding to %s exposes the frame service beyond this PC; prefer 127.0.0.1 + a tunnel", args.host)
     store = server.FrameStore()
-    service = server.FrameService(store, cfg["token"], host=args.host, port=args.port)
+    try:
+        service = server.FrameService(store, cfg["token"], host=args.host, port=args.port)
+    except OSError as exc:
+        log.error("cannot listen on %s:%d (%s) - is the app already running? Close it or pass --port",
+                  args.host, args.port, exc)
+        return 2
     service.start()
     log.info("frame service on http://%s:%d%s", *service.address, server.FRAMES_PATH)
     controller = SharingController(store, lambda: capture.MssSource(args.monitor, args.region),

@@ -14,7 +14,8 @@
 -- Configuration = attributes on this script (Studio: select the script, edit Attributes; no code changes needed):
 --   FrameServiceUrl      string  public HTTPS base URL of the frame service (tunnel), e.g. https://xyz.trycloudflare.com
 --   SecretName           string  experience secret holding the token (default "rlps_token"; Creator Hub > Secrets)
---   PollWaitMs           number  long-poll wait sent to the service (default 15000, service maximum 25000)
+--   PollWaitMs           number  long-poll wait sent to the service (default 15000, service maximum 25000; lowered
+--                                automatically when Roblox times a poll out — its default request timeout is undocumented)
 --   MinPollInterval      number  seconds between poll starts (default 0.2 => <= 300 requests/min; HttpService allows 500)
 --   StoppedPollInterval  number  seconds between polls while the owner is not sharing (default 3)
 --   ViewerUserIds        string  optional comma-separated UserIds allowed to see the screen (empty = everyone)
@@ -189,6 +190,15 @@ local function friendly(err: string): string
 	return err
 end
 
+-- Long-poll wait actually used: PollWaitMs, halved (>= MIN_WAIT_MS) whenever Roblox times a request out.
+local MIN_WAIT_MS = 2000
+local effectiveWaitMs: number? = nil
+local function isTimeout(reason: string): boolean
+	local l = string.lower(reason)
+	return string.find(l, "timedout", 1, true) ~= nil or string.find(l, "timed out", 1, true) ~= nil
+		or string.find(l, "timeout", 1, true) ~= nil
+end
+
 local authSecret: any = nil
 local function getAuth(): (any, string?)
 	if authSecret then
@@ -219,7 +229,8 @@ local function pollOnce(): number
 		return 10
 	end
 	local after, session, key = relay:pollParams()
-	local waitMs = math.clamp(math.floor(tonumber(attr("PollWaitMs", 15000)) or 15000), 0, 25000)
+	local configuredMs = math.clamp(math.floor(tonumber(attr("PollWaitMs", 15000)) or 15000), 0, 25000)
+	local waitMs = math.min(configuredMs, effectiveWaitMs or configuredMs)
 	local url = string.format("%s/v1/frames?after=%d&session=%d&key=%d&wait=%d", base, after, session,
 		if key then 1 else 0, waitMs)
 	local ok, res = pcall(function(): any
@@ -227,6 +238,10 @@ local function pollOnce(): number
 	end)
 	if not ok then
 		local reason = friendly(tostring(res))
+		if isTimeout(reason) and waitMs > MIN_WAIT_MS then
+			effectiveWaitMs = math.max(MIN_WAIT_MS, math.floor(waitMs / 2))
+			warn(string.format("[RLPS] frame request timed out; long-poll wait lowered to %d ms", effectiveWaitMs :: number))
+		end
 		script:SetAttribute("LastError", reason)
 		broadcast(relay:fail("request failed: " .. reason))
 		return math.min(30, 2 ^ math.min(relay.consecutiveErrors, 5))
