@@ -178,6 +178,8 @@ do
 	local seq = r.seq
 	local msgs, err = r:ingest(buffer.fromstring("garbage"))
 	T.check(msgs == nil and err == "truncated container header", "invalid container rejected", tostring(err))
+	T.eq(r.consecutiveErrors, 0, "ingest does not count the failure itself")
+	T.eq(kinds(r:fail("invalid container: " .. tostring(err))), "", "first failure silent (reported by the server)")
 	T.eq(kinds(r:fail("HTTP 502")), "", "second failure silent")
 	local m3 = r:fail("HTTP 502")
 	T.eq(kinds(m3), "status:error", "third failure -> error status")

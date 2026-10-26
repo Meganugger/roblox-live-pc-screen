@@ -106,11 +106,11 @@ local function drop(self: Relay, reason: string, needKeyframe: boolean)
 end
 
 -- Feed one decoded frame-service container. Returns the messages to broadcast (possibly none), or nil + reason when
--- the container is invalid (nothing is forwarded then).
+-- the container is invalid (nothing is forwarded then; the caller reports it once with `fail`, which broadcasts the
+-- error status at the threshold — counting it here as well made the error status reach clients never).
 function RelayCore.ingest(self: Relay, data: buffer): ({ Message }?, string?)
 	local c, err = Decoder.parseContainer(data)
 	if c == nil then
-		self:fail("invalid container: " .. tostring(err))
 		return nil, err
 	end
 	self.consecutiveErrors = 0
