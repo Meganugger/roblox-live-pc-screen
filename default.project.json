@@ -13,7 +13,17 @@
     "ServerScriptService": {
       "Rlps": {
         "$className": "Folder",
-        "RlpsServer": { "$path": "roblox/src/server/RlpsServer.server.luau" },
+        "RlpsServer": {
+          "$path": "roblox/src/server/RlpsServer.server.luau",
+          "$attributes": {
+            "FrameServiceUrl": "",
+            "SecretName": "rlps_token",
+            "PollWaitMs": 15000,
+            "MinPollInterval": 0.2,
+            "StoppedPollInterval": 3,
+            "ViewerUserIds": ""
+          }
+        },
         "RlpsRelayCore": { "$path": "roblox/src/server/RlpsRelayCore.luau" },
         "RlpsProtocol": { "$path": "roblox/src/shared/RlpsProtocol.luau" },
         "RlpsDecoder": { "$path": "roblox/src/shared/RlpsDecoder.luau" },
@@ -26,6 +36,31 @@
       }
     },
     "Workspace": {
+      "Baseplate": {
+        "$className": "Part",
+        "$properties": {
+          "Anchored": true,
+          "Locked": true,
+          "Size": [256, 2, 256],
+          "CFrame": [0, -1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+          "Color": [0.39, 0.37, 0.38],
+          "Material": "Concrete",
+          "TopSurface": "Smooth",
+          "BottomSurface": "Smooth"
+        }
+      },
+      "SpawnLocation": {
+        "$className": "SpawnLocation",
+        "$properties": {
+          "Anchored": true,
+          "Size": [6, 1, 6],
+          "CFrame": [0, 0.5, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+          "Duration": 0,
+          "Neutral": true,
+          "TopSurface": "Smooth",
+          "BottomSurface": "Smooth"
+        }
+      },
       "RlpsTV": { "$path": "roblox/models/RlpsTV.model.json" }
     }
   }
