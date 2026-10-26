@@ -19,4 +19,4 @@ Windows desktop ──mss──► desktop app (Python)                      Rob
 | Roblox shared | `roblox/src/shared/` | protocol constants, part decoder, tile blitter, base64 fallback |
 | Roblox server | `roblox/src/server/` | poller, validation, fan-out, keyframes for joiners, status |
 | Roblox client | `roblox/src/client/` | reconstruction, SurfaceGui, status/stopped/error screens |
-| TV model | built at runtime by the server script (`Workspace.LiveScreenTV`) | housing, bezel, screen part, stand, status light |
+| TV model | `roblox/models/RlpsTV.model.json` → `Workspace.RlpsTV` (Rojo) | screen part tagged `RlpsScreen` (16×9 studs), bezel, neck, base |
