@@ -87,3 +87,12 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
 - **Result after fixes**: `Built project to RlpsDemo.rbxlx` (21 items) and
   `luau-lsp analyze (Roblox definitions, roblox/src): OK` → **PASS**. Luau harness rerun: 5660 passed / 0 failed; Python 63/63 OK.
 - **Limits**: static only — no Roblox runtime (KI-0002).
+
+## TR-0007 — Baseline rerun at `6027eee` (26th session, 2026-10-26)
+
+- **Environment**: agent sandbox (Linux x86_64), Python 3.13.15, numpy 2.5.4, zstandard 0.25.0, mss 10.2.0, Rojo 7.7.1,
+  luau-lsp 1.70.1, Luau CLI 0.744. Fresh `git clone` of `main` at `6027eee` (the repository is clonable over HTTPS now).
+- **Commands / results**: `cd desktop && python3 -m pytest -q` → **63 passed, 327 subtests passed**;
+  `python3 roblox/tests/run_luau_tests.py --analyze` → luau-analyze OK, **TOTAL passed=5660 failed=0**;
+  `scripts/check_roblox.sh` → `Built project to RlpsDemo.rbxlx`, `luau-lsp analyze (Roblox definitions, roblox/src): OK`
+  → **PASS** (static + unit level only; no Roblox runtime, KI-0002).
