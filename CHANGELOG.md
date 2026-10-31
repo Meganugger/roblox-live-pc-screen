@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- 2026-10-31 (29th session, PR #1) — **Repository clean-up**: dead code removed, lint (`ruff.toml`) and spec type-checks
+  enforced in CI, `.gitignore` tidied, placeholder doc folders removed, docs index `docs/README.md`, explainer renamed
+  `docs/explainers/PR-1.md`, `ARCHITECTURE.md` / `GITHUB_WORKFLOW.md` rewritten to describe the current system. The
+  desktop status line now also counts frames skipped for the viewers' fps cap.
 - 2026-10-31 (29th session, PR #1) — **Per-viewer flow control** (D-0009): clients acknowledge the bytes they
   processed; `RlpsFanout` keeps each viewer's backlog within about one second of its own delivery rate, holds a viewer
   whose window is full and then sends it exactly the frames it missed (or the next keyframe). The rate follows the

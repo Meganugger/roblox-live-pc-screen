@@ -177,7 +177,8 @@ class SharingController:
             e = self.store.status
             quality = f"DCT q{e.last_quality}" if e.last_mode == "dct" else (e.last_mode or "-")
             lines.append(f"stream: budget {e.rate / 1e6:.2f} MB/s, last frame {quality}, "
-                         f"encode {e.last_encode_ms:.0f} ms, skipped {e.skipped} (over budget)")
+                         f"encode {e.last_encode_ms:.0f} ms, skipped {e.skipped} (over budget) / "
+                         f"{e.fps_skipped} (viewers' fps cap)")
             if s["last_error"]:
                 lines.append(f"last error: {s['last_error']}")
         last = self.store.last_poll

@@ -23,7 +23,7 @@ has explicitly pressed Start, only in memory, and only reach Roblox servers that
 | 5 | No webcam / microphone | no such code; dependencies are `numpy`, `zstandard`, `mss` (screen only) | `desktop/requirements.txt` |
 | 6 | No keylogging / hidden surveillance | no input hooks; capture only while the indicator is red | code review |
 | 7–10 | No remote mouse, keyboard, command execution or general remote desktop | the frame service has exactly one route, `GET /v1/frames`; request bodies are rejected; no other method or path | `test_server.py::test_routes_methods_and_params` |
-| 11 | No stored captures | frames live in an 8-frame RAM ring, cleared on stop; nothing is written to disk (only the token config); `.gitignore` excludes `captures/` | code review; E2E-13 |
+| 11 | No stored captures | frames live only in a RAM ring (≤ 64 MiB / 1024 records) and the Roblox server's played history, both cleared on stop; nothing is written to disk (only the token config); `.gitignore` excludes `captures/` | code review; E2E-13 |
 | 12 | No undisclosed endpoints | the desktop app makes **no outbound connections**; the Roblox server requests only `FrameServiceUrl` (owner-set attribute, must be `https://`) and the secret only attaches to its domain | `RlpsServer.server.luau` `pollOnce`; F-0011 |
 | 13 | No credentials in client-visible code | token only in `%APPDATA%\rlps\config.json` and in the Roblox secrets store; `GetSecret` is server-only; clients receive frames, never the token | E2E-15 (wrong token → client gets no image, no pixel bytes) |
 | 14 | Authenticated endpoint | `Authorization: Bearer`, `hmac.compare_digest`; token ≥ 24 chars (`secrets.token_urlsafe(32)` = 43) | `test_server.py::test_auth_required`, `test_short_token_refused` |

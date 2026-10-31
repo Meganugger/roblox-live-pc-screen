@@ -8,7 +8,8 @@ _Last updated: 2026-10-31, end of the 29th session (Notion custom agent through 
   (CI failures are posted there as comments by the workflow).
 - **What exists**: complete pipeline at maximum quality (stream v2: `ARCHITECTURE.md`, `docs/PROTOCOL.md`, D-0007,
   D-0008; per-viewer flow control `RlpsFanout`, D-0009); research of every public project found (`docs/research/EXISTING_PROJECTS.md`); install / troubleshooting /
-  security / performance docs; Windows scripts; CI; explainer `docs/explainers/SESSION_28.md`.
+  security / performance docs; Windows scripts; CI (ruff, pytest, Luau specs + luau-analyze, Rojo + luau-lsp, live test on
+  Linux and Windows); explainer `docs/explainers/PR-1.md`; docs index `docs/README.md`.
 - **Verified**: Python 85/85, Luau 6,588/0, Rojo + luau-lsp OK, live pipeline 25/25 in the sandbox (TR-0011, TR-0012).
   Unverified: real Roblox and the owner's PC (KI-0002, KI-0007).
 - **Failed approaches (do not repeat)**: holding every poll while stopped (15 s stop delay); "no news" status with the
@@ -22,7 +23,8 @@ _Last updated: 2026-10-31, end of the 29th session (Notion custom agent through 
 ## Reproduce the baseline (≈ 5 minutes)
 
 ```bash
-pip install -r desktop/requirements.txt pytest python-xlib       # + Xvfb, Luau CLI 0.744, Lune 0.10.4
+pip install -r desktop/requirements.txt pytest ruff python-xlib  # + Xvfb, Luau CLI 0.744, Lune 0.10.4
+ruff check .                                                      # lint (ruff.toml)
 (cd desktop && python3 -m pytest -q)                              # 85 passed
 python3 roblox/tests/run_luau_tests.py --analyze                  # TOTAL passed=6588 failed=0
 scripts/check_roblox.sh                                           # Rojo build + luau-lsp OK -> build/RlpsDemo.rbxlx

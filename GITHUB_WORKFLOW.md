@@ -1,68 +1,57 @@
 # GITHUB_WORKFLOW.md — Verified GitHub capabilities and checkpoint procedure
 
-Only capabilities that were **actually exercised** in the agent environment are marked ✅. Everything else is marked with
-its real status. Update this file when a capability is verified, fails, or changes.
+Only capabilities that were **actually exercised** in an agent environment are marked ✅. Update this file when a
+capability is verified, fails, or changes.
 
-## Environment (verified 2026-10-24)
+## Write path (D-0001, revised by D-0004)
 
-- Agent: Notion AI agent with a connected **GitHub MCP server** (tool names below are the exact names exposed).
-- Authenticated GitHub user (`get_me`): **`Meganugger`** (display name "Sivalmagic").
-- Sandbox: Linux x86_64 with internet access, `git` CLI present but **no GitHub credentials** in the sandbox. Do not ask
-  the owner for a token; all remote writes go through the GitHub MCP tools.
-- The local working copy (`/data/roblox-live-pc-screen` in the agent sandbox) is **temporary**. Never treat it as durable.
+Work goes to a `claude/*` branch with a **draft pull request** into `main`; the owner merges. `main` is never pushed
+directly. If a PR is open (`list_pull_requests`), its branch is newer than `main`: continue on it.
 
-## Environment (verified 2026-10-31, 28th session — Notion custom agent through the Claude harness)
+## Environment A — repository mounted as a git clone (28th session onwards) ✅ primary
 
-- The repository is **mounted as a git clone** at `/workspace/roblox-live-pc-screen` with a credential helper:
-  `git fetch`/`git push` work, but **pushes are only accepted for `claude/*` branches** (D-0004). ✅ verified: branch
-  `claude/rlps-session-28-finish` pushed repeatedly; `git ls-remote origin <branch>` == local `HEAD` after every push.
-- The credential is **not** a GitHub REST token (`api.github.com` answers 401): use the GitHub MCP tools for API work.
-- ✅ `create_pull_request` (draft PR #1), ✅ `pull_request_read get_check_runs` (CI job status), ✅ `get_comments`
-  (CI failure output posted by the workflow itself — the only way to read CI logs from here).
-- ✅ Pushing `.github/workflows/*.yml` through git works (workflow runs started on the PR).
+- Clone at `/workspace/roblox-live-pc-screen` with a credential helper: `git fetch` / `git push` work, but pushes are
+  accepted **only for `claude/*` branches**.
+- The credential is not a GitHub REST token (`api.github.com` answers 401/403): use the GitHub MCP tools for API work —
+  ✅ `create_pull_request`, `update_pull_request`, `pull_request_read` (`get_check_runs` for CI status, `get_comments`).
+- CI logs cannot be read directly; the workflow posts each failure's output as a PR comment (KNOWN_ISSUES KI-0003).
+  Read the newest with `get_comments` and pagination (e.g. `perPage: 1`, last page).
 
-Checkpoint procedure in this environment: `git commit` → `git push` → `git ls-remote origin <branch>` must equal
-`git rev-parse HEAD` → CI status via `get_check_runs`. The MCP `push_files` procedure below remains the fallback when
-no clone is mounted.
+**Checkpoint procedure**
 
-## Capability matrix
+1. `git add -A && git commit` (co-author trailer for the owner's e-mail when known).
+2. `git push` (retry only on network errors).
+3. Verify: `git ls-remote origin <branch>` must equal `git rev-parse HEAD`.
+4. CI: `pull_request_read get_check_runs` until all jobs complete; failures → `get_comments`.
+5. Record the verified SHA in `WORK_LOG.md` (a file cannot contain its own commit SHA, so `PROJECT_STATE.md` names the
+   latest *previously* verified commit).
+
+## Environment B — no clone, GitHub MCP only (sessions 1–27) — fallback
+
+The sandbox had no git credentials; every remote write went through MCP tools. The helpers in `scripts/agent/` exist
+for this case:
+
+1. `python3 scripts/agent/make_push_payload.py -m "<message>" --branch claude/<name> -o /tmp/payload.json <paths…>`
+   (≤ 1 MiB per payload; split otherwise; text files only).
+2. MCP `push_files` with `arguments_file_path=/tmp/payload.json` (✅ verified: 25 files in one commit, `67a6e4a`).
+3. Verify: `list_commits`, `get_commit` (`detail: stats`), and `get_file_contents` on the changed directories; save
+   the listing and run `python3 scripts/agent/verify_remote.py <listing.json>` (compares remote blob SHAs with local
+   `git hash-object`).
+4. After any write error, **read back before retrying** (a `create_repository` call once reported a transport error
+   although the repository had been created).
+
+To recover a working copy without a clone, read files with `get_file_contents` directory by directory — only what the
+next task needs — and never push an old local copy over newer remote content (compare blob SHAs first).
+
+## Capability matrix (GitHub MCP)
 
 | Need | Tool | Status |
 | --- | --- | --- |
-| Identify account | `get_me` | ✅ verified (returned login `Meganugger`) |
-| List/search repos | `search_repositories` (`user:Meganugger`) | ✅ verified (13 repos incl. private before creation) |
-| Check repo existence | `get_file_contents` on `/` | ✅ verified (404 before creation, listing after) |
-| Create repo | `create_repository` (`private: true`, `autoInit: true`) | ✅ repo created — **but the tool call itself returned a transport error** ("upstream connect error … remote connection failure"). The repo nevertheless existed on read-back. Lesson: after any write error, **read back before retrying** to avoid duplicates. |
-| Repo metadata/visibility | `search_repositories` with `minimal_output:false` | ✅ verified: `private: true`, `visibility: private`, default branch `main`, permissions admin/push |
-| Branches | `list_branches` | ✅ verified (`main` @ `ef29fbf…` initial commit) |
-| Commit history | `list_commits` (`fields` filter supported) | ✅ verified |
-| Multi-file commit | `push_files` (via `arguments_file_path` JSON built by `scripts/agent/make_push_payload.py`) | ✅ verified: checkpoint 1 pushed 25 files (107 KB payload) in one commit `67a6e4a`; returns the new ref SHA |
-| Single-file create/update | `create_or_update_file` (requires blob `sha` for updates) | available, not yet exercised |
-| Commit details / changed files | `get_commit` (`detail: stats`) | ✅ verified (file list + additions for `67a6e4a`) |
-| Read file / directory | `get_file_contents` (returns blob `sha`; `fields` filter works for dirs) | ✅ verified for `/`, `docs`, `scripts/agent`; `verify_remote.py` reported MATCH for all 20 files listed |
-| Create branch | `create_branch` | available, not exercised (work happens on `main`; no PR review loop needed) |
-| Delete file | `delete_file` | available, not exercised |
-| Code search (public GitHub) | `search_code` | available (used for research) |
-| Secret scan of content | `run_secret_scanning` | available (use before pushing config-like files) |
-| **Workflow runs / CI logs** | `pull_request_read` `get_check_runs` / `get_status` | ✅ job status per check run (28th session). ❌ logs: no tool; workaround = the workflow posts failure output as a PR comment (`get_comments`). |
-| Recursive tree API | — | ❌ not exposed; walk directories with `get_file_contents` per directory. |
-| Binary file upload | `push_files` / `create_or_update_file` carry text | ⚠️ text only — keep committed artefacts text-based (e.g. `.rbxlx`/`.rbxmx` XML instead of binary `.rbxl`). |
-
-## Checkpoint procedure (use for every substantial source / milestone)
-
-1. Edit files locally in the working copy; `git add -A && git commit` locally (local history is only a convenience).
-2. Build the payload: `python3 scripts/agent/make_push_payload.py -m "<message>" -o /tmp/payload.json <changed paths…>`
-   (or `--all`). Payload must be ≤ 1 MiB; split otherwise.
-3. Call GitHub MCP `push_files` with `arguments_file_path=/tmp/payload.json`.
-4. **Verify remotely**: `list_commits` (new head SHA + message), `get_commit` (`detail: stats`, file list), and
-   `get_file_contents` on the changed directories; save the listing and run
-   `python3 scripts/agent/verify_remote.py <listing.json>` to compare remote blob SHAs with local `git hash-object`.
-5. Record the verified SHA in `WORK_LOG.md` (and in `PROJECT_STATE.md` at the next checkpoint — a file cannot contain
-   its own commit SHA, so `PROJECT_STATE.md` always names the latest *previously verified* commit plus the expected
-   message of the commit that contains it).
-6. If a write call errors: do **not** blindly retry — read back first (`list_commits`), then retry only what is missing.
-
-## Recovering a working copy in a new session
-
-No credentials ⇒ no `git clone`. Recreate files by reading them with `get_file_contents` (directory by directory). Only
-fetch what the next task needs. Never push an old local copy over newer remote content: compare blob SHAs first.
+| Identify account | `get_me` | ✅ login `Meganugger` (display name "Sivalmagic") |
+| Repositories | `search_repositories`, `get_file_contents` on `/` | ✅ |
+| Branches / history | `list_branches`, `list_commits`, `get_commit` | ✅ |
+| Multi-file commit | `push_files` | ✅ (environment B) |
+| Pull requests | `create_pull_request`, `update_pull_request`, `pull_request_read` | ✅ |
+| CI status | `pull_request_read get_check_runs` | ✅ job status; ❌ logs (workaround: failure comments) |
+| Recursive tree | — | ❌ not exposed: walk directories with `get_file_contents` |
+| Binary files | `push_files` / `create_or_update_file` | ⚠️ text only; in environment A binary files go through git normally |

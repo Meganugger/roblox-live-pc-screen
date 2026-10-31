@@ -1,0 +1,12 @@
+# Python lint (CI job "Python tests"): pyflakes errors, syntax errors, likely bugs, modern syntax, leaked file handles.
+line-length = 120
+target-version = "py310"
+extend-exclude = ["scripts/agent/rbxl_dump_scripts.py"]  # one-off research tool, kept as written for T-0004
+
+[lint]
+select = ["F", "E9", "B", "UP", "SIM115"]
+ignore = [
+  "B905",   # zip() without strict=: lengths are equal by construction everywhere
+  "B023",   # closures in loops are called immediately (wait predicates)
+  "UP031",  # %-formatting in test output is fine
+]

@@ -23,7 +23,8 @@ inside a published Roblox experience**. See [`PROJECT_SPEC.md`](PROJECT_SPEC.md)
 6. Inspect relevant entries in [`FINDINGS_LOG.md`](FINDINGS_LOG.md), [`SOURCE_REGISTER.md`](SOURCE_REGISTER.md),
    [`DECISIONS.md`](DECISIONS.md), [`TEST_RESULTS.md`](TEST_RESULTS.md), [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md),
    [`WORK_LOG.md`](WORK_LOG.md).
-7. Verify the actual remote branch, commit history (`list_commits`) and repository tree (`get_file_contents` per dir).
+7. Verify the actual remote branch and commit history (`git log` on a mounted clone, or `list_commits` /
+   `get_file_contents` through the GitHub MCP tools).
 8. Compare the checkpoint records against the real source code (documentation alone is not proof that a feature works).
 9. Resume the **precise next unfinished task** named in `SESSION_HANDOFF.md`.
 10. Preserve new progress with the mandatory checkpoint procedure in [`GITHUB_WORKFLOW.md`](GITHUB_WORKFLOW.md):
@@ -56,12 +57,11 @@ changed (see "stale" markers in `TEST_RESULTS.md`).
 | `TASKS.md` / `WORK_LOG.md` | Task tracking and chronological history |
 | `TEST_RESULTS.md` / `KNOWN_ISSUES.md` | Genuine test evidence and open issues |
 | `ARCHITECTURE.md` / `SECURITY.md` / `PERFORMANCE.md` | Design, privacy/security model, performance data |
-| `GITHUB_WORKFLOW.md` | GitHub capabilities actually verified in the agent environment + checkpoint procedure |
+| `GITHUB_WORKFLOW.md` | Write path (branch + draft PR), checkpoint procedure, verified GitHub capabilities |
 | `CHANGELOG.md` | User-visible changes |
-| `docs/` | Research reports, architecture notes, implementation notes, testing and deployment guides |
+| `docs/` | Protocol, install / troubleshooting guides, live-test docs and evidence, research, PR explainer — index: [`docs/README.md`](docs/README.md) |
 | `desktop/` | Windows app: capture, codec, frame service (`python -m rlps.app`) |
 | `roblox/` | Roblox scripts (`src/`), TV model (`models/`), Luau specs (`tests/`) — built by `default.project.json` (Rojo) |
 | `tests/e2e/` | Live pipeline test with the Roblox engine emulation |
-| `scripts/` | `windows/*.bat`, `check_roblox.sh`, `bench.py`, `agent/` (MCP push helpers from earlier sessions) |
-| `docs/PROTOCOL.md`, `docs/IMPROVED_PROMPT.md` | Wire format; the rewritten project prompt for new sessions |
-| `.github/workflows/ci.yml` | CI: Python (Linux+Windows), Luau specs, Rojo + luau-lsp, live pipeline test (Linux+Windows) |
+| `scripts/` | `windows/*.bat` (owner), `check_roblox.sh` (Rojo build + luau-lsp), `bench.py` (codec benchmark), `agent/` (MCP-only fallback helpers and a Roblox place reader used for research) |
+| `.github/workflows/ci.yml`, `ruff.toml` | CI: ruff + pytest (Linux, Windows), Luau specs + luau-analyze, Rojo + luau-lsp, live pipeline test (Linux, Windows) |

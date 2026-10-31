@@ -5,24 +5,23 @@
 !.env.example
 config.local.json
 desktop/config.json
-relay/config.json
 secrets/
+
+# Captured frames must never be committed (privacy)
+captures/
+*.capture.bin
+
 # Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
 .pytest_cache/
+.ruff_cache/
 *.egg-info/
-# Build outputs / local tooling
+
+# Build output, release archives, downloaded dev tools (scripts/check_roblox.sh), logs
 build/
 dist/
-tools/bin/
-*.log
-# Captured frames must never be committed (privacy)
-captures/
-*.capture.bin
-
-# agent/dev tool downloads and build output
 .tools/
-build/
+*.log

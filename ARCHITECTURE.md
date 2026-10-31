@@ -1,51 +1,58 @@
 # ARCHITECTURE.md
 
-_Selected 2026-10-24 (10th session) — `DECISIONS.md` D-0002. Wire format: `docs/PROTOCOL.md`._
+_Architecture selected in D-0002; stream design D-0006…D-0009. Wire format (normative): `docs/PROTOCOL.md`._
 
 ```
-Windows desktop ─mss/DXGI─► desktop app (Python)                        Roblox game server (Luau)             Roblox clients (Luau)
-                            capture → INTER_AREA resize → RGBA          one poll loop: RequestAsync            time-budgeted decode queue
-                            hybrid encoder at the reported byte rate:   bundles of frames (batch 150 ms)       RAW / DCT (bit-exact) / COPY tiles
-                            lossless | DCT | COPY tiles, refinement     relay chain + history, playout at      one EditableImage, SurfaceGui on the TV
-                            chain ring, frame service 127.0.0.1:8787    capture spacing, AIMD rate + fps cap   acks: seq + decode ms/frame
-                            GET /v1/frames ◄──tunnel (HTTPS)── poll ──► one reliable RemoteEvent (buffers) ──► ("ack") back to the server
+Windows desktop ─mss/DXGI─► desktop app (Python)                        Roblox game server (Luau)               Roblox clients (Luau)
+                            capture → INTER_AREA resize → RGBA          one poll loop: RequestAsync              time-budgeted decode queue
+                            hybrid encoder at the reported byte rate:   bundles of frames (batch 150 ms)         RAW / DCT (bit-exact) / COPY tiles
+                            lossless | DCT | COPY tiles, refinement     relay chain, playout at capture spacing  one EditableImage, SurfaceGui on the TV
+                            chain ring, frame service 127.0.0.1:8787    fan-out with per-viewer flow control     acks: processed bytes + decode ms
+                            GET /v1/frames ◄──tunnel (HTTPS)── poll ──► one reliable RemoteEvent (buffers) ────► ("sync" / "ack") back to the server
 ```
+
+## Components
 
 | Component | Path | Responsibility |
 | --- | --- | --- |
-| Codec + protocol (Python) | `desktop/rlps/protocol.py`, `codec.py`, `dct.py`, `hybrid.py` | tiles, DCT, hybrid encoder with rate control and scroll copies, parts/containers/bundles |
-| Capture | `desktop/rlps/capture.py` | `mss` monitor capture, resize, interruptions |
-| Frame service | `desktop/rlps/server.py` | auth, rate limits, long-poll, on-demand deltas |
-| App | `desktop/rlps/app.py` | CLI/GUI, explicit start/stop, indicator, config/token |
-| Roblox shared | `roblox/src/shared/` | protocol constants, part/bundle decoder, `RlpsDct` (bit-exact DCT), assembler, base64 fallback |
-| Roblox server | `roblox/src/server/` | poller, validation, fan-out, keyframes for joiners, status |
-| Roblox client | `roblox/src/client/` | reconstruction, SurfaceGui, status/stopped/error screens |
+| Codec + protocol (Python) | `desktop/rlps/protocol.py`, `codec.py`, `dct.py`, `hybrid.py` | tiles, bit-exact DCT, hybrid encoder with rate control and scroll copies, parts / containers / bundles, reference decoder |
+| Capture | `desktop/rlps/capture.py` | `mss` (GDI) or DXGI (`dxcam`) monitor / region capture, resize with integer factors + letterbox |
+| Frame service | `desktop/rlps/server.py` | bearer auth, rate limits, long-poll, encode-once chain ring, bundles, `/v1/probe` |
+| App | `desktop/rlps/app.py` | CLI / Tk window, explicit Start / Stop, sharing indicator, profiles, token config |
+| Roblox shared | `roblox/src/shared/` | protocol constants, container / part / bundle decoder, `RlpsDct`, frame assembler (`RlpsClientCore`), base64 fallback |
+| Roblox server | `roblox/src/server/` | `RlpsServer` (poll loop, playout, rate control, diagnostics), `RlpsRelayCore` (chain validation, poll cursor, status), `RlpsFanout` (played history, per-viewer delivery) |
+| Roblox client | `roblox/src/client/` | decode queue, EditableImage + SurfaceGui per tagged screen, status screens, acks |
 | TV model | `roblox/models/RlpsTV.model.json` → `Workspace.RlpsTV` (Rojo) | screen part tagged `RlpsScreen` (16×9 studs), bezel, neck, base |
 | Windows scripts | `scripts/windows/*.bat` | setup, show token, start app, start quick tunnel, emergency stop |
-| Live pipeline test | `tests/e2e/` | real capture → frame service → unmodified Roblox scripts under a Lune engine emulation (`docs/testing/E2E.md`) |
+| Tests | `desktop/tests/`, `roblox/tests/`, `tests/e2e/` | unit tests, cross-language Luau specs, live pipeline test under a Lune engine emulation (`docs/testing/E2E.md`) |
 
-## Stream v2 (D-0007, D-0008 — 29th session)
+## How a frame travels
 
-* **Encode once, at capture time** (`desktop/rlps/hybrid.py`): each 16×16 tile of the new frame is compared with the
-  client's picture (the encoder keeps it bit-exactly). Moving tiles go **lossless** if the byte budget allows, else
-  **DCT** (YCbCr 4:2:0, JPEG tables, best quality that fits); scrolled content is sent as 5-byte **COPY** tiles from the
-  client's previous picture; tiles that stopped moving are **refined to lossless** with the remaining budget, so a still
-  screen becomes a pixel-exact copy of the desktop.
-* **Bundles**: one HTTP response carries every frame newer than the poller's position (plus 150 ms of batching), so
-  500 requests/min do not cap the frame rate; the server plays them out at their capture spacing.
-* **Congestion control**: clients acknowledge the bytes they processed and their decode time; the server adapts the
-  byte rate (AIMD on the median viewer's delay) and a frame-rate cap (median decode time), and reports both with every
-  poll; the encoder obeys them. **Per-viewer flow control** (`RlpsFanout`, D-0009) keeps each viewer's backlog within
-  about one second of its own delivery rate: a slow viewer is held, then gets exactly the frames it missed from the
-  played history (or the next keyframe, requested with `fresh=1`) — it never slows the others down and never piles up
-  minutes of stream.
-* **Binary bodies** are used after a probe proved them intact; otherwise base64.
+1. **Capture and encode once** (`hybrid.py`, D-0007). Each 16×16 tile of the new frame is compared with the picture
+   the clients have; the encoder keeps that picture bit-exactly. Moving tiles go **lossless** if the byte budget allows,
+   else **DCT** (YCbCr 4:2:0, JPEG tables, best quality that fits). Scrolled content becomes 5-byte **COPY** tiles from
+   the previous picture. Tiles that stopped moving are **refined to lossless** with the remaining budget, so a still
+   screen becomes a pixel-exact copy. The budget is a token bucket at the rate Roblox reports; the frame rate obeys the
+   reported fps cap. Records go into a chain ring (keyframe, then deltas).
+2. **Poll** (`server.py`, `RlpsServer`). One long-poll per experience server returns a **bundle** of every record newer
+   than the poller's position (plus 150 ms of batching), so 500 requests/min never cap the frame rate. Bodies are raw
+   bytes once `/v1/probe` proved them intact, base64 otherwise. While sharing is off the server polls with `idle=1`
+   and the service holds the poll until Start (picture ≈ 1 s after Start; TV off ≈ 0.2 s after Stop, D-0006).
+3. **Relay and play out** (`RlpsRelayCore`). Only containers that extend the chain are forwarded; anything else is
+   dropped and the chain is re-requested from a keyframe (`key=1`). Containers are played out at their capture spacing.
+4. **Fan out** (`RlpsFanout`, D-0009). The played history (last keyframe + later frames) serves late joiners and
+   desynced clients (`sync`). Each viewer's backlog — bytes sent minus bytes it reported processed — stays within
+   max(128 KiB, 1 s × its measured delivery rate). A viewer whose window is full is *held*; once drained it receives
+   exactly the frames it missed, or waits for the next keyframe when that is cheaper (requested with `fresh=1`: the
+   chain continues, the next capture is a keyframe). Status messages, Stop included, reach every viewer at once.
+5. **Decode and show** (`RlpsClient`, `RlpsClientCore`). Clients decode within a per-Heartbeat time budget, draw each
+   completed frame into one EditableImage shown on every tagged screen, and acknowledge processed bytes and decode time
+   (≤ 10/s).
+6. **Adapt** (`RlpsServer`, D-0008/D-0009). Every 0.5 s the byte rate follows the **median** viewer's delay (AIMD) and
+   the fps cap its decode time; both go to the PC with every poll. A minority of slow viewers is held and caught up
+   instead of degrading the stream for everyone.
 
-## Flow control (D-0006)
+## Where the safeguards live
 
-* **Idle polls**: once the server shows STOPPED it polls with `idle=1`; the frame service holds such a poll until the
-  owner presses Start (picture ≈ 1 s after Start) or the wait expires. Polls that believe sharing is live learn a stop
-  immediately (TV off ≈ 0.2 s after Stop).
-* **Pacing** (superseded by D-0008): the byte budget is now enforced by the encoder at capture time (token bucket at
-  the rate the server reports); frames that do not fit are skipped and their changes go into the next frame.
-* **Late joiners / desync**: the server keeps the last keyframe + later deltas (≤ 384 KiB) and replays it on `sync`.
+Start / Stop only on the PC, visible indicator, authenticated single-route service on 127.0.0.1, token as a Roblox
+secret, strict validation on both decoders, optional `ViewerUserIds` allowlist: `SECURITY.md`.

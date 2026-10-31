@@ -473,9 +473,10 @@ def main():
             for fn in sorted(os.listdir(d)) if os.path.isdir(d) else []:
                 # Scripts (*.server.luau / *.client.luau) use Roblox globals: type-checked separately, never run here.
                 if fn.endswith(".luau") and not fn.endswith((".server.luau", ".client.luau")):
-                    src = open(os.path.join(d, fn), encoding="utf-8").read()
-                    src = re.sub(r"require\(script\.Parent\.(\w+)\)", r'require("./\1")', src)
-                    open(os.path.join(tmp, fn), "w", encoding="utf-8").write(src)
+                    with open(os.path.join(d, fn), encoding="utf-8") as fh:
+                        src = re.sub(r"require\(script\.Parent\.(\w+)\)", r'require("./\1")', fh.read())
+                    with open(os.path.join(tmp, fn), "w", encoding="utf-8") as fh:
+                        fh.write(src)
                     modules.append(fn)
         specs = sorted(fn for fn in os.listdir(HERE) if fn.endswith(".spec.luau"))
         for fn in specs + [f for f in os.listdir(HERE) if f.endswith("_helpers.luau")]:
@@ -485,9 +486,10 @@ def main():
         rc = 0
         if a.analyze:
             analyze = os.path.join(os.path.dirname(luau), "luau-analyze")
-            r = subprocess.run([analyze, *modules], cwd=tmp, capture_output=True, text=True)
-            print("luau-analyze (%d modules):" % len(modules), "OK" if r.returncode == 0 else "FAIL")
-            if r.returncode:
+            r = subprocess.run([analyze, *modules, *specs], cwd=tmp, capture_output=True, text=True)
+            clean = r.returncode == 0 and not (r.stdout + r.stderr).strip()  # type errors and lint warnings both fail
+            print(f"luau-analyze ({len(modules)} modules, {len(specs)} specs):", "OK" if clean else "FAIL")
+            if not clean:
                 print(r.stdout + r.stderr)
                 rc = 1
         total_pass = total_fail = 0

@@ -188,3 +188,14 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   107 distinct pictures in 14 s, both exact at the end.
 - **CI** at `5a56a07` (PR #1): **5 / 5 green** — Python on Linux and Windows, Luau specs + Rojo + luau-lsp, live test on
   Xvfb and on the real Windows desktop (where E2E-20 had failed at `96badc5`).
+
+## TR-0013 — Repository clean-up (29th session, 2026-10-31)
+
+- **Commands / results**: `ruff check .` → clean (new `ruff.toml`; also a CI step); `cd desktop && python3 -m pytest -q`
+  → **85 passed** (+327 subtests); `python3 roblox/tests/run_luau_tests.py --analyze` → luau-analyze OK on 7 modules
+  **and the 6 specs** (lint warnings now fail too), **6,588 / 0**; `scripts/check_roblox.sh` → OK;
+  `python3 tests/e2e/run_e2e.py` → **25 / 25**.
+- **Finding**: E2E-21's byte bound (½ × 15 lossless keyframes) was inside the run-to-run spread — 262–386 kB for the
+  same ~32,400 copied tiles, because refinement during the 0.12 s pauses depends on machine load. One full-suite run
+  failed at 385.5 kB vs 377.6 kB; bound set to ⅔ (docs/testing/E2E.md); the copy-share criterion is unchanged.
+

@@ -14,7 +14,6 @@ import numpy as np
 
 from . import protocol as P
 
-TILE = 16
 COEFS = 6 * 64
 ENTRY_BYTES = 2 + COEFS * 2  # 770
 

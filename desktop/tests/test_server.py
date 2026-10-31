@@ -297,7 +297,7 @@ class FrameFlowTests(ServiceTestCase):
         self.assertEqual((c.width, c.height), (80, 48))
 
     def test_reported_rate_sets_the_budget_and_skips_frames(self):
-        sid = self.store.start()
+        self.store.start()
         self.c.poll(wait=0, extra="&rate=2000")
         self.assertEqual(self.store.current_rate(), 2000)
         rng = np.random.default_rng(1)

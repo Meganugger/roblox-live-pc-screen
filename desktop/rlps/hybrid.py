@@ -27,8 +27,6 @@ T = P.HYBRID_TILE
 @dataclass
 class HybridInfo:
     keyframe: bool = False
-    moving_tiles: int = 0
-    refined_tiles: int = 0
     copied_tiles: int = 0  # scrolled tiles sent as copies from the previous picture
     mode: str = ""  # "lossless" | "dct" | "" (nothing sent)
     quality: int = -1  # IJG quality of DCT tiles in this frame (-1 = none)
@@ -266,7 +264,6 @@ class HybridEncoder:
                     return None, info
                 self.q_index = lo
                 dct_q, dct_recon = lo, dct.reconstruct(qz, lo)
-            info.moving_tiles = int(moving_idx.size)
         else:
             chosen = list(copy_entries)
             size = len(self._pack(list(chosen), **args)) if chosen else 0
@@ -283,7 +280,6 @@ class HybridEncoder:
                 trial = len(self._pack(chosen + extra, **args))
                 if budget is None or trial <= budget:
                     chosen = chosen + extra
-                    info.refined_tiles = take
                     break
                 per_tile = max(1.0, (trial - size) / take)
                 take = min(take - 1, int((budget - size) / per_tile * 0.9))

@@ -10,6 +10,7 @@ the EditableImage limit, F-0001). Nothing is written to disk.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import sys
 import time
@@ -34,7 +35,7 @@ class Region:
     height: int
 
     @classmethod
-    def parse(cls, text: str) -> "Region":
+    def parse(cls, text: str) -> Region:
         """Parse ``left,top,width,height`` (virtual-screen pixels)."""
         try:
             left, top, width, height = (int(v) for v in text.split(","))
@@ -229,10 +230,8 @@ class DxgiSource:
     def __init__(self, monitor: int = 1):
         if monitor < 1:
             raise CaptureError("DXGI capture needs a single monitor (1, 2, …)")
-        try:
-            import dxcam  # noqa: F401
-        except ImportError as exc:
-            raise CaptureError("the optional 'dxcam' package is not installed (pip install dxcam)") from exc
+        if importlib.util.find_spec("dxcam") is None:
+            raise CaptureError("the optional 'dxcam' package is not installed (pip install dxcam)")
         self.monitor = monitor
         self._cam = None
         self._last: np.ndarray | None = None

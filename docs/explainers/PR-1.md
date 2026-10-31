@@ -1,7 +1,12 @@
-# Session 28 explainer: going from code that is written to code that is proven
+# PR #1 explainer: from code that is written to code that is proven, at maximum quality
 
 This explains the changes in [PR #1](https://github.com/Meganugger/roblox-live-pc-screen/pull/1) (branch
-`claude/rlps-session-28-finish`). It assumes you have never seen the project; skip the first section if you have.
+`claude/rlps-session-28-finish`) in three parts, in the order they were made: **Part 1** the live pipeline test
+(28th session), **Part 2** stream v2 (29th session), **Part 3** per-viewer flow control (29th session, which replaced
+Part 2's pause rule). It assumes you have never seen the project; skip the first section if you have. Numbers in each
+part are the ones measured when that part was finished; the current totals are in `TEST_RESULTS.md`.
+
+# Part 1 (28th session): the live pipeline test
 
 ## Context
 
@@ -285,7 +290,8 @@ decode cost grows with the number of frames, not with the number of bytes.
   the client's picture (so it cannot drift), and refinement.
 - `desktop/rlps/server.py`: encode-once chain ring, bundles, batch window, rate and fps budgets, `/v1/probe`.
 - `roblox/src/shared/RlpsDct.luau`, `RlpsDecoder.luau`, `RlpsClientCore.luau`: the Luau decoders.
-- `RlpsServer.server.luau`: playout, acks, AIMD rate control, fps cap, lagging viewers, binary-body probe.
+- `RlpsServer.server.luau`: playout, acks, AIMD rate control, fps cap, lagging viewers (replaced in Part 3),
+  binary-body probe.
 - `RlpsClient.client.luau`: decode queue, acks, diagnostics.
 
 ## Verification
@@ -300,7 +306,8 @@ New live checks:
 
 - **E2E-18 / E2E-19:** the client showed 48 distinct lossy pictures bit-exactly, then refined to the exact desktop,
   with both raw and base64 bodies.
-- **E2E-20:** the rate grew from 0.3 to about 1 MB/s; a 40 KB/s viewer was paused while the other kept going.
+- **E2E-20:** the rate grew from 0.3 to about 1 MB/s; a slow viewer was paused while the other kept going. (The
+  Windows CI runner later showed this pause rule could miss a 10 KB/s viewer: Part 3.)
 - **E2E-21:** scrolling through a non-integer downscale cost less than one keyframe per 15 steps.
 
 ## Alternatives
@@ -329,8 +336,9 @@ per frame, so rounding to 10 px every frame would drift by several pixels.
 - B. The fps cap, computed from the decode time the client reports with its acks.
 - C. Nothing: the viewer is paused immediately.
 
-**Answer: B.** Lowering the byte rate barely reduces DCT decode work per frame; only fewer frames do. If the viewer
-still falls more than `LagDropSeconds` behind, C happens as a last resort.
+**Answer: B.** Lowering the byte rate barely reduces DCT decode work per frame; only fewer frames do. If that viewer
+is in a minority and still cannot keep up, its window fills and it is held and caught up (Part 3); it is never paused
+"immediately".
 </details>
 
 # Part 3 (29th session, continued): one slow viewer must not hold anyone back

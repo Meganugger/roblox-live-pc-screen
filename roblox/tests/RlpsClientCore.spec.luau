@@ -1,6 +1,5 @@
 -- Standalone-Luau spec for RlpsClientCore (frame assembler): relayed part records in arrival order, chain rules,
 -- desync detection and recovery, advance, dirty rectangles, reset and copyRect. Vectors come from the Python encoder.
-local Decoder = require("./RlpsDecoder")
 local ClientCore = require("./RlpsClientCore")
 local H = require("./spec_helpers")
 local V = require("./vectors")
