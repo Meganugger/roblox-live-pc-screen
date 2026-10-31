@@ -249,3 +249,8 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   on phones, `ResamplerMode.Pixelated` look); the official policy pages themselves (help center 403, T-0016).
 - **CI** at `5a96cc4` (PR #4): **5 / 5 green** — ruff + pytest on Linux and Windows, Luau specs + Rojo + luau-lsp, the
   live pipeline test on Linux (Xvfb) and on a real Windows desktop (mss capture), E2E-28…E2E-30 included.
+- **CI flake** at `6cbe662` (docs only): Windows pytest failed in the real-browser test from PR #3
+  (`test_browser_tab_page_only_and_pause_on_other_tab`): the window was matched while the browser still showed the
+  page's `data:` URL as its title (it contains the tag too), so the tab query built from it stopped matching once the
+  page's `<title>` loaded. Test fix: wait for the page's own title. Product behaviour unaffected (a tab is picked by
+  its title; KI-0009).

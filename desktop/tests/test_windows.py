@@ -229,10 +229,14 @@ class RealWindowsTests(unittest.TestCase):  # pragma: no cover - Windows CI
         try:
             deadline = time.monotonic() + 40
             info = None
-            while time.monotonic() < deadline and info is None:
-                info = windows.match(windows.list_windows(), tag)
+            while time.monotonic() < deadline:
+                w = windows.match(windows.list_windows(), tag)
+                # until the page has loaded, the title is its data: URL, which contains the tag too (CI flake at 6cbe662)
+                if w is not None and not w.title.startswith("data:"):
+                    info = w
+                    break
                 time.sleep(0.5)
-            self.assertIsNotNone(info, "browser window did not appear")
+            self.assertIsNotNone(info, "browser window with the page's own title did not appear")
             time.sleep(2.0)  # first paint
             src = windows.WindowSource(windows.tab_query(info.title), content_only=True, follow_title=True)
             img = src.grab_bgra()
