@@ -291,6 +291,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", type=Path, default=default_config_path())
     ap.add_argument("--rotate-token", action="store_true", help="generate a new token (old one stops working)")
     ap.add_argument("--show-token", action="store_true", help="print the token (store it as a Roblox secret)")
+    ap.add_argument("--token-only", action="store_true",
+                    help="print the token (creating it on first use) and exit without starting anything")
     ap.add_argument("--no-gui", action="store_true")
     ap.add_argument("--start", action="store_true", help="start sharing immediately")
     ap.add_argument("--list-monitors", action="store_true")
@@ -304,9 +306,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{i}: {m['width']}x{m['height']} at ({m['left']},{m['top']})" + ("  (all)" if i == 0 else ""))
         return 0
     cfg, created = load_or_create_config(args.config, rotate=args.rotate_token)
-    if created or args.show_token:
+    if created or args.show_token or args.token_only:
         print(f"token ({'new' if created else 'existing'}, saved in {args.config}):\n  {cfg['token']}\n"
               "store it in the Roblox experience secrets (see docs/deployment) — never share it or commit it")
+    if args.token_only:
+        return 0
     if args.host not in ("127.0.0.1", "::1", "localhost"):
         log.warning("binding to %s exposes the frame service beyond this PC; prefer 127.0.0.1 + a tunnel", args.host)
     store = server.FrameStore()

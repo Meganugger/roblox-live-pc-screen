@@ -201,5 +201,27 @@ class ConsoleTests(unittest.TestCase):
         self.assertFalse(store.live)
 
 
+class CliTests(unittest.TestCase):
+    def test_token_only_creates_prints_and_exits(self):
+        import contextlib
+        import io
+        import tempfile
+        from pathlib import Path
+
+        from rlps import app as A
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "rlps" / "config.json"
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(A.main(["--config", str(cfg), "--token-only"]), 0)
+            token = A.load_or_create_config(cfg)[0]["token"]
+            self.assertIn(token, out.getvalue())
+            out2 = io.StringIO()
+            with contextlib.redirect_stdout(out2):
+                self.assertEqual(A.main(["--config", str(cfg), "--token-only"]), 0)
+            self.assertIn(token, out2.getvalue())  # same token on the second run, nothing started
+            self.assertIn("existing", out2.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
