@@ -3,9 +3,9 @@
 _Last updated: 2026-10-31, end of the 29th session (Notion custom agent through the Claude harness)._
 
 - **Repository**: https://github.com/Meganugger/roblox-live-pc-screen (private).
-- **Newest work**: branch `claude/rlps-session-28-finish`, draft **PR #1** → `main` (not merged). First calls:
-  `list_pull_requests`, `list_commits` on the branch, `pull_request_read get_check_runs` and `get_comments` for PR #1
-  (CI failures are posted there as comments by the workflow).
+- **Newest work**: `main` (PR #1 merged, D-0010). First calls: `list_pull_requests` (an open PR is newer than `main`),
+  `list_commits` on `main`. New work: a new `claude/*` branch + draft PR; CI failures are posted on the PR as comments
+  by the workflow (`get_comments`).
 - **What exists**: complete pipeline at maximum quality (stream v2: `ARCHITECTURE.md`, `docs/PROTOCOL.md`, D-0007,
   D-0008; per-viewer flow control `RlpsFanout`, D-0009); research of every public project found (`docs/research/EXISTING_PROJECTS.md`); install / troubleshooting /
   security / performance docs; Windows scripts; CI (ruff, pytest, Luau specs + luau-analyze, Rojo + luau-lsp, live test on
@@ -37,9 +37,9 @@ Release ZIP: `git archive --format=zip --prefix=rlps/ -o dist/rlps-src.zip HEAD`
 ## Exact next task
 
 **T-0018 — owner acceptance test** (needs Windows + Roblox Studio + the owner's account; the agent cannot do it).
-Dependencies: PR #1 merged (T-0019). Procedure: `docs/deployment/INSTALL.md` parts A–E. Completion criteria: in a
+Dependencies: none (PR #1 merged, T-0019). Procedure: `docs/deployment/INSTALL.md` parts A–E. Completion criteria: in a
 published private server the TV shows the real desktop, follows window moves, scrolling and a video, sharpens when
-still, and shows "Screen sharing is off" after Stop. Record TR-0013: Windows version, monitor size/scaling, profile,
+still, and shows "Screen sharing is off" after Stop. Record TR-0014: Windows version, monitor size/scaling, profile,
 tunnel type, `RlpsServer` `RateBps` / `FpsCap` / `LagMs` / `MaxLagMs` / `LaggingViewers` / `BodyMode` / `LastError`,
 client `DecodeMsPerFrame`,
 the sharing window's `encode … ms`, and screenshots.

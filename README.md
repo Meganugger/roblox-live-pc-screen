@@ -30,8 +30,9 @@ inside a published Roblox experience**. See [`PROJECT_SPEC.md`](PROJECT_SPEC.md)
 10. Preserve new progress with the mandatory checkpoint procedure in [`GITHUB_WORKFLOW.md`](GITHUB_WORKFLOW.md):
     **INVESTIGATE → DOCUMENT → UPDATE STATE → COMMIT → SYNCHRONIZE → VERIFY REMOTELY → CONTINUE.**
 
-**Open pull requests first:** since the 28th session work is delivered on `claude/*` branches with a draft PR (D-0004).
-If a PR is open (`list_pull_requests`), its branch is newer than `main` — continue on that branch.
+**Open pull requests first:** since the 28th session work is delivered on `claude/*` branches with a draft PR (D-0004,
+D-0010). If a PR is open (`list_pull_requests`), its branch is newer than `main` — continue on that branch; otherwise
+`main` is current.
 
 Do not ask the owner what happened in a previous chat if it can be recovered from this repository. Do not restart from
 scratch. Do not repeat completed research unnecessarily. Do not assume an old test result is still valid after the code

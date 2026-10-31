@@ -69,6 +69,7 @@
 - **Selected**: work on `claude/rlps-session-28-finish`, PR #1 into `main`; CI runs on the PR.
 - **Consequence**: `main` stays at `e44fa8a` until the owner merges PR #1. **The next session must check open PRs and
   `claude/*` branches first** (recorded in README/SESSION_HANDOFF).
+- **Amended by D-0010**: the owner may ask the agent to merge.
 
 ## D-0005 — Verification without Roblox: emulate the engine, run the real scripts (2026-10-31)
 
@@ -142,3 +143,14 @@
   layer for slow viewers stays a possible extension, KI-0008).
 - **Revisit if**: Roblox exposes per-client network statistics to scripts, or real servers show a different delivery
   pattern (T-0018).
+
+## D-0010 — The agent merges PR #1 at the owner's request (2026-10-31, 29th session)
+
+- **Evidence**: owner message "Push and merge and do everything yourself"; PR #1 head `047ce14` green in all 5 CI jobs
+  (Python on Linux + Windows with ruff, Luau specs + Rojo + luau-lsp, live pipeline test on Xvfb and on a real
+  Windows desktop); every suite also green in the sandbox (TR-0013).
+- **Selected**: mark PR #1 ready for review and merge it into `main` with a merge commit (keeps the per-step history
+  that WORK_LOG and TEST_RESULTS reference by SHA); delete the merged branch. Later work: new `claude/*` branch + PR.
+- **Limit**: merging does not make Roblox Studio / published-server behaviour verified — that remains the owner's
+  acceptance test T-0018 (no Roblox runtime in the agent sandbox, KI-0002).
+
