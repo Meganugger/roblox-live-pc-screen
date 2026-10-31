@@ -135,7 +135,8 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   TVs 0.16 s, stop 0.20 s)**; the failure was the test reading `state.json` while Lune replaced it
   (`PermissionError`) during E2E-15.
 - **Fixes**: `339d6a3` (handler ignores `ConnectionError` on either side; test tolerates the replace race; emulator
-  retries the replace). Rerun result: recorded in the next row / `PROJECT_STATE.md`.
+  retries the replace). **Rerun at `6033ac1` (PR #1 head): all 5 jobs green** — Python ubuntu + windows, Luau/Rojo/
+  luau-lsp, e2e Linux, **e2e Windows (real desktop capture, all scenarios)** (`get_check_runs`, completed 15:02:37Z).
 - **Significance**: first evidence of **real Windows screen capture** through the whole pipeline (KI-0001 partially
   closed: Windows Server runner desktop, not the owner's PC/monitor setup).
 
