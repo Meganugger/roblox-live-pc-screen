@@ -287,6 +287,7 @@ class WindowSource:
         self.hwnd: int | None = None
         self.title = ""
         self.geometry: dict | None = None
+        self.fallback = False  # the last grab came from the screen area (window rendered black for PrintWindow)
         self._black_warned = False
 
     @property
@@ -318,7 +319,8 @@ class WindowSource:
         img, origin = api.print_window(hwnd)
         want = api.content_rect(hwnd) if self.content_only else api.frame_rect(hwnd)
         out = _crop(img, origin, want)
-        if not out[..., :3].any():  # all black: the app does not render for PrintWindow
+        self.fallback = not out[..., :3].any()
+        if self.fallback:  # all black: the app does not render for PrintWindow
             grab = self._screen_grab or _mss_grab
             if not self._black_warned:
                 self._black_warned = True

@@ -178,6 +178,7 @@ class RealWindowsTests(unittest.TestCase):  # pragma: no cover - Windows CI
         root.geometry("320x200+120+120")
         root.configure(bg="#ff0080")
         cover = tk.Toplevel(root)
+        cover.title("RLPS-COVER")
         cover.geometry("400x300+60+60")
         cover.configure(bg="#00ff00")
         cover.attributes("-topmost", True)
@@ -185,12 +186,19 @@ class RealWindowsTests(unittest.TestCase):  # pragma: no cover - Windows CI
             root.update()
             time.sleep(0.05)
         try:
+            info = windows.match(windows.list_windows(), title)
+            self.assertIsNotNone(info)
+            api = windows.Win32()
+            raw, origin = api.print_window(info.hwnd)
+            stats = f"raw {raw.shape} mean {raw[..., :3].mean(axis=(0, 1)).round(1)} origin {origin} " \
+                    f"frame {api.frame_rect(info.hwnd)} content {api.content_rect(info.hwnd)} title {info.title!r}"
             src = windows.WindowSource(title, content_only=True)
             img = src.grab_bgra()
+            self.assertFalse(src.fallback, "PrintWindow rendered black: " + stats)
             h, w = img.shape[:2]
             self.assertGreaterEqual((w, h), (300, 180))
             centre = img[h // 2, w // 2, :3].astype(int)  # BGR of #ff0080
-            self.assertTrue(np.abs(centre - [128, 0, 255]).max() <= 8, centre)
+            self.assertTrue(np.abs(centre - [128, 0, 255]).max() <= 8, f"{centre} {stats}")
             self.assertTrue(np.abs(img[2, 2, :3].astype(int) - [128, 0, 255]).max() <= 8, "client area: no title bar")
             self.assertTrue(any(title in w.title for w in windows.list_windows()))
             root.iconify()
