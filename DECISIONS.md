@@ -180,3 +180,25 @@
   exclusive full screen, where the monitor can be shared); a browser extension for tabs (installation burden, a second
   trust boundary).
 
+## D-0012 — In-game moderation controls; no Frame-grid fallback; live audio deferred (2026-10-31, 29th session)
+
+- **Evidence**: forum research (`docs/research/FORUM_FINDINGS.md`, T-0026): moderation / takedowns are the most
+  discussed topic; Roblox's official guidance asks for unmoderated 2D content to be declared (Content Labels) and for
+  content to be attributable and removable; EditableImage needs a 13+ ID-verified owner; creation succeeds while the
+  API is disabled.
+- **Selected**: (1) moderator kill switch — `ModeratorUserIds` (+ the owner of a user-owned experience, checked on the
+  server), replicated `RlpsModerator` player attribute for the button, `Hidden` attribute (also usable from the server
+  console): hiding clears the playout, suspends the relay (status stopped, "hidden by a moderator"), clients drop their
+  pixels, the poll loop pulls nothing; each use is logged; (2) per-player hide: the client drops everything and sends
+  `leave`, the fan-out forgets the viewer (0 bytes), showing again resyncs; (3) a one-pixel probe write after creating
+  the EditableImage, with an explanation of the owner requirement and a 30 s retry; (4) full-screen Sharp
+  (`ResamplerMode.Pixelated`).
+- **Rejected**: a Frame-grid renderer for owners without ID verification (bruvie-fr does this): its purpose here would
+  be to show unmoderated external imagery without the accountability Roblox requires for exactly that.
+- **Rejected**: audio through voice chat (the owner's microphone fed from a virtual cable): voice moderation strikes
+  music and a quoted appeal answer calls streaming audio a policy violation (F-0048).
+- **Deferred**: live audio by additive resynthesis (T-0028): technically feasible, but it would put unmoderated audio
+  into the game (Roblox moderates every audio asset and offers no Content Label for it), and quality, client CPU and
+  A/V sync cannot be judged without real clients and ears; it also needs an owner-uploaded tone asset. The owner
+  decides the policy question first.
+

@@ -74,6 +74,20 @@ for a few seconds.
 The server retries with exponential backoff (2, 4, 8 … 30 s) and the picture comes back on its own after the cause is
 fixed (verified in the live pipeline test, E2E-11/12).
 
+## "cannot draw the screen image: the owner must enable Allow Mesh / Image APIs … ID-verified owner"
+
+The experience runs without EditableImage permission: Roblox lets the image be created but refuses every write.
+Turn on **Allow Mesh / Image APIs** (INSTALL C.1) — only possible when the experience owner (group owner for a group
+experience) is 13+ and ID-verified. The client retries every 30 s, so the TV recovers on its own once it is enabled
+(new servers pick up the setting).
+
+## "Screen sharing is off (hidden by a moderator)"
+
+A moderator (`ModeratorUserIds`, or the experience owner) pressed **⛔ Hide screen for everyone**, or `Hidden` was set
+on `RlpsServer`. Nothing is pulled from the PC meanwhile. A moderator presses **▶ Show screen for everyone** (top of
+their window, anywhere in the game) or you set `Hidden` to false; the picture returns from a fresh keyframe. The server
+Output logs who did it.
+
 ## "cannot create the screen image … published games need Allow Mesh / Image APIs"
 
 * Published game: enable **Allow Mesh / Image APIs** (Studio Experience Settings ⟩ Security, or Creator Dashboard ⟩
@@ -86,6 +100,12 @@ fixed (verified in the live pipeline test, E2E-11/12).
 The pipeline keeps the top-left origin end to end (verified byte-for-byte in E2E-05). If the picture looks wrong, the
 part's face orientation is the cause: set `RlpsFace` on the screen part to the face that points at the players, and
 keep the screen part's size 16:9 (the image is letterboxed with `ScaleType.Fit`, never stretched).
+
+## The picture lags behind the desktop
+
+Quick tunnels (`trycloudflare.com`) route through a shared relay and some users report them "slow sometimes". Compare:
+the delay in Studio with `FrameServiceUrl` = your tunnel URL vs. the delay with Tailscale Funnel or a named Cloudflare
+tunnel (INSTALL A.3). `RlpsServer.LagMs` measures the delay after the Roblox server, not the tunnel hop.
 
 ## Slow, blurry or jerky updates
 

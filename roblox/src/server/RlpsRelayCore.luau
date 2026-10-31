@@ -182,6 +182,15 @@ function RelayCore.fail(self: Relay, reason: string): { Message }
 	return out
 end
 
+-- The screen is withheld in this server (a moderator hid it): forget the chain (the next poll after resuming starts from
+-- a keyframe) and report "stopped" with `detail`. Returns the messages to broadcast.
+function RelayCore.suspend(self: Relay, detail: string): { Message }
+	clearChain(self)
+	local out: { Message } = {}
+	setStatus(self, out, "stopped", detail)
+	return out
+end
+
 -- Viewers need a new keyframe (late joiners, slow viewers, a long history): polls ask for one until it arrives. The
 -- chain continues meanwhile (`key` would make the frame service replay its newest keyframe chain: old frames).
 function RelayCore.requestFreshKeyframe(self: Relay)

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 2026-10-31 (29th session, PR #4) — **Forum research** (`docs/research/FORUM_FINDINGS.md`: Reddit via an archive API,
+  DevForum, GitHub, official announcements) and what came of it: **moderator kill switch** (`ModeratorUserIds`,
+  `Hidden`: hide the screen for everyone from inside the game, logged), **per-player Hide (H)** (nothing sent to that
+  player), a clear message when the experience lacks **Allow Mesh / Image APIs** (needs a 13+ ID-verified owner),
+  full-screen **Sharp** pixels, and Roblox policy guidance (Content Labels, private audiences, personal information).
 - 2026-10-31 (29th session, PR #3) — **Roblox client draws only what changed** (dirty rectangles instead of a bounding
   box, once per game frame, nothing while no TV is in view, far TVs ≤ 10 Hz; pooled buffers; `--!native --!optimize 2`).
   **Viewer modes**: full screen (Fit/Fill), cinema (camera framing the TV, bars, background blur, movement held), mini

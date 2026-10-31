@@ -45,6 +45,8 @@ local MAX_RECTS = 12 -- dirty rectangles per redraw; more → their bounding box
 local CONTROLS_DISTANCE = 45 -- studs; closer to a screen the viewer controls appear
 local CINEMA_BAR = 0.08 -- cinema letterbox bar height (fraction of the viewport, top and bottom)
 local CINEMA_ACTION = "RlpsCinemaHoldStill"
+local IMAGE_API_HELP = "the owner must enable Allow Mesh / Image APIs (Game Settings > Security; needs a 13+ "
+	.. "ID-verified owner)"
 local PIXELS_PER_STUD = 50 -- until the first picture; then the canvas matches the image resolution
 local IMAGE_RETRY = 5 -- seconds between EditableImage creation attempts after a failure
 
@@ -94,12 +96,13 @@ local overlays: { Panel } = {}
 local state: State = "connecting"
 local detail: string? = nil
 local mode: Mode = "none"
+local hiddenByMe = false -- this player hid the screen (nothing is received or drawn until shown again)
 
 local function statusText(): string
 	if state == "connecting" then
 		return if detail then "Connecting to the shared screen…\n" .. detail else "Connecting to the shared screen…"
 	elseif state == "stopped" then
-		return "Screen sharing is off"
+		return if detail then "Screen sharing is off\n(" .. detail .. ")" else "Screen sharing is off"
 	elseif state == "error" then
 		return "Screen unavailable\n" .. (detail or "unknown error")
 	end
@@ -107,11 +110,14 @@ local function statusText(): string
 end
 
 local function refreshPanel(s: Panel)
-	local showPicture = state == "live" and editable ~= nil
+	local showPicture = state == "live" and editable ~= nil and not hiddenByMe
 	s.image.Visible = showPicture
 	s.badge.Visible = showPicture
 	s.status.Visible = not showPicture
-	s.status.Text = if showPicture then "" else (if state == "live" then "Waiting for the first frame…" else statusText())
+	s.status.Text = if showPicture then ""
+		elseif hiddenByMe then "You hid the screen\nPress H or Show screen to watch again"
+		elseif state == "live" then "Waiting for the first frame…"
+		else statusText()
 	s.image.ImageContent = if editable then Content.fromObject(editable) else Content.none
 end
 
@@ -134,6 +140,7 @@ local function buildPanel(parent: GuiObject): Panel
 	image.Size = UDim2.fromScale(1, 1)
 	image.BackgroundTransparency = 1
 	image.ScaleType = Enum.ScaleType.Fit
+	image.ResampleMode = Enum.ResamplerMode.Default
 	image.Visible = false
 	image.Parent = parent
 
@@ -308,10 +315,23 @@ local function ensureImage(w: number, h: number): EditableImage?
 		-- nil when the device's EditableImage memory budget is exhausted; an error when the API is disabled
 		return AssetService:CreateEditableImage({ Size = Vector2.new(w, h) }) :: EditableImage?
 	end)
+	if ok and res ~= nil then
+		-- creation can succeed while the API is disabled for this experience: only writing fails, so write once now
+		local probe = res :: EditableImage
+		local wrote = pcall(function()
+			probe:WritePixelsBuffer(Vector2.zero, Vector2.new(1, 1), buffer.create(4))
+		end)
+		if not wrote then
+			probe:Destroy()
+			imageRetryAt = os.clock() + IMAGE_RETRY * 6
+			setState("error", "cannot draw the screen image: " .. IMAGE_API_HELP)
+			return nil
+		end
+	end
 	if not ok or res == nil then
 		imageRetryAt = os.clock() + IMAGE_RETRY
-		local why = if ok then "image memory budget exhausted" else tostring(res)
-		setState("error", "cannot create the screen image (" .. why .. "); published games need Allow Mesh / Image APIs")
+		local why = if ok then "this device's image memory is full" else tostring(res)
+		setState("error", "cannot create the screen image (" .. why .. "); " .. IMAGE_API_HELP)
 		return nil
 	end
 	editable = res
@@ -327,7 +347,7 @@ end
 -- Write what changed since the last redraw into the EditableImage: a few dirty rectangles (or everything after a new
 -- image / reset). Skipped while no picture is visible — except to show the very first picture.
 local function render(now: number)
-	if core.frame == nil or core.pendingSeq ~= 0 then
+	if core.frame == nil or core.pendingSeq ~= 0 or hiddenByMe then
 		return -- nothing yet, or in the middle of a multi-part frame (avoid tearing): try again next frame
 	end
 	local firstPicture = editable == nil or state ~= "live"
@@ -414,6 +434,15 @@ bar.Parent = controlsGui
 local fullscreenButton = button(bar, "FullscreenButton", "⛶ Full screen (F)", UDim2.fromScale(0.32, 1), UDim2.fromScale(0, 0))
 local cinemaButton = button(bar, "CinemaButton", "🎬 Cinema (C)", UDim2.fromScale(0.32, 1), UDim2.fromScale(0.34, 0))
 local miniButton = button(bar, "MiniButton", "▣ Mini player (M)", UDim2.fromScale(0.32, 1), UDim2.fromScale(0.68, 0))
+-- Hide / show the screen for this player only (also stops the server sending anything to this player)
+local hideButton = button(controlsGui, "HideButton", "🚫 Hide (H)", UDim2.fromScale(0.09, 0.045),
+	UDim2.fromScale(0.795, 0.925))
+
+-- Moderators (ModeratorUserIds / the owner): withhold the screen for everyone in this server
+local moderatorGui = screenGui("RlpsModerator", 25)
+local modButton = button(moderatorGui, "ModHideButton", "⛔ Hide screen for everyone", UDim2.fromScale(0.22, 0.045),
+	UDim2.fromScale(0.39, 0.02))
+modButton.BackgroundColor3 = Color3.fromRGB(140, 20, 20)
 
 -- Full screen: the picture over the whole window, letterboxed (Fit) or filling it (Fill = crop)
 local fullscreenGui = screenGui("RlpsFullscreen", 100)
@@ -427,6 +456,7 @@ local fsPanel = buildPanel(fsBackground)
 table.insert(overlays, fsPanel)
 local fsExit = button(fsBackground, "ExitButton", "✕ Exit (F)", UDim2.fromScale(0.1, 0.05), UDim2.fromScale(0.89, 0.01))
 local fsFit = button(fsBackground, "FitButton", "Fill", UDim2.fromScale(0.07, 0.05), UDim2.fromScale(0.81, 0.01))
+local fsSharp = button(fsBackground, "SharpButton", "Sharp", UDim2.fromScale(0.07, 0.05), UDim2.fromScale(0.73, 0.01))
 
 -- Mini player: a small always-visible picture in the bottom-right corner, wherever the player walks
 local miniGui = screenGui("RlpsMiniPlayer", 40)
@@ -552,11 +582,17 @@ end
 
 refreshControls = function()
 	local _, dist = nearestScreen()
-	controlsGui.Enabled = mode == "none" and state == "live" and editable ~= nil and dist <= CONTROLS_DISTANCE
-		and next(allowed) ~= nil
+	local near = dist <= CONTROLS_DISTANCE
+	local watching = state == "live" and editable ~= nil and not hiddenByMe
+	controlsGui.Enabled = mode == "none" and near and (watching or hiddenByMe)
+	bar.Visible = watching and next(allowed) ~= nil
 	fullscreenButton.Visible = allowed.fullscreen == true
 	cinemaButton.Visible = allowed.cinema == true
 	miniButton.Visible = allowed.mini == true
+	hideButton.Text = if hiddenByMe then "👁 Show screen (H)" else "🚫 Hide (H)"
+	local serverHidden = frames:GetAttribute("Hidden") == true
+	moderatorGui.Enabled = player:GetAttribute("RlpsModerator") == true -- anywhere in the game: it is a kill switch
+	modButton.Text = if serverHidden then "▶ Show screen for everyone" else "⛔ Hide screen for everyone"
 end
 
 fullscreenButton.Activated:Connect(function()
@@ -570,6 +606,14 @@ miniButton.Activated:Connect(function()
 end)
 fsExit.Activated:Connect(function()
 	setMode("none")
+end)
+fsSharp.Activated:Connect(function()
+	local sharp = fsPanel.image.ResampleMode ~= Enum.ResamplerMode.Pixelated
+	fsPanel.image.ResampleMode = if sharp then Enum.ResamplerMode.Pixelated else Enum.ResamplerMode.Default
+	fsSharp.Text = if sharp then "Smooth" else "Sharp"
+end)
+modButton.Activated:Connect(function()
+	frames:FireServer("moderate", if frames:GetAttribute("Hidden") == true then "show" else "hide")
 end)
 fsFit.Activated:Connect(function()
 	local fill = fsPanel.image.ScaleType == Enum.ScaleType.Fit
@@ -586,11 +630,20 @@ cinemaExit.Activated:Connect(function()
 	setMode("none")
 end)
 
+local setHiddenByMe: (boolean) -> () -- defined with the networking below
+
 UserInputService.InputBegan:Connect(function(input: InputObject, processedByGame: boolean)
 	if processedByGame then
 		return -- typing in chat, a text box, a game menu
 	end
 	local key = input.KeyCode
+	if key == Enum.KeyCode.H then
+		local _, dist = nearestScreen()
+		if hiddenByMe or dist <= CONTROLS_DISTANCE or mode ~= "none" then
+			setHiddenByMe(not hiddenByMe)
+		end
+		return
+	end
 	local want: Mode? = if key == Enum.KeyCode.F then "fullscreen"
 		elseif key == Enum.KeyCode.C then "cinema"
 		elseif key == Enum.KeyCode.M then "mini"
@@ -704,6 +757,10 @@ frames.OnClientEvent:Connect(function(kind: unknown, a: unknown, b: unknown, c: 
 	if typeof(kind) ~= "string" then
 		return
 	end
+	local isStatus = kind == "status"
+	if hiddenByMe and not isStatus then
+		return -- the screen is hidden for this player: nothing of the stream is kept (the server stops sending)
+	end
 	if kind == "status" and a == "stopped" then
 		-- sharing stopped: drop everything still queued at once (no further pixel of the owner's screen is shown)
 		dropQueue()
@@ -781,6 +838,33 @@ local function diagnostics()
 	script:SetAttribute("SkippedRedraws", skippedRedraws)
 end
 
+-- Hide the screen for this player (no pixel kept, the server stops sending) or show it again (a fresh sync).
+setHiddenByMe = function(hide: boolean)
+	if hide == hiddenByMe then
+		return
+	end
+	if hide then
+		if mode ~= "none" then
+			setMode("none")
+		end
+		hiddenByMe = true
+		frames:FireServer("leave")
+		dropQueue()
+		core:reset()
+		dropPicture()
+	else
+		hiddenByMe = false
+		processed, ackedBytes = 0, 0 -- the server counts this player's bytes from zero again
+		setState("connecting", nil)
+		lastSync = -math.huge
+		requestSync()
+	end
+	refreshAll()
+end
+hideButton.Activated:Connect(function()
+	setHiddenByMe(not hiddenByMe)
+end)
+
 RunService.Heartbeat:Connect(function()
 	local now = os.clock()
 	processQueue()
@@ -790,7 +874,7 @@ RunService.Heartbeat:Connect(function()
 	updateModes(now)
 	diagnostics()
 	sendAck()
-	if (state == "connecting" and core.framesCompleted == 0) or (core.desynced and state == "live") then
+	if not hiddenByMe and ((state == "connecting" and core.framesCompleted == 0) or (core.desynced and state == "live")) then
 		requestSync() -- rate-limited: retries until the server answers with its history / a keyframe arrives
 	end
 end)

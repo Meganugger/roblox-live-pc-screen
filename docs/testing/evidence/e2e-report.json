@@ -1,6 +1,6 @@
 {
   "ok": true,
-  "duration_s": 126.0,
+  "duration_s": 167.0,
   "checks": [
     {
       "id": "E2E-01",
@@ -26,7 +26,7 @@
         1024,
         576
       ],
-      "latency_s": 1.199
+      "latency_s": 1.127
     },
     {
       "id": "E2E-04",
@@ -90,8 +90,8 @@
       "id": "E2E-08",
       "check": "desktop change reaches both TVs (new frame, delta path)",
       "pass": true,
-      "seq": 3,
-      "latency_s": 0.327
+      "seq": 2,
+      "latency_s": 0.315
     },
     {
       "id": "E2E-09a",
@@ -149,8 +149,8 @@
       "id": "E2E-10",
       "check": "after 9 rapid desktop changes both TVs settle on the exact newest frame (scene A)",
       "pass": true,
-      "seq": 15,
-      "frames_between": 12,
+      "seq": 12,
+      "frames_between": 10,
       "dropped": 0
     },
     {
@@ -165,12 +165,12 @@
       "check": "TV out of view: no redraws while frames are still decoded; looking back shows the exact current picture",
       "pass": true,
       "redraws": [
-        17,
-        17
+        13,
+        13
       ],
       "skipped": [
         0,
-        48
+        55
       ]
     },
     {
@@ -189,24 +189,43 @@
       "aim": 1
     },
     {
+      "id": "E2E-28",
+      "check": "a player hides the screen for herself: picture and pixels dropped, the server stops sending to her while the others update; showing it again resyncs to the exact current picture",
+      "pass": true,
+      "bytes_received_while_hidden": 0
+    },
+    {
+      "id": "E2E-29",
+      "check": "moderator kill switch: only listed moderators get the button and can use it (a forged request is ignored); hiding drops every viewer's pixels and stops polling the PC; showing it again restores the exact picture; showing it while sharing is off says so at once, and after Start the exact picture returns",
+      "pass": true,
+      "roles": [
+        true,
+        false
+      ],
+      "bob_denied": true,
+      "dropped": true,
+      "polls_while_hidden": 0,
+      "show_to_sharing_off_s": 0.657
+    },
+    {
       "id": "E2E-11",
       "check": "frame service down: both TVs show 'Screen unavailable' and hide the picture",
       "pass": true,
-      "detail": "Screen unavailable\nrequest failed: [string \"server:roblox/src/server/RlpsServer.server.luau\"]:402: HttpError: ConnectFail",
-      "last_error": "[string \"server:roblox/src/server/RlpsServer.server.luau\"]:402: HttpError: ConnectFail"
+      "detail": "Screen unavailable\nrequest failed: [string \"server:roblox/src/server/RlpsServer.server.luau\"]:466: HttpError: ConnectFail",
+      "last_error": "[string \"server:roblox/src/server/RlpsServer.server.luau\"]:466: HttpError: ConnectFail"
     },
     {
       "id": "E2E-12",
       "check": "service back: both TVs resume with the exact newest frame",
       "pass": true,
-      "seq": 20,
-      "latency_s": 8.251
+      "seq": 2,
+      "latency_s": 8.217
     },
     {
       "id": "E2E-13",
       "check": "after Stop: both TVs show 'Screen sharing is off', EditableImages destroyed, no frames left in the service, within 5 s",
       "pass": true,
-      "latency_s": 0.103,
+      "latency_s": 0.052,
       "status": "stopped"
     },
     {
@@ -223,9 +242,9 @@
         "dct",
         "lossless"
       ],
-      "lossy_pictures_matched": 49,
+      "lossy_pictures_matched": 57,
       "body_mode": "raw",
-      "seq": 148,
+      "seq": 140,
       "refine_s": 0.01,
       "errors": {}
     },
@@ -237,9 +256,9 @@
         "dct",
         "lossless"
       ],
-      "lossy_pictures_matched": 57,
+      "lossy_pictures_matched": 54,
       "body_mode": "base64",
-      "seq": 148,
+      "seq": 158,
       "refine_s": 0.0,
       "errors": {}
     },
@@ -249,27 +268,27 @@
       "pass": true,
       "tiles_per_frame": 2304,
       "keyframe_bytes": 50345,
-      "bytes_for_15_scroll_steps": 460135,
-      "copied_tiles": 32266
+      "bytes_for_15_scroll_steps": 395485,
+      "copied_tiles": 32361
     },
     {
       "id": "E2E-20",
       "check": "adaptive rate: grows above the start rate with one fast viewer; a 10 KB/s viewer makes it back off or gets paused while the fast viewer keeps getting frames; both end exact",
       "pass": true,
       "start_rate": 300000,
-      "rate_after_growth": 1127436,
-      "min_rate_with_slow_viewer": 1127436,
+      "rate_after_growth": 1282729,
+      "min_rate_with_slow_viewer": 1282729,
       "max_lagging_viewers": 1,
-      "fast_distinct_pictures_meanwhile": 97
+      "fast_distinct_pictures_meanwhile": 104
     },
     {
       "id": "E2E-16",
       "check": "pacing: forwarded stream stays near the 3000 B/s budget during 10 s of ~2.7 changes/s (one container of slack), frames coalesced, final frame exact",
       "pass": true,
       "budget_Bps": 3000,
-      "measured_Bps": 4529,
+      "measured_Bps": 4152,
       "desktop_changes": 26,
-      "frames_published": 134,
+      "frames_published": 132,
       "containers_ingested_during_churn": 126
     },
     {
@@ -296,47 +315,54 @@
       "check": "secret domain without the wildcard: the TV names the host and the domain to enter, no picture; with *.trycloudflare.com the picture appears",
       "pass": true,
       "text": "Screen unavailable\nrequest failed: set the domain of secret 'rlps_token' to *.trycloudflare.com or word-word-word.trycloudflare.com (host only, no https://): it does not allow wor\u2026"
+    },
+    {
+      "id": "E2E-30",
+      "check": "image API disabled (creation works, writing fails): the TV explains the owner setting and the ID-verification requirement instead of a raw error, and does not retry every frame",
+      "pass": true,
+      "text": "Screen unavailable\ncannot draw the screen image: the owner must enable Allow Mesh / Image APIs (Game Settings > Security; needs a 13+ ID-verified owner)",
+      "images_created": 1
     }
   ],
   "metrics": {
     "screen": "1280x720",
-    "join_to_stopped_screen_s": 1.035,
-    "start_to_picture_s": 1.199,
+    "join_to_stopped_screen_s": 1.03,
+    "start_to_picture_s": 1.127,
     "late_joiner_s": 0.221,
-    "desktop_change_to_both_tvs_s": 0.327,
-    "outage_recovery_s": 8.251,
-    "stop_to_tv_off_s": 0.103,
+    "desktop_change_to_both_tvs_s": 0.315,
+    "outage_recovery_s": 8.217,
+    "stop_to_tv_off_s": 0.052,
     "profile": "max",
     "frame_service_responses_after_outage": 2,
-    "http_requests_by_roblox_server": 22,
-    "http_body_bytes": 38913,
-    "server_forwarded_part_bytes": 36765,
-    "server_containers": 23,
+    "http_requests_by_roblox_server": 28,
+    "http_body_bytes": 77488,
+    "server_forwarded_part_bytes": 74616,
+    "server_containers": 38,
     "server_dropped": 0,
-    "alice_received_bytes": 37473,
-    "alice_remote_messages": 139,
-    "alice_pixel_writes": 43,
-    "frames_published": 20,
-    "frames_captured": 1056,
+    "alice_received_bytes": 101655,
+    "alice_remote_messages": 402,
+    "alice_pixel_writes": 40,
+    "frames_published": 18,
+    "frames_captured": 1651,
     "E2E-18_refine_s": 0.01,
     "E2E-19_refine_s": 0.0,
     "scroll": {
       "keyframe_bytes": 50345,
-      "bytes_for_15_scroll_steps": 460135,
-      "copied_tiles": 32266
+      "bytes_for_15_scroll_steps": 395485,
+      "copied_tiles": 32361
     },
     "congestion": {
       "start_rate": 300000,
-      "rate_after_growth": 1127436,
-      "min_rate_with_slow_viewer": 1127436,
+      "rate_after_growth": 1282729,
+      "min_rate_with_slow_viewer": 1282729,
       "max_lagging_viewers": 1,
-      "fast_distinct_pictures_meanwhile": 97
+      "fast_distinct_pictures_meanwhile": 104
     },
     "pacing": {
       "budget_Bps": 3000,
-      "measured_Bps": 4529,
+      "measured_Bps": 4152,
       "desktop_changes": 26,
-      "frames_published": 134,
+      "frames_published": 132,
       "containers_ingested_during_churn": 126
     }
   }

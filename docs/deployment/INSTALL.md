@@ -108,8 +108,26 @@ What is in the place: a baseplate, a spawn, and the TV (`Workspace.RlpsTV`: a 16
 before it lets you change these settings, do E.1 first and come back)
 
 * **Allow HTTP Requests: ON** — the game server polls the frame service.
-* **Allow Mesh / Image APIs: ON** — `EditableImage` fails in published games without it. (Same switch on the Creator
-  Dashboard: experience ⟩ **Configure ⟩ Settings ⟩ Enable Mesh / Image APIs**.)
+* **Allow Mesh / Image APIs: ON** — `EditableImage` fails in published games (and in Studio *play mode*) without it.
+  (Same switch on the Creator Dashboard: experience ⟩ **Configure ⟩ Settings ⟩ Enable Mesh / Image APIs**.) Roblox only
+  lets you turn it on if the **experience owner — for a group experience, the group owner — is 13+ and ID-verified**
+  (check and verify under Roblox.com ⟩ Settings). Without it the TV says so ("needs a 13+ ID-verified owner").
+
+### C.1b Content Labels and audience (Roblox rules — read before publishing)
+
+Roblox's own guidance for EditableImage: experiences that show players **2D content that did not go through Roblox
+moderation** (a shared screen is exactly that) must declare it in the **Content Labels questionnaire** (Creator Hub ⟩
+Creations ⟩ your experience ⟩ Audience ⟩ Questionnaire) and are then **Moderate (13+)**. A wrongly filled
+questionnaire has made experiences unavailable. Developers report screen-sharing games being taken down when they
+showed prohibited content. Recommended:
+
+* keep the experience **private or friends-only** for watch parties, and list who may watch in `ViewerUserIds`;
+* add your helpers to `ModeratorUserIds`: they get **⛔ Hide screen for everyone** at the top of their window, wherever
+  they are in the game (the owner of a user-owned experience always has it). It drops every viewer's picture at once
+  and stops pulling frames from your PC; the server Output logs who pressed it;
+* share one window or one browser tab rather than the whole desktop (F.1), and close anything showing personal
+  information (names, e-mail, addresses) — Roblox forbids sharing it;
+* you are responsible for everything you show (Terms of Use, Community Standards).
 
 ### C.2 Frame service URL
 
@@ -125,6 +143,8 @@ Select **ServerScriptService ⟩ Rlps ⟩ RlpsServer**, scroll to **Attributes**
 | `TargetLagSeconds` | 0.35 — acceptable delay of the median viewer (the rate follows most viewers; slower ones are held and caught up, never slowing the others) |
 | `BatchMs`, `ClientDecodeBudgetMs` | 150, 10 — frames per HTTP response window; decode time per client frame |
 | `ViewerModes` | `fullscreen,cinema,mini` — viewer modes players may use (INSTALL F.2); empty = none |
+| `ModeratorUserIds` | optional: UserIds who may hide the screen for everyone from inside the game (C.1b) |
+| `Hidden` | false — true withholds the screen in this server (moderators toggle it in game; you can also run `game.ServerScriptService.Rlps.RlpsServer:SetAttribute("Hidden", true)` in the server console) |
 | `PollWaitMs`, `MinPollInterval`, `StoppedPollInterval` | leave the defaults (15000, 0.15, 1) |
 
 The script also *writes* read-only diagnostics there while running: `Status`, `StatusDetail`, `Containers`,
@@ -211,7 +231,9 @@ Near the TV players see **⛶ Full screen (F)**, **🎬 Cinema (C)** and **▣ M
 * **Mini player** — a small picture in the corner that stays while walking around; ⛶ makes it full screen.
 
 Everything is local to each player (nothing replicates). Choose the offered modes with the `RlpsServer` attribute
-`ViewerModes` (default `fullscreen,cinema,mini`; empty = no viewer controls). You are responsible for what you show under the Roblox Terms of Use and Community Standards (do not show
+`ViewerModes` (default `fullscreen,cinema,mini`; empty = no viewer controls). In full screen, **Sharp** shows the
+picture's pixels unsmoothed (crisper text when enlarged). Every player can also **🚫 Hide (H)** the screen for
+themselves: nothing more is sent to them until they press **Show screen**. You are responsible for what you show under the Roblox Terms of Use and Community Standards (do not show
 other people's personal information or content you have no right to share).
 
 ## Local development without Roblox

@@ -215,6 +215,22 @@ do
 	T.eq(kinds(newer), "", "old keyframe does not answer it either")
 end
 
+-- 11b. suspend (moderator hid the screen): status "stopped" with the reason, chain forgotten, next poll from a keyframe.
+do
+	local r = RelayCore.new()
+	for _, st in TEXT.steps do
+		r:ingest(buffer.fromstring(st.data))
+	end
+	local msgs = r:suspend("hidden by a moderator")
+	T.check(#msgs == 1 and msgs[1].status == "stopped" and msgs[1].detail == "hidden by a moderator",
+		"suspend reports stopped with its reason", kinds(msgs))
+	local after, session, key = r:pollParams()
+	T.check(after == 0 and session == 0 and key, "suspend forgets the chain")
+	T.eq(kinds(r:suspend("hidden by a moderator")), "", "suspending again is silent")
+	local resumed = r:ingest(buffer.fromstring(TEXT.steps[1].data))
+	T.eq(kinds(resumed), "status:live,records", "after showing again the keyframe restarts the stream")
+end
+
 -- 12. Every vector sequence through relay + client.
 for _, s in V.sequences do
 	local r = RelayCore.new()

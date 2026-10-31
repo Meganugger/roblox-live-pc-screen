@@ -229,3 +229,21 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   window was cropped to the page only and sharing paused when another tab opened. (The first run failed because the
   covering window inherited the same title and, correctly, the topmost match was captured — the test now titles it.)
 
+
+## TR-0016 — Forum research changes: moderator kill switch, per-player hide, image-API probe, Sharp (29th session, 2026-10-31)
+
+- **Commands / results** (sandbox): `ruff check .` clean; `cd desktop && python3 -m pytest -q` → **93 passed, 2 skipped**
+  (Windows-only); `python3 roblox/tests/run_luau_tests.py --analyze` → 8 modules + 7 specs analyzed OK, **6,661 / 0**
+  (new `RlpsRelayCore.spec` 11b: `suspend`); `scripts/check_roblox.sh` OK; `python3 tests/e2e/run_e2e.py` → **35 / 35**
+  checks (32 before + E2E-28, E2E-29, E2E-30; report `docs/testing/evidence/e2e-report.json`).
+- **Measured**: E2E-28 Alice received **0 bytes** while she had hidden the screen (Bob's TV followed a desktop change);
+  E2E-29 Bob's forged `moderate` request ignored, both TVs dropped their pixels, **0 HTTP polls** in 2 s while hidden,
+  exact picture after showing; shown while sharing was off → "Screen sharing is off" after **0.66 s**; E2E-30 one
+  creation attempt, message names the owner setting and ID verification; E2E-25 Sharp → `ResampleMode = Pixelated`.
+- **Defect found in review and fixed**: showing a hidden screen left the relay `stopped`, so the next poll was an
+  idle poll held by the PC for up to `PollWaitMs` (15 s) while sharing was off → the TVs kept "hidden by a
+  moderator". Fix: status `connecting` first. **Mutation check**: with that line removed E2E-29 fails (timeout after
+  10 s, TVs still "hidden by a moderator"); with it, 0.6 s. Also: an in-flight poll's *error* could have replaced the
+  hidden message → `pollOnce` discards any answer once `Hidden` is set.
+- **Not verified here**: real Roblox (whether `game.CreatorId` is the owner in Team Create test servers, the buttons
+  on phones, `ResamplerMode.Pixelated` look); the official policy pages themselves (help center 403, T-0016).

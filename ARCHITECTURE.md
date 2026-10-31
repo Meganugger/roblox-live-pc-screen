@@ -20,8 +20,8 @@ Windows desktop ─mss/DXGI─► desktop app (Python)                        Ro
 | Frame service | `desktop/rlps/server.py` | bearer auth, rate limits, long-poll, encode-once chain ring, bundles, `/v1/probe` |
 | App | `desktop/rlps/app.py` | CLI / Tk window, explicit Start / Stop, sharing indicator, profiles, token config |
 | Roblox shared | `roblox/src/shared/` | protocol constants, container / part / bundle decoder, `RlpsDct`, frame assembler with dirty rectangles (`RlpsClientCore`), view math (`RlpsView`), base64 fallback |
-| Roblox server | `roblox/src/server/` | `RlpsServer` (poll loop, playout, rate control, diagnostics), `RlpsRelayCore` (chain validation, poll cursor, status), `RlpsFanout` (played history, per-viewer delivery) |
-| Roblox client | `roblox/src/client/` | decode queue, dirty-rectangle redraws with visibility culling, EditableImage shown on every tagged screen + full screen + mini player, cinema camera, viewer controls, status screens, acks |
+| Roblox server | `roblox/src/server/` | `RlpsServer` (poll loop, playout, rate control, moderation, diagnostics), `RlpsRelayCore` (chain validation, poll cursor, status), `RlpsFanout` (played history, per-viewer delivery) |
+| Roblox client | `roblox/src/client/` | decode queue, dirty-rectangle redraws with visibility culling, EditableImage shown on every tagged screen + full screen + mini player, cinema camera, viewer controls, per-player hide, moderator panel, image-API probe, status screens, acks |
 | TV model | `roblox/models/RlpsTV.model.json` → `Workspace.RlpsTV` (Rojo) | screen part tagged `RlpsScreen` (16×9 studs), bezel, neck, base |
 | Windows scripts | `scripts/windows/*.bat` | setup, show token, start app, start quick tunnel, emergency stop |
 | Tests | `desktop/tests/`, `roblox/tests/`, `tests/e2e/` | unit tests, cross-language Luau specs, live pipeline test under a Lune engine emulation (`docs/testing/E2E.md`) |
@@ -59,4 +59,7 @@ Windows desktop ─mss/DXGI─► desktop app (Python)                        Ro
 ## Where the safeguards live
 
 Start / Stop only on the PC, visible indicator, authenticated single-route service on 127.0.0.1, token as a Roblox
-secret, strict validation on both decoders, optional `ViewerUserIds` allowlist: `SECURITY.md`.
+secret, strict validation on both decoders, optional `ViewerUserIds` allowlist: `SECURITY.md`. In game only
+*withholding* is possible (D-0012): moderators (`ModeratorUserIds`, the owner of a user-owned experience) hide the
+screen for everyone — the playout is cleared, the relay suspended, nothing more is pulled from the PC — and every
+player can hide it for themselves (`leave`: the fan-out forgets that viewer until it syncs again).
