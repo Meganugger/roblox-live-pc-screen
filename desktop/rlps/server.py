@@ -1,15 +1,14 @@
-"""RLPS frame service: one authenticated long-poll endpoint that serves on-demand delta containers.
+"""RLPS frame service: one authenticated long-poll endpoint serving bundles of encoded frames from one chain.
 
-``GET /v1/frames?after=<seq>&session=<id>&key=<0|1>&wait=<ms>[&idle=1]`` with ``Authorization: Bearer <token>``.
-The body is the base64 text of one RLPS container (``codec.to_body``):
+``GET /v1/frames?after=<seq>&session=<id>&key=<0|1>&wait=<ms>&idle=<0|1>&rate=<B/s>&batch=<ms>&max=<bytes>&enc=<0|1>``
+with ``Authorization: Bearer <token>``. The body is one **bundle** (``protocol.BUNDLE_*``) of containers, oldest
+first, as standard base64 text (``enc=0``) or raw bytes (``enc=1``, only after ``GET /v1/probe`` proved that the
+poller receives bytes unchanged). See docs/PROTOCOL.md.
 
-* STOPPED (no parts) while the owner is not sharing — no pixel data exists then. A poll with ``idle=1`` (the poller
-  already knows sharing is off) that arrives while sharing is off is held for up to ``wait`` ms and answered as soon as
-  sharing starts, so Start shows at once; every other poll learns STOPPED immediately (also when sharing stops while
-  the poll is held);
-* LIVE + UNCHANGED (no parts) when no newer frame appeared within ``wait`` ms, or when the newer frame looks the same;
-* a KEYFRAME when ``key=1``, ``after=0``, ``session`` is not the current session or ``after`` left the ring;
-* otherwise a DELTA with exactly the tiles that differ between frame ``after`` and the latest frame.
+Frames are encoded **once, at capture time**, into a chain (keyframe, then deltas against the decoder-side picture)
+under a byte-rate budget (``rate`` reported by the Roblox server's congestion control, capped by the app's
+``max_rate``). A poll gets every record newer than ``after`` (several frames per request: ``batch`` ms are collected
+after the first new frame), or the chain from its latest keyframe when ``after`` is unknown, or STOPPED / UNCHANGED.
 
 The service binds to 127.0.0.1 by default; publish it over HTTPS with a tunnel or reverse proxy. It has no other
 routes, accepts no request bodies and never exposes files, commands, input control or anything but the shared frames.
@@ -29,14 +28,20 @@ from urllib.parse import parse_qsl, urlsplit
 
 import numpy as np
 
-from . import codec
+from . import codec, hybrid
 from . import protocol as P
 
 log = logging.getLogger("rlps.server")
 
 MAX_WAIT_MS = 25_000
 DEFAULT_WAIT_MS = 10_000
+MAX_BATCH_MS = 1_000
+DEFAULT_MAX_BYTES = 4 * 1024 * 1024
 FRAMES_PATH = "/v1/frames"
+PROBE_PATH = "/v1/probe"
+PROBE_BODY = bytes(range(256)) * 4  # every byte value, 1 KiB: the poller checks it arrives unchanged
+RATE_HOLD_S = 5.0  # a poller's reported rate is honoured this long
+IDLE_ENCODE_S = 10.0  # nobody polled for this long: stop encoding (CPU), next poll gets a fresh keyframe
 
 
 class TokenBucket:
@@ -59,30 +64,41 @@ class TokenBucket:
 
 
 @dataclass
-class _Snapshot:
-    live: bool
-    session_id: int
+class Record:
     seq: int
-    fmt: int
-    width: int
-    height: int
+    t: float  # capture time (monotonic)
+    keyframe: bool
+    data: bytes  # one container
+
+
+@dataclass
+class EncodeStatus:
+    rate: float = 0.0  # bytes/s budget in force
+    frames: int = 0  # records encoded
+    skipped: int = 0  # captures not sent (over budget)
+    bytes: int = 0
+    last_mode: str = ""
+    last_quality: int = -1
+    last_encode_ms: float = 0.0
 
 
 class FrameStore:
-    """Thread-safe ring of the most recent quantized frames of the current sharing session.
+    """The current sharing session's frame chain.
 
-    The capture loop calls :meth:`publish`; HTTP handlers call :meth:`respond`. Stopping drops every stored frame."""
+    The capture loop calls :meth:`publish` with each captured frame (quantized to the session format); the frame is
+    encoded at once (hybrid DCT/lossless for FMT_HYBRID, lossless deltas otherwise) under the byte budget and appended
+    to a bounded ring. HTTP handlers call :meth:`respond`. Stopping drops everything."""
 
-    def __init__(self, ring_size: int = 8, encoder: codec.FrameEncoder | None = None, cache_size: int = 16):
-        if ring_size < 1:
-            raise ValueError("ring_size must be >= 1")
-        self.ring_size = ring_size
-        self._encoder = encoder or codec.FrameEncoder()
-        self._enc_lock = threading.Lock()  # FrameEncoder reuses one zstd context (not thread-safe)
+    def __init__(self, ring_bytes: int = 64 * 1024 * 1024, ring_records: int = 1024, max_rate: float = 8e6,
+                 start_rate: float = 1e6, encoder: codec.FrameEncoder | None = None, clock=time.monotonic):
+        self.ring_bytes, self.ring_records = ring_bytes, ring_records
+        self.max_rate, self.start_rate = float(max_rate), float(start_rate)
+        self._clock = clock
+        self._packer = encoder or codec.FrameEncoder(level=1, max_part_raw_bytes=96 * 1024)
+        self._enc_lock = threading.Lock()
         self._cond = threading.Condition()
-        self._frames: collections.OrderedDict[int, np.ndarray] = collections.OrderedDict()
-        self._cache: collections.OrderedDict[tuple, bytes] = collections.OrderedDict()
-        self._cache_size = cache_size
+        self._ring: collections.deque[Record] = collections.deque()
+        self._ring_size = 0
         self.live = False
         self.session_id = 0
         self.seq = 0
@@ -90,105 +106,227 @@ class FrameStore:
         self.width = self.height = 0
         self.last_poll: float | None = None  # monotonic time of the last authorized poll (viewer indicator)
         self.polls = 0
+        self.status = EncodeStatus()
+        self._hybrid: hybrid.HybridEncoder | None = None
+        self._last_sent: np.ndarray | None = None  # lossless formats: the picture clients have
+        self._force_key = True
+        self._requested_rate: float | None = None
+        self._requested_at = -1e9
+        self._tokens = 0.0
+        self._tokens_at = clock()
+        self.latest: np.ndarray | None = None  # newest *captured* frame (quantized)
 
     # ------------------------------------------------------------------------------------------- producer side
 
     def start(self) -> int:
-        """Begin a new sharing session (new random session id; old deltas become invalid)."""
+        """Begin a new sharing session (new random session id; old chains become invalid)."""
         with self._cond:
-            self._frames.clear()
-            self._cache.clear()
+            self._reset_chain()
             self.session_id = secrets.randbelow(0xFFFFFFFF) + 1
-            self.seq = 0
-            self.width = self.height = self.fmt = 0
             self.live = True
             self._cond.notify_all()
             return self.session_id
 
     def stop(self) -> None:
-        """Stop sharing immediately: drop all frames and wake every waiting poll (they answer STOPPED)."""
+        """Stop sharing immediately: drop every frame and wake every waiting poll (they answer STOPPED)."""
         with self._cond:
             self.live = False
-            self._frames.clear()
-            self._cache.clear()
-            self.seq = 0
+            self._reset_chain()
             self._cond.notify_all()
 
+    def _reset_chain(self) -> None:
+        self._ring.clear()
+        self._ring_size = 0
+        self.seq = 0
+        self.width = self.height = self.fmt = 0
+        self._hybrid = None
+        self._last_sent = None
+        self.latest = None
+        self._force_key = True
+
+    def current_rate(self) -> float:
+        now = self._clock()
+        if self._requested_rate is not None and now - self._requested_at <= RATE_HOLD_S:
+            return min(self.max_rate, self._requested_rate)
+        return min(self.max_rate, self.start_rate)
+
     def publish(self, q: np.ndarray, fmt: int) -> bool:
-        """Store a quantized frame. Returns False (no new seq) when not live or identical to the latest frame."""
+        """Encode and append a captured frame. Returns True when a new record was added to the chain."""
         h, w = q.shape[:2]
         with self._cond:
             if not self.live:
                 return False
-            if self._frames and (w, h, fmt) != (self.width, self.height, self.fmt):
-                self._frames.clear()  # geometry/format change: deltas against older frames are impossible
-            elif self._frames and np.array_equal(self._frames[self.seq], q):
+            self.latest = q
+            if (w, h, fmt) != (self.width, self.height, self.fmt):  # geometry/format change: new chain
+                self._hybrid = None
+                self._last_sent = None
+                self._force_key = True
+                self.width, self.height, self.fmt = w, h, fmt
+            if self.last_poll is not None and self._clock() - self.last_poll > IDLE_ENCODE_S:
+                self._force_key = True  # nobody watches: save the CPU, resume with a keyframe
                 return False
-            if self.seq >= 0xFFFFFFFF:  # practically unreachable; restart the session rather than wrap
-                self._frames.clear()
+            session, seq, force_key = self.session_id, self.seq + 1, self._force_key
+            rate = self.current_rate()
+            now = self._clock()
+            self._tokens = min(max(rate * 0.5, 256 * 1024), self._tokens + (now - self._tokens_at) * rate)
+            self._tokens_at = now
+            budget = self._tokens
+        t0 = time.perf_counter()
+        with self._enc_lock:
+            data, keyframe, mode, quality = self._encode(q, fmt, session, seq, force_key, budget)
+        with self._cond:
+            st = self.status
+            st.rate, st.last_encode_ms = rate, (time.perf_counter() - t0) * 1000
+            if not self.live or self.session_id != session:
+                return False
+            if data is None:
+                if mode == "skipped":
+                    st.skipped += 1
+                return False
+            if seq >= 0xFFFFFFFF:  # practically unreachable; restart the chain rather than wrap
                 self.session_id = secrets.randbelow(0xFFFFFFFF) + 1
-                self.seq = 0
-            self.seq += 1
-            self.width, self.height, self.fmt = w, h, fmt
-            self._frames[self.seq] = q
-            while len(self._frames) > self.ring_size:
-                self._frames.popitem(last=False)
+                self._reset_chain()
+                return False
+            self.seq = seq
+            self._force_key = False
+            self._tokens -= len(data)
+            self._ring.append(Record(seq, self._clock(), keyframe, data))
+            self._ring_size += len(data)
+            while len(self._ring) > 1 and (self._ring_size > self.ring_bytes or len(self._ring) > self.ring_records):
+                self._ring_size -= len(self._ring.popleft().data)
+            st.frames += 1
+            st.bytes += len(data)
+            st.last_mode, st.last_quality = mode, quality
             self._cond.notify_all()
             return True
 
+    def _encode(self, q, fmt, session, seq, force_key, budget):
+        """-> (container | None, keyframe, mode, quality). Runs outside the condition lock."""
+        base = seq - 1
+        if fmt == P.FMT_HYBRID:
+            if self._hybrid is None or force_key:
+                if self._hybrid is None or (self._hybrid.w, self._hybrid.h) != (q.shape[1], q.shape[0]):
+                    self._hybrid = hybrid.HybridEncoder(q.shape[1], q.shape[0],
+                                                        packer=codec.FrameEncoder(level=1, tile_size=16,
+                                                                                  max_part_raw_bytes=96 * 1024))
+                self._hybrid.reset()
+            data, info = self._hybrid.encode(q, session_id=session, seq=seq, base_seq=base, budget=budget,
+                                             force_keyframe=force_key)
+            mode = "skipped" if info.skipped else info.mode
+            return data, info.keyframe, mode, info.quality
+        key = force_key or self._last_sent is None
+        if not key and budget <= 0:
+            return None, False, "skipped", -1  # over budget: coalesce into the next delta
+        data = self._packer.encode(q, fmt, session_id=session, seq=seq, base_seq=0 if key else base,
+                                   prev=None if key else self._last_sent, keyframe=key)
+        if data is not None:
+            self._last_sent = q
+        return data, key, "lossless" if data is not None else "", -1
+
     # ------------------------------------------------------------------------------------------- consumer side
 
-    def _snapshot(self) -> _Snapshot:
-        return _Snapshot(self.live, self.session_id, self.seq, self.fmt, self.width, self.height)
+    def _status(self) -> bytes:
+        return codec.status_container(P.STATE_LIVE, session_id=self.session_id, seq=self.seq, width=self.width,
+                                      height=self.height, fmt=self.fmt, tile_size=self._packer.tile_size)
 
-    def respond(self, after: int, session: int, key: bool, wait_s: float, idle: bool = False) -> bytes:
-        """Return the container for one poll, waiting up to ``wait_s`` seconds for a frame newer than ``after``.
+    def _available_from(self, after: int, session: int, key: bool) -> int | None:
+        """Index into the ring of the first record to send, or None when the chain cannot serve this poller."""
+        if not self._ring:
+            return None
+        if not key and session == self.session_id and after > 0:
+            first = self._ring[0].seq
+            if first - 1 <= after <= self.seq:
+                return after - first + 1  # == len(ring) when the poller is up to date
+        for i in range(len(self._ring) - 1, -1, -1):  # newest keyframe in the ring
+            if self._ring[i].keyframe:
+                return i
+        return None
 
-        ``idle``: the poller already shows STOPPED; hold the poll while sharing is off instead of answering at once."""
-        deadline = time.monotonic() + max(0.0, wait_s)
+    def respond(self, after: int, session: int, key: bool, wait_s: float, idle: bool = False, *,
+                rate: float | None = None, batch_s: float = 0.0, max_bytes: int = DEFAULT_MAX_BYTES) -> bytes:
+        """Return the bundle for one poll (see module docstring)."""
+        deadline = self._clock() + max(0.0, wait_s)
         with self._cond:
-            self.last_poll, self.polls = time.monotonic(), self.polls + 1
+            now = self._clock()
+            self.last_poll, self.polls = now, self.polls + 1
+            if rate is not None and rate > 0:
+                self._requested_rate, self._requested_at = float(rate), now
             hold_while_stopped = idle and not self.live  # never delays news of a stop: only already-idle pollers
+            asked_key = False
             while True:
-                s = self._snapshot()
-                if not s.live:
-                    remaining = deadline - time.monotonic()
+                if not self.live:
+                    remaining = deadline - self._clock()
                     if not hold_while_stopped or remaining <= 0:
-                        return codec.status_container(P.STATE_STOPPED)
+                        return bundle([(0, codec.status_container(P.STATE_STOPPED))])
                     self._cond.wait(remaining)
                     continue
                 hold_while_stopped = False
-                same_session = session == s.session_id
-                if s.seq > 0 and (key or not same_session or after != s.seq):
+                start = self._available_from(after, session, key)
+                if start is None and not asked_key:
+                    self._force_key, asked_key = True, True  # chain unknown to this poller: next capture = keyframe
+                if start is not None and start < len(self._ring):
                     break
-                remaining = deadline - time.monotonic()
+                remaining = deadline - self._clock()
                 if remaining <= 0:
-                    return codec.status_container(P.STATE_LIVE, session_id=s.session_id, seq=s.seq, width=s.width,
-                                                  height=s.height, fmt=s.fmt, tile_size=self._encoder.tile_size)
+                    return bundle([(0, self._status())])
                 self._cond.wait(remaining)
-            cur = self._frames[s.seq]
-            base = self._frames.get(after) if (same_session and not key and 0 < after < s.seq) else None
-            cache_key = (s.session_id, s.seq, after if base is not None else 0)
-            hit = self._cache.get(cache_key)
-            if hit is not None:
-                self._cache.move_to_end(cache_key)
-                return hit
-        # Encode outside the condition lock (frames are immutable once published).
-        with self._enc_lock:
-            if base is None:
-                data = self._encoder.encode(cur, s.fmt, session_id=s.session_id, seq=s.seq)
-            else:
-                data = self._encoder.encode(cur, s.fmt, session_id=s.session_id, seq=s.seq, base_seq=after,
-                                            prev=base)
-                if data is None:  # frame `after` looks identical to the latest one: just advance the base
-                    data = codec.status_container(P.STATE_LIVE, session_id=s.session_id, seq=s.seq, width=s.width,
-                                                  height=s.height, fmt=s.fmt, tile_size=self._encoder.tile_size)
-        with self._cond:
-            if self.live and self.session_id == s.session_id:
-                self._cache[cache_key] = data
-                while len(self._cache) > self._cache_size:
-                    self._cache.popitem(last=False)
-        return data
+            # collect `batch_s` worth of frames after the first one (several frames per HTTP request)
+            first_t = self._ring[start].t
+            batch_end = min(deadline, max(self._clock(), first_t + batch_s))
+            sid = self.session_id
+            while self.live and self.session_id == sid and self._clock() < batch_end:
+                if sum(len(r.data) for r in list(self._ring)[start:]) >= max_bytes:
+                    break
+                self._cond.wait(batch_end - self._clock())
+            if not self.live or self.session_id != sid:
+                return bundle([(0, codec.status_container(P.STATE_STOPPED) if not self.live else self._status())])
+            start = self._available_from(after, session, key)
+            if start is None or start >= len(self._ring):  # ring rolled over while batching (huge stream)
+                return bundle([(0, self._status())])
+            records, total = [], 0
+            for r in list(self._ring)[start:]:
+                if records and (total + len(r.data) > max_bytes or len(records) >= P.MAX_BUNDLE_ENTRIES):
+                    break
+                records.append(r)
+                total += len(r.data)
+            t0 = records[0].t
+            return bundle([(int(round((r.t - t0) * 1000)), r.data) for r in records])
+
+
+def bundle(entries: list[tuple[int, bytes]]) -> bytes:
+    """Wrap containers (tOffsetMs, container) into one RLPB bundle."""
+    body = b"".join(P.BUNDLE_ENTRY.pack(max(0, min(t, 0xFFFFFFFF)), len(c)) + c for t, c in entries)
+    return P.BUNDLE_HEADER.pack(P.BUNDLE_MAGIC, P.VERSION, 0, len(entries), len(body)) + body
+
+
+def parse_bundle(data: bytes) -> list[tuple[int, bytes]]:
+    """Reference parser (mirrors RlpsDecoder.parseBundle). Raises ProtocolError."""
+    if len(data) > P.MAX_BUNDLE_BYTES:
+        raise P.ProtocolError("bundle too large")
+    if len(data) < P.BUNDLE_HEADER.size:
+        raise P.ProtocolError("truncated bundle header")
+    magic, version, _r, count, body_len = P.BUNDLE_HEADER.unpack_from(data, 0)
+    if magic != P.BUNDLE_MAGIC:
+        raise P.ProtocolError("bad bundle magic")
+    if version != P.VERSION:
+        raise P.ProtocolError("unsupported bundle version")
+    if body_len != len(data) - P.BUNDLE_HEADER.size:
+        raise P.ProtocolError("bundle length mismatch")
+    if not (1 <= count <= P.MAX_BUNDLE_ENTRIES):
+        raise P.ProtocolError("invalid bundle entry count")
+    out, off = [], P.BUNDLE_HEADER.size
+    for _ in range(count):
+        if off + P.BUNDLE_ENTRY.size > len(data):
+            raise P.ProtocolError("truncated bundle entry")
+        t, n = P.BUNDLE_ENTRY.unpack_from(data, off)
+        off += P.BUNDLE_ENTRY.size
+        if off + n > len(data):
+            raise P.ProtocolError("truncated bundle entry")
+        out.append((t, data[off:off + n]))
+        off += n
+    if off != len(data):
+        raise P.ProtocolError("trailing bytes after bundle")
+    return out
 
 
 class FrameService:
@@ -251,10 +389,11 @@ class FrameService:
     # ------------------------------------------------------------------------------------------------ handling
 
     @staticmethod
-    def _send(h: BaseHTTPRequestHandler, status: int, body: bytes, extra: dict | None = None) -> None:
+    def _send(h: BaseHTTPRequestHandler, status: int, body: bytes, extra: dict | None = None,
+              content_type: str = "text/plain; charset=us-ascii") -> None:
         try:
             h.send_response(status)
-            h.send_header("Content-Type", "text/plain; charset=us-ascii")
+            h.send_header("Content-Type", content_type)
             h.send_header("Content-Length", str(len(body)))
             h.send_header("Cache-Control", "no-store")
             h.send_header("X-Content-Type-Options", "nosniff")
@@ -276,7 +415,7 @@ class FrameService:
             h.close_connection = True
             return self._send(h, 400, b"request body not allowed\n")
         url = urlsplit(h.path)
-        if url.path != FRAMES_PATH:
+        if url.path not in (FRAMES_PATH, PROBE_PATH):
             return self._send(h, 404, b"not found\n")
         if not self._authorized(h):
             if not self._fail_bucket.take():
@@ -284,46 +423,74 @@ class FrameService:
             return self._send(h, 401, b"unauthorized\n", {"WWW-Authenticate": "Bearer"})
         if not self._ok_bucket.take():
             return self._send(h, 429, b"rate limited\n", {"Retry-After": "1"})
+        if url.path == PROBE_PATH:
+            if url.query:
+                return self._send(h, 400, b"bad request: the probe takes no parameters\n")
+            return self._send(h, 200, PROBE_BODY, content_type="application/octet-stream")
         try:
-            after, session, key, wait_ms, idle = parse_query(url.query)
+            q = parse_query(url.query)
         except ValueError as exc:
             return self._send(h, 400, f"bad request: {exc}\n".encode("ascii", "replace"))
         if not self._slots.acquire(blocking=False):
             return self._send(h, 503, b"too many concurrent polls\n", {"Retry-After": "1"})
         try:
-            container = self.store.respond(after, session, key, wait_ms / 1000.0, idle)
+            data = self.store.respond(q.after, q.session, q.key, q.wait_ms / 1000.0, q.idle,
+                                      rate=q.rate or None, batch_s=q.batch_ms / 1000.0, max_bytes=q.max_bytes)
         finally:
             self._slots.release()
-        body = codec.to_body(container)
-        self._send(h, 200, body)
+        if q.raw:
+            self._send(h, 200, data, content_type="application/octet-stream")
+            body_len = len(data)
+        else:
+            body = codec.to_body(data)
+            self._send(h, 200, body)
+            body_len = len(body)
         with self._count_lock:
             self.responses += 1
-            self.bytes_sent += len(body)
+            self.bytes_sent += body_len
 
 
-def parse_query(query: str) -> tuple[int, int, bool, int, bool]:
-    """Strictly parse ``after``, ``session``, ``key``, ``wait``, ``idle``. Raises ValueError on anything unexpected."""
-    allowed = {"after", "session", "key", "wait", "idle"}
+@dataclass(frozen=True)
+class Query:
+    after: int = 0
+    session: int = 0
+    key: bool = False
+    wait_ms: int = DEFAULT_WAIT_MS
+    idle: bool = False
+    rate: int = 0  # bytes/s the poller can forward (0 = not reported)
+    batch_ms: int = 0
+    max_bytes: int = DEFAULT_MAX_BYTES
+    raw: bool = False  # enc=1: binary body
+
+
+def parse_query(query: str) -> Query:
+    """Strictly parse the poll parameters. Raises ValueError on anything unexpected."""
+    allowed = {"after", "session", "key", "wait", "idle", "rate", "batch", "max", "enc"}
     values: dict[str, str] = {}
-    for name, value in parse_qsl(query, keep_blank_values=True, strict_parsing=bool(query), max_num_fields=8):
+    for name, value in parse_qsl(query, keep_blank_values=True, strict_parsing=bool(query), max_num_fields=12):
         if name not in allowed or name in values:
             raise ValueError(f"unexpected or repeated parameter {name!r}")
         values[name] = value
 
-    def uint(name: str, default: int, hi: int) -> int:
+    def uint(name: str, default: int, hi: int, lo: int = 0) -> int:
         raw = values.get(name)
         if raw is None:
             return default
         if not raw.isdigit() or len(raw) > 10:
             raise ValueError(f"{name} must be a non-negative integer")
         v = int(raw)
-        if v > hi:
+        if v > hi or v < lo:
             raise ValueError(f"{name} out of range")
         return v
 
-    after = uint("after", 0, 0xFFFFFFFF)
-    session = uint("session", 0, 0xFFFFFFFF)
-    key = uint("key", 0, 1) == 1
-    wait = uint("wait", DEFAULT_WAIT_MS, MAX_WAIT_MS)
-    idle = uint("idle", 0, 1) == 1
-    return after, session, key, wait, idle
+    return Query(
+        after=uint("after", 0, 0xFFFFFFFF),
+        session=uint("session", 0, 0xFFFFFFFF),
+        key=uint("key", 0, 1) == 1,
+        wait_ms=uint("wait", DEFAULT_WAIT_MS, MAX_WAIT_MS),
+        idle=uint("idle", 0, 1) == 1,
+        rate=uint("rate", 0, 1_000_000_000),
+        batch_ms=uint("batch", 0, MAX_BATCH_MS),
+        max_bytes=uint("max", DEFAULT_MAX_BYTES, P.MAX_BUNDLE_BYTES, lo=64 * 1024),
+        raw=uint("enc", 0, 1) == 1,
+    )

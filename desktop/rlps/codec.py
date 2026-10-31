@@ -37,6 +37,13 @@ def quantize(rgb: np.ndarray, fmt: int) -> np.ndarray:
         return (r << 11) | (g << 5) | b
     if fmt == P.FMT_RGB888:
         return np.ascontiguousarray(rgb)
+    if fmt in (P.FMT_RGBA8, P.FMT_HYBRID):
+        if fmt == P.FMT_HYBRID and (w % P.HYBRID_TILE or h % P.HYBRID_TILE):
+            raise ValueError(f"hybrid frames need dimensions divisible by {P.HYBRID_TILE}, got {w}x{h}")
+        out = np.empty((h, w, 4), np.uint8)
+        out[..., :3] = rgb
+        out[..., 3] = 255
+        return out
     raise ValueError(f"unknown pixel format {fmt}")
 
 
@@ -56,6 +63,8 @@ def expand_to_rgba(q: np.ndarray, fmt: int) -> np.ndarray:
         out[..., :3] = q
         out[..., 3] = 255
         return out
+    if fmt in (P.FMT_RGBA8, P.FMT_HYBRID):
+        return np.array(q, np.uint8, copy=True)
     raise ValueError(f"unknown pixel format {fmt}")
 
 
@@ -132,22 +141,32 @@ class FrameEncoder:
         if not (1 <= seq <= 0xFFFFFFFF) or not (0 <= base_seq < 0x100000000) or not (0 <= session_id < 0x100000000):
             raise ValueError("seq/base_seq/session_id out of range")
         ts = self.tile_size
+        if fmt == P.FMT_HYBRID:
+            raise ValueError("FMT_HYBRID frames are encoded by rlps.hybrid.HybridEncoder")
         indices = changed_tiles(prev, cur, ts)
         if not keyframe and indices.size == 0:
             return None
-        bpp = P.BYTES_PER_PIXEL[fmt]
+        entries = [(int(i), _tile_bytes(cur, int(i), w, h, ts)) for i in indices.tolist()]
+        return self.pack(entries, fmt, w, h, session_id=session_id, seq=seq, base_seq=base_seq, keyframe=keyframe,
+                         stats=stats)
+
+    def pack(self, entries: list[tuple[int, bytes]], fmt: int, w: int, h: int, *, session_id: int, seq: int,
+             base_seq: int, keyframe: bool, stats: EncodeStats | None = None) -> bytes:
+        """Build a container from (tile index, tile data) pairs in increasing index order.
+
+        Tile data is the raw pixel bytes (RGB565/RGB888/RGBA8) or a hybrid entry (mode byte + data)."""
+        ts = self.tile_size
         flags = P.CFLAG_KEYFRAME if keyframe else 0
         # Greedy split into parts of at most max_part_raw_bytes decompressed bytes.
-        groups: list[list[int]] = []
-        current: list[int] = []
+        groups: list[list[tuple[int, bytes]]] = []
+        current: list[tuple[int, bytes]] = []
         size = 0
-        for idx in indices.tolist():
-            _, _, tw, th = P.tile_rect(idx, w, h, ts)
-            cost = 2 + tw * th * bpp
+        for entry in entries:
+            cost = 2 + len(entry[1])
             if current and size + cost > self.max_part_raw_bytes:
                 groups.append(current)
                 current, size = [], 0
-            current.append(idx)
+            current.append(entry)
             size += cost
         if current:
             groups.append(current)
@@ -156,7 +175,7 @@ class FrameEncoder:
         records = []
         st = stats if stats is not None else EncodeStats()
         for part_index, group in enumerate(groups):
-            raw = np.asarray(group, dtype="<u2").tobytes() + b"".join(_tile_bytes(cur, i, w, h, ts) for i in group)
+            raw = (np.asarray([i for i, _ in group], dtype="<u2").tobytes() + b"".join(d for _, d in group))
             comp, payload = P.COMP_NONE, raw
             if self._cctx is not None:
                 z = self._cctx.compress(raw)
@@ -268,6 +287,8 @@ def parse_container(data: bytes) -> Container:
         raise ProtocolError(f"invalid tile size {ts}")
     if not (1 <= part_count <= P.MAX_PARTS):
         raise ProtocolError("invalid part count")
+    if fmt == P.FMT_HYBRID and (ts != P.HYBRID_TILE or width % P.HYBRID_TILE or height % P.HYBRID_TILE):
+        raise ProtocolError("hybrid frames need tile size 16 and dimensions divisible by 16")
     if seq == 0 or (not flags & P.CFLAG_KEYFRAME and (base_seq == 0 or base_seq == seq)):
         raise ProtocolError("invalid sequence numbers")
     c = Container(state, flags, session_id, seq, base_seq, width, height, fmt, ts)
@@ -311,7 +332,7 @@ def parse_part_header(data: bytes, off: int = 0) -> tuple[Part, int]:
     tiles_x, tiles_y = P.tiles_per_axis(width, height, ts)
     if not (1 <= tile_count <= tiles_x * tiles_y):
         raise ProtocolError("invalid tile count")
-    max_raw = tile_count * (2 + ts * ts * P.BYTES_PER_PIXEL[fmt])
+    max_raw = tile_count * P.max_raw_per_tile(fmt, ts)
     if not (2 * tile_count < raw_length <= min(max_raw, P.MAX_PART_RAW_BYTES)):
         raise ProtocolError("invalid raw length")
     if comp == P.COMP_NONE and comp_length != raw_length:
@@ -351,13 +372,51 @@ def apply_part(frame_rgba: np.ndarray, part: Part) -> list[int]:
     n, ts, w, h = part.tile_count, part.tile_size, part.width, part.height
     tiles_x, tiles_y = P.tiles_per_axis(w, h, ts)
     indices = np.frombuffer(raw, dtype="<u2", count=n).tolist()
-    bpp = P.BYTES_PER_PIXEL[part.fmt]
-    expected = 2 * n
     last = -1
     for idx in indices:
         if idx <= last or idx >= tiles_x * tiles_y:
             raise ProtocolError("tile indices must be strictly increasing and in range")
         last = idx
+    if part.fmt == P.FMT_HYBRID:
+        if ts != P.HYBRID_TILE or w % ts or h % ts:
+            raise ProtocolError("hybrid frames need tile size 16 and dimensions divisible by 16")
+        spans = []
+        off = 2 * n
+        for idx in indices:
+            if off >= len(raw):
+                raise ProtocolError("tile data length mismatch")
+            mode = raw[off]
+            size = (P.HYBRID_RAW_ENTRY if mode == P.TILE_MODE_RAW else
+                    P.HYBRID_DCT_ENTRY if mode == P.TILE_MODE_DCT else 0)
+            if size == 0:
+                raise ProtocolError("unknown tile mode")
+            if off + size > len(raw):
+                raise ProtocolError("tile data length mismatch")
+            if mode == P.TILE_MODE_DCT and raw[off + 1] >= len(_dct().QUALITIES):
+                raise ProtocolError("invalid DCT quality")
+            spans.append((idx, mode, off))
+            off += size
+        if off != len(raw):
+            raise ProtocolError("tile data length mismatch")
+        dct_spans = [(idx, off) for idx, mode, off in spans if mode == P.TILE_MODE_DCT]
+        decoded = {}
+        if dct_spans:  # one vectorized integer decode for all DCT tiles of the part
+            D = _dct()
+            qz = np.stack([np.frombuffer(raw, "<i2", count=384, offset=off + 2) for _, off in dct_spans])
+            qis = np.array([raw[off + 1] for _, off in dct_spans])
+            tiles = D.reconstruct(qz.reshape(-1, 6, 64), qis)
+            decoded = {idx: tiles[k] for k, (idx, _) in enumerate(dct_spans)}
+        for idx, mode, off in spans:
+            x0, y0, _, _ = P.tile_rect(idx, w, h, ts)
+            if mode == P.TILE_MODE_RAW:
+                tile = np.frombuffer(raw, np.uint8, offset=off + 1, count=ts * ts * 4).reshape(ts, ts, 4)
+            else:
+                tile = decoded[idx]
+            frame_rgba[y0: y0 + ts, x0: x0 + ts] = tile
+        return indices
+    bpp = P.BYTES_PER_PIXEL[part.fmt]
+    expected = 2 * n
+    for idx in indices:
         _, _, tw, th = P.tile_rect(idx, w, h, ts)
         expected += tw * th * bpp
     if expected != len(raw):
@@ -366,12 +425,18 @@ def apply_part(frame_rgba: np.ndarray, part: Part) -> list[int]:
     for idx in indices:
         x0, y0, tw, th = P.tile_rect(idx, w, h, ts)
         nbytes = tw * th * bpp
-        chunk = np.frombuffer(raw, dtype="<u2" if part.fmt == P.FMT_RGB565 else np.uint8, offset=off,
-                              count=tw * th if part.fmt == P.FMT_RGB565 else nbytes)
-        q = chunk.reshape(th, tw) if part.fmt == P.FMT_RGB565 else chunk.reshape(th, tw, 3)
-        frame_rgba[y0 : y0 + th, x0 : x0 + tw] = expand_to_rgba(q, part.fmt)
+        if part.fmt == P.FMT_RGB565:
+            q = np.frombuffer(raw, dtype="<u2", offset=off, count=tw * th).reshape(th, tw)
+        else:
+            q = np.frombuffer(raw, dtype=np.uint8, offset=off, count=nbytes).reshape(th, tw, bpp)
+        frame_rgba[y0: y0 + th, x0: x0 + tw] = expand_to_rgba(q, part.fmt)
         off += nbytes
     return indices
+
+
+def _dct():
+    from . import dct  # local import: dct imports protocol only, but keeps codec importable without it
+    return dct
 
 
 def apply_container(frame_rgba: np.ndarray | None, container: Container) -> np.ndarray | None:
