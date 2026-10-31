@@ -31,16 +31,17 @@ reports); "q" = mean IJG quality of DCT tiles in the frames that needed them.
 | Profile 1024×576, 30 fps | budget | bytes/frame | stream | DCT q | encode/frame |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | static desktop | any | 0 | 0 | — | 2–3 ms |
-| text scroll 8 px/frame | unlimited | 5.9 kB | 176 kB/s | lossless + copies | 11 ms |
-| text scroll 8 px/frame | 500 kB/s | 4.1 kB | 123 kB/s | 20 (few tiles) | 12 ms |
-| window drag | 2 MB/s | 6.9 kB | 207 kB/s | lossless | 3 ms |
-| video in ¼ of the screen | unlimited | 489 kB | 14.7 MB/s | lossless | 8 ms |
-| video in ¼ of the screen | 2 MB/s | 67.6 kB | 2.0 MB/s | 89 | 27 ms |
-| video in ¼ of the screen | 500 kB/s | 10.7 kB | 322 kB/s | 45 | 20 ms |
-| full-screen video | 2 MB/s | 67.4 kB | 2.0 MB/s | 90 | 26 ms |
-| full-screen video | 500 kB/s | 15.3 kB | 458 kB/s | 37 | 21 ms |
+| text scroll 8 px/frame | unlimited / 2 MB/s | 5.9 kB | 176 kB/s | lossless + copies | 17–19 ms |
+| text scroll 8 px/frame | 500 kB/s | 4.1 kB | 122 kB/s | 20 (few tiles) | 22 ms |
+| window drag | 2 MB/s | 6.9 kB | 207 kB/s | lossless | 4 ms |
+| video in ¼ of the screen | unlimited | 96.6 kB | 2.9 MB/s | lossless + copies | 13 ms |
+| video in ¼ of the screen | 2 MB/s | 56.6 kB | 1.7 MB/s | 98 | 17 ms |
+| video in ¼ of the screen | 500 kB/s | 9.7 kB | 290 kB/s | 86 | 19 ms |
+| full-screen video | 2 MB/s | 66.9 kB | 2.0 MB/s | 92 | 37 ms |
+| full-screen video | 500 kB/s | 15.2 kB | 455 kB/s | 54 | 34 ms |
 
-768×432 (high): full-screen video at 2 MB/s → q 96, 19 ms/frame; at 500 kB/s → q 62.
+Scrolling a real text page through a non-integer downscale (live test E2E-21, 1280 → 1024): ~5 kB per scroll step
+(97 % of tiles copied), the pauses between steps spent refining to lossless.
 
 Caveat: the synthetic "video" (drifting sine gradients plus grain) partly *translates*, which scroll detection
 exploits; real video has less of that, so expect lower DCT quality at the same rate (ESTIMATE). Before this session's
@@ -62,7 +63,7 @@ when `dxcam` is installed (faster than GDI, captures hardware-accelerated video;
 | desktop change → both TVs | 0.4 s |
 | late joiner → picture | 0.2 s |
 | Stop → TVs off | 0.06–0.1 s |
-| scrolling a text page 15 steps | 14,094 copy tiles; 232 kB in total (≈ 2 keyframes) |
+| scrolling a text page 15 steps | 32,455 copy tiles; 298 kB including refinement in the pauses (resending would be ≈ 15 × 50 kB) |
 | congestion (E2E-20) | rate grew 300 kB/s → 0.99–1.46 MB/s with one viewer; a 40 kB/s viewer was paused while the other kept receiving frames |
 
 The Lune emulator decodes about 8–15 fps of DCT-heavy 768×432 frames (interpreted Luau); the fps cap followed that
@@ -73,5 +74,6 @@ owner test, F-0040); luavid measured 3.4× for a comparable decoder.
 
 1. **Roblox replication bandwidth per client** — unknown; the ack-driven controller finds it.
 2. **Client decode time** — DCT tiles cost far more Luau work than RAW/COPY tiles; the fps cap adapts to each viewer.
-3. **PC encode time** — < 33 ms per 1024×576 frame on this 2.1 GHz sandbox for every workload above.
+3. **PC encode time** — ≤ 22 ms per 1024×576 frame on this 2.1 GHz sandbox for desktop work, scrolling and video in a
+   window; 34–37 ms for full-screen motion (≈ 27–29 fps here; a current desktop CPU is faster — ESTIMATE).
 4. **HTTP** — 500 requests/min per server; batching (150 ms) makes this irrelevant to the frame rate.
