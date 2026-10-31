@@ -135,11 +135,13 @@ the median viewer), `MaxLagMs`, `Viewers`, `LaggingViewers` (held or waiting for
 ### C.3 The token secret
 
 * **For published servers:** Creator Dashboard ⟩ your experience ⟩ **Secrets ⟩ Create Secret**: name `rlps_token`,
-  secret = the token from A.2, domain = your tunnel host: `*.trycloudflare.com` (quick tunnels),
-  `<machine>.<tailnet>.ts.net` (Tailscale) or `screen.example.com` (named tunnel). Only owners can see secrets; game
-  scripts can only attach them to requests for that domain.
+  secret = the token from A.2, domain = your tunnel host: `*.trycloudflare.com` (quick tunnels — keep the `*.`: the
+  host changes on every tunnel start), `<machine>.<tailnet>.ts.net` (Tailscale) or `screen.example.com` (named tunnel).
+  **Host only**: no `https://`, no path, no trailing `/`. Only owners can see secrets; game scripts can only attach them
+  to requests for that domain — a mismatch shows "set the domain of secret 'rlps_token' to …" on the TV.
 * **For Studio playtests:** Studio ⟩ **File ⟩ Experience Settings ⟩ Security ⟩ Local Secrets**: add the same name, value
-  and domain. (The live secrets store is not available to local playtests — official docs, F-0011.)
+  and domain (same rules). (The live secrets store is not available to local playtests — official docs, F-0011.) After
+  changing a secret, stop and start the playtest.
 
 ## D. Test in Studio
 

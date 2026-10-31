@@ -37,6 +37,22 @@ rejected on purpose: a Roblox game server cannot reach your PC's localhost, and 
 * Published: create the secret on the Creator Dashboard (INSTALL C.3). The name must equal the `SecretName` attribute.
 * The secret's **domain** must match the tunnel host (`*.trycloudflare.com` for quick tunnels).
 
+## "Screen unavailable — … set the domain of secret 'rlps_token' to …" / "This secret cannot be used for a specified domain"
+
+Roblox refuses to attach the secret to the request because the secret's **domain** does not match the host of
+`FrameServiceUrl`. Nothing reached your PC. Fix the secret's domain (the TV and the `RlpsServer` attribute `LastError`
+name the host it must allow):
+
+* Enter the **host only**: `*.trycloudflare.com` — not `https://…`, no path, no trailing `/`, no port.
+* `trycloudflare.com` without `*.` does **not** match `word-word-word.trycloudflare.com`. Quick-tunnel hosts change on
+  every `start-tunnel.bat`, so use the wildcard `*.trycloudflare.com` rather than the exact host.
+* Tailscale: `<machine>.<tailnet>.ts.net` (or `*.<tailnet>.ts.net`); named tunnel: your exact host, e.g.
+  `screen.example.com`.
+* Where: Studio playtests use **File ⟩ Experience Settings ⟩ Security ⟩ Local Secrets**; published servers use the
+  **Creator Dashboard ⟩ Secrets** entry. Both need the right domain. Edit the entry (or delete and recreate it), then
+  **stop and start the playtest** / start a new server — a running server keeps the secret it read.
+* `FrameServiceUrl` must be the same host: `https://word-word-word.trycloudflare.com` with the current tunnel name.
+
 ## "Screen unavailable — frame service rejected the token (HTTP 401)"
 
 The Roblox secret differs from the PC token. Run `show-token.bat`, copy the value again into the secret (no spaces, no

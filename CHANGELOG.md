@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- 2026-10-31 (29th session) — **Secret-domain errors explained on the TV**: when Roblox refuses the token secret ("This
+  secret cannot be used for a specified domain"), the TV and `LastError` say which domain to enter (e.g.
+  `*.trycloudflare.com`) and which host was refused; a failed `/v1/probe` no longer fixes base64 bodies for that URL.
+  Live test E2E-22; install and troubleshooting steps clarified (host only, keep `*.`, restart the playtest).
 - 2026-10-31 (29th session, PR #1) — **Repository clean-up**: dead code removed, lint (`ruff.toml`) and spec type-checks
   enforced in CI, `.gitignore` tidied, placeholder doc folders removed, docs index `docs/README.md`, explainer renamed
   `docs/explainers/PR-1.md`, `ARCHITECTURE.md` / `GITHUB_WORKFLOW.md` rewritten to describe the current system. The

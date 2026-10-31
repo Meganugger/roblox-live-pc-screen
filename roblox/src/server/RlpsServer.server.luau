@@ -283,9 +283,17 @@ local function decodeBase64(body: string): (buffer?, string?)
 	return Base64.decode(body) -- strict Luau fallback (same result for canonical bodies)
 end
 
-local function friendly(err: string): string
+local function friendly(err: string, base: string): string
 	if string.find(err, "Http requests are not enabled", 1, true) then
 		return "HTTP requests are disabled (Game Settings > Security > Allow HTTP Requests)"
+	end
+	if string.find(string.lower(err), "cannot be used for a specified domain", 1, true) then
+		-- Roblox refused to attach the secret: its domain does not match the FrameServiceUrl host
+		local host = string.match(base, "^https://([^/:]+)") or base
+		local parent = string.match(host, "^[^.]+%.(.+%..+)$")
+		-- (the TV shows ~160 characters: the fix comes first)
+		return string.format("set the domain of secret '%s' to %s (host only, no https://): it does not allow %s",
+			tostring(attr("SecretName", "rlps_token")), if parent then "*." .. parent .. " or " .. host else host, host)
 	end
 	return err
 end
@@ -331,7 +339,10 @@ local function probe(base: string, auth: any)
 	local ok, res = pcall(function(): any
 		return HttpService:RequestAsync({ Url = base .. "/v1/probe", Method = "GET", Headers = { Authorization = auth } })
 	end)
-	bodyMode = if ok and res.Success and res.Body == PROBE then "raw" else "base64"
+	if not ok or not res.Success then
+		return -- no answer (secret, network, tunnel): base64 for now, probe again with the next poll
+	end
+	bodyMode = if res.Body == PROBE then "raw" else "base64"
 	probedUrl = base
 	script:SetAttribute("BodyMode", bodyMode)
 end
@@ -388,7 +399,7 @@ local function pollOnce(): number
 		return HttpService:RequestAsync({ Url = url, Method = "GET", Headers = { Authorization = auth } })
 	end)
 	if not ok then
-		local reason = friendly(tostring(res))
+		local reason = friendly(tostring(res), base)
 		if isTimeout(reason) and waitMs > MIN_WAIT_MS then
 			effectiveWaitMs = math.max(MIN_WAIT_MS, math.floor(waitMs / 2))
 			warn(string.format("[RLPS] frame request timed out; long-poll wait lowered to %d ms", effectiveWaitMs :: number))

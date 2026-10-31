@@ -124,9 +124,10 @@ class Harness:
             raise Failure(f"painter answered {line!r}")
         return time.monotonic()
 
-    def start_emulator(self, base_url: str, token: str, ctl: str, attrs: dict | None = None) -> subprocess.Popen:
+    def start_emulator(self, base_url: str, token: str, ctl: str, attrs: dict | None = None, *,
+                       public_url: str = "https://rlps-e2e.test", secret_domain: str = "*") -> subprocess.Popen:
         env = dict(os.environ, RLPS_REPO=REPO, RLPS_OUT=ctl, RLPS_BASE_URL=base_url, RLPS_TOKEN=token,
-                   RLPS_PUBLIC_URL="https://rlps-e2e.test", RLPS_MAX_SECONDS="240")
+                   RLPS_PUBLIC_URL=public_url, RLPS_SECRET_DOMAIN=secret_domain, RLPS_MAX_SECONDS="240")
         env.update({f"RLPS_ATTR_{k}": str(v) for k, v in (attrs or {}).items()})
         with open(os.path.join(ctl, "emulator.log"), "w") as log:  # the child keeps its own handle
             p = subprocess.Popen([self.args.lune, "run", os.path.join(HERE, "roblox_emulator.luau")], env=env,
@@ -686,13 +687,55 @@ class Harness:
             service.close()
             shutil.copy(os.path.join(ctl, "emulator.log"), os.path.join(self.out, "emulator-badtoken.log"))
 
+    def scenario_secretdomain(self) -> None:
+        """The secret's domain must allow the tunnel host (Roblox refuses to attach it otherwise)."""
+        token = secrets.token_urlsafe(32)
+        store = server.FrameStore()
+        service = server.FrameService(store, token, port=0)
+        service.start()
+        controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["low"])
+        self.scene("A")
+        controller.start()
+        public = "https://word-word-word.trycloudflare.com"
+        try:
+            for domain, name in (("trycloudflare.com", "Dana"), ("*.trycloudflare.com", "Eve")):
+                ctl = tempfile.mkdtemp(prefix="rlps-e2e-secretdomain-", dir=self.out)
+                emu = self.start_emulator(f"http://127.0.0.1:{service.address[1]}", token, ctl, public_url=public,
+                                          secret_domain=domain)
+                try:
+                    open(os.path.join(ctl, "join-" + name), "w").close()
+                    if name == "Dana":
+                        _, st = self.wait_for(ctl, lambda s: "*.trycloudflare.com" in (
+                            s.get("clients", {}).get("Dana", {}).get("status_text") or ""), 40,
+                            "domain hint on Dana's TV")
+                        c = st["clients"]["Dana"]
+                        bad = c
+                    else:
+                        self.wait_match(ctl, store, ["Eve"], 40, "Eve shows the desktop")
+                finally:
+                    open(os.path.join(ctl, "quit"), "w").close()
+                    try:
+                        emu.wait(10)
+                    except subprocess.TimeoutExpired:
+                        emu.kill()
+                    shutil.copy(os.path.join(ctl, "emulator.log"),
+                                os.path.join(self.out, f"emulator-secretdomain-{name}.log"))
+            self.check("E2E-22", "secret domain without the wildcard: the TV names the host and the domain to enter, "
+                       "no picture; with *.trycloudflare.com the picture appears",
+                       "word-word-word.trycloudflare.com" in bad["status_text"] and not bad["picture_visible"]
+                       and bad["pixel_writes"] == 0, text=bad["status_text"])
+        finally:
+            controller.stop()
+            service.close()
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--out", default=os.path.join(REPO, "build", "e2e"))
     ap.add_argument("--lune", default=shutil.which("lune") or "lune")
     ap.add_argument("--profile", choices=sorted(app.PROFILES), default=app.DEFAULT_PROFILE)
-    ap.add_argument("--scenario", choices=["live", "quality", "scroll", "congestion", "pacing", "viewers", "badtoken", "all"], default="all")
+    ap.add_argument("--scenario", choices=["live", "quality", "scroll", "congestion", "pacing", "viewers", "badtoken",
+                                           "secretdomain", "all"], default="all")
     ap.add_argument("--xvfb", action="store_true", help="start Xvfb even if DISPLAY is set")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -716,6 +759,8 @@ def main() -> int:
             h.scenario_viewers()
         if args.scenario in ("badtoken", "all"):
             h.scenario_badtoken()
+        if args.scenario in ("secretdomain", "all"):
+            h.scenario_secretdomain()
     except Failure as exc:
         ok = False
         print(f"E2E FAILED: {exc}", flush=True)
