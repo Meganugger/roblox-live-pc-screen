@@ -256,7 +256,7 @@ class FrameService:
                 h.send_header(k, v)
             h.end_headers()
             h.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):  # poller/tunnel hung up mid long-poll: normal, not an error
+        except ConnectionError:  # poller/tunnel hung up mid long-poll (broken pipe / reset / aborted): not an error
             h.close_connection = True
             log.debug("client disconnected before the response was written")
 

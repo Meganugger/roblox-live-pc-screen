@@ -1,5 +1,6 @@
 """Frame service tests (real HTTP on 127.0.0.1, ephemeral port): python -m unittest discover -s tests -t ."""
 
+import os
 import threading
 import time
 import unittest
@@ -94,7 +95,9 @@ class AuthAndRoutingTests(ServiceTestCase):
         sock = socket.create_connection(self.svc.address)
         sock.sendall(f"GET /v1/frames?wait=300 HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"
                      .encode())
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+        import struct
+        linger = struct.pack("HH", 1, 0) if os.name == "nt" else struct.pack("ii", 1, 0)  # on, 0 s: close sends RST
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
         sock.close()  # RST: the response write after the long-poll fails with a broken pipe / reset
         time.sleep(0.6)
         self.assertEqual(errors, [])
