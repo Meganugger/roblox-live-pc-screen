@@ -80,21 +80,28 @@ class HybridEncoder:
         if self.recon is None or moving.sum() < max(8, self.count // 20):  # only worth it when a sizeable area moved
             return {}
         h, w = self.h, self.w
-        lum = lambda img: img[..., :3].astype(np.float32).mean(axis=2)  # noqa: E731
-        prof_a = lum(src).reshape(h, 16, w // 16).mean(axis=2)
-        prof_b = lum(self.recon).reshape(h, 16, w // 16).mean(axis=2)
+        # green channel ~ luminance; row profiles of 16 column bands
+        prof_a = src[..., 1].reshape(h, 16, w // 16).sum(axis=2, dtype=np.int32).astype(np.float64) / (w // 16)
+        prof_b = self.recon[..., 1].reshape(h, 16, w // 16).sum(axis=2, dtype=np.int32).astype(np.float64) / (w // 16)
         if prof_a.std() < 1.0:
             return {}
-        costs: dict[int, float] = {}
-        for dy in range(-h // 2, h // 2 + 1):  # src row r ~ recon row r + dy
-            lo, hi = max(0, -dy), min(h, h - dy)
-            if dy and hi - lo >= h // 4:
-                costs[dy] = float(np.abs(prof_a[lo:hi] - prof_b[lo + dy:hi + dy]).mean())
-        if not costs:
+        # mean squared difference between src rows r and recon rows r + dy for every dy at once (FFT correlation)
+        n = 2 * h
+        corr = np.fft.irfft(np.conj(np.fft.rfft(prof_a, n, axis=0)) * np.fft.rfft(prof_b, n, axis=0), n, axis=0)
+        corr = corr.sum(axis=1)
+        ca = np.concatenate([[0.0], np.cumsum((prof_a ** 2).sum(axis=1))])
+        cb = np.concatenate([[0.0], np.cumsum((prof_b ** 2).sum(axis=1))])
+        dys = np.arange(-(h // 2), h // 2 + 1)
+        lo, hi = np.maximum(0, -dys), np.minimum(h, h - dys)
+        length = hi - lo
+        sse = (ca[hi] - ca[lo]) + (cb[hi + dys] - cb[lo + dys]) - 2 * corr[dys % n]
+        valid = (dys != 0) & (length >= h // 4)
+        if not valid.any():
             return {}
-        dy = min(costs, key=costs.get)
-        median = float(np.median(list(costs.values())))
-        if not costs[dy] < 0.5 * median:  # no clear vertical motion
+        mse = np.where(valid, sse / np.maximum(length, 1) / 16, np.inf)
+        k = int(np.argmin(mse))
+        dy = int(dys[k])
+        if not mse[k] < 0.25 * float(np.median(mse[valid])):  # no clear vertical motion (0.5 x in RMS terms)
             return {}
         idx = np.flatnonzero(moving)
         ty, tx = idx // self.tx, idx % self.tx
@@ -102,11 +109,15 @@ class HybridEncoder:
         idx, ty, tx = idx[ok], ty[ok], tx[ok]
         if not idx.size:
             return {}
-        cur = self._tiles(src)[idx][..., :3].astype(np.int16)
-        stay = self._tiles(self.recon)[idx][..., :3].astype(np.int16)
-        rows = (ty * T + dy)[:, None] + np.arange(T)[None, :]
-        cols = (tx * T)[:, None] + np.arange(T)[None, :]
-        shifted = self.recon[rows[:, :, None], cols[:, None, :], :3].astype(np.int16)
+        # prediction errors on the green channel, every second pixel (cheap; the decision does not need more)
+        sub = np.arange(0, T, 2)
+        y_cur = (ty * T)[:, None] + sub[None, :]
+        y_src = (ty * T + dy)[:, None] + sub[None, :]
+        x = (tx * T)[:, None] + sub[None, :]
+        g_src, g_rec = src[..., 1], self.recon[..., 1]
+        cur = g_src[y_cur[:, :, None], x[:, None, :]].astype(np.int16)
+        stay = g_rec[y_cur[:, :, None], x[:, None, :]].astype(np.int16)
+        shifted = g_rec[y_src[:, :, None], x[:, None, :]].astype(np.int16)
         err_copy = np.abs(cur - shifted).reshape(idx.size, -1).mean(axis=1)
         err_stay = np.abs(cur - stay).reshape(idx.size, -1).mean(axis=1)
         good = (err_copy == 0) | ((err_copy <= 0.5 * err_stay) & (err_copy <= self.COPY_MAX_MEAN_ERR))

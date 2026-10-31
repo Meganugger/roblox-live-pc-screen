@@ -71,20 +71,33 @@ The pipeline keeps the top-left origin end to end (verified byte-for-byte in E2E
 part's face orientation is the cause: set `RlpsFace` on the screen part to the face that points at the players, and
 keep the screen part's size 16:9 (the image is letterboxed with `ScaleType.Fit`, never stretched).
 
-## Slow or jerky updates
+## Slow, blurry or jerky updates
 
-* Expected limits: balanced = 480×270, ≤ 4 captures/s; text and window moves are cheap, but video or games produce
-  large deltas and the server deliberately lowers the frame rate to stay within `MaxBytesPerSecond` (48 KB/s by
-  default). Full-screen video reaches well under 1 frame/s at that budget — see [`../../PERFORMANCE.md`](../../PERFORMANCE.md).
-* Faster: share a smaller region (`--region`), use `--profile low`, or raise `MaxBytesPerSecond` if every viewer has a
-  good connection (Roblox's official guidance is to keep remote traffic around 50 KB/s per client).
-* The sharing window shows `ms/frame`; above ~200 ms the PC itself is the bottleneck (very large monitors): use a region.
+Look at three numbers:
+
+* **`RlpsServer.RateBps`** (bytes/s the stream may use). It grows while every viewer keeps up and shrinks when one
+  falls behind (`MaxLagMs`). Low and not growing → a viewer's connection (or Roblox replication) is the limit:
+  `LaggingViewers` > 0 means someone was paused. Raise `MinBytesPerSecond` only if all viewers have fast connections.
+* **`RlpsServer.FpsCap`** (frames/s the slowest viewer decodes). Low → a viewer's PC is slow to decode
+  (`RlpsClient.DecodeMsPerFrame`); moving content (DCT tiles) is the expensive part. Use `--profile high` (768×432).
+* **The sharing window's `encode … ms`** — above ~33 ms the PC cannot encode 30 fps at this profile: use `--profile
+  high`, a region, or close CPU-heavy programs. `skipped … (over budget)` rising means the budget, not the PC, limits.
+
+Blurry while moving is expected (DCT tiles at the quality the rate allows); still content sharpens to pixel-exact
+within a few frames. Text that stays blurry while still → the budget is so low that refinement waits: raise
+`StartBytesPerSecond`/`MinBytesPerSecond` or use `--profile lossless` for pure text work.
+
+## `BodyMode` is `base64`
+
+Normal fallback: the probe showed that binary response bodies do not arrive unchanged on this server (or a raw body
+once failed to parse). Everything works; the HTTP bodies are 33 % larger.
 
 ## "Oversized payload" / Dropped counter rising
 
 `Dropped` counts containers the server refused because they did not extend its frame chain (e.g. after a restart of
 the app). It asks for a keyframe and recovers; a steadily rising value with a working picture is harmless. Parts are
-capped at 32 KiB (decompressed) by the encoder, 256 KiB by both decoders; a container is capped at 4 MiB.
+capped at 96 KiB (decompressed) by the encoder, 256 KiB by both decoders; a container is capped at 4 MiB, a response
+at `max` bytes (≈ 1.5 s of stream).
 
 ## Works in Studio, not when published
 

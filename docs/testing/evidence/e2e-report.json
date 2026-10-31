@@ -1,6 +1,6 @@
 {
   "ok": true,
-  "duration_s": 144.2,
+  "duration_s": 115.3,
   "checks": [
     {
       "id": "E2E-01",
@@ -26,7 +26,7 @@
         1024,
         576
       ],
-      "latency_s": 1.135
+      "latency_s": 1.128
     },
     {
       "id": "E2E-04",
@@ -84,14 +84,14 @@
       "check": "late joiner Bob shows the same frame as Alice (server-side history sync)",
       "pass": true,
       "seq": 1,
-      "latency_s": 0.216
+      "latency_s": 0.217
     },
     {
       "id": "E2E-08",
       "check": "desktop change reaches both TVs (new frame, delta path)",
       "pass": true,
       "seq": 3,
-      "latency_s": 0.42
+      "latency_s": 0.428
     },
     {
       "id": "E2E-09a",
@@ -134,8 +134,8 @@
       "id": "E2E-10",
       "check": "after 9 rapid desktop changes both TVs settle on the exact newest frame (scene A)",
       "pass": true,
-      "seq": 15,
-      "frames_between": 12,
+      "seq": 16,
+      "frames_between": 13,
       "dropped": 0
     },
     {
@@ -149,14 +149,14 @@
       "id": "E2E-12",
       "check": "service back: both TVs resume with the exact newest frame",
       "pass": true,
-      "seq": 16,
-      "latency_s": 8.286
+      "seq": 17,
+      "latency_s": 8.319
     },
     {
       "id": "E2E-13",
       "check": "after Stop: both TVs show 'Screen sharing is off', EditableImages destroyed, no frames left in the service, within 5 s",
       "pass": true,
-      "latency_s": 0.06,
+      "latency_s": 0.107,
       "status": "stopped"
     },
     {
@@ -173,9 +173,9 @@
         "dct",
         "lossless"
       ],
-      "lossy_pictures_matched": 44,
+      "lossy_pictures_matched": 48,
       "body_mode": "raw",
-      "seq": 100,
+      "seq": 105,
       "refine_s": 0.01,
       "errors": {}
     },
@@ -187,39 +187,39 @@
         "dct",
         "lossless"
       ],
-      "lossy_pictures_matched": 42,
+      "lossy_pictures_matched": 52,
       "body_mode": "base64",
-      "seq": 96,
-      "refine_s": 0.01,
+      "seq": 136,
+      "refine_s": 0.0,
       "errors": {}
     },
     {
       "id": "E2E-21",
       "check": "scrolling a text page: tiles sent as copies of the previous picture, 15 scroll steps cost less than 3 keyframes, client ends on the exact page",
       "pass": true,
-      "keyframe_bytes": 105357,
-      "bytes_for_15_scroll_steps": 180681,
-      "copied_tiles": 9091
+      "keyframe_bytes": 113243,
+      "bytes_for_15_scroll_steps": 231581,
+      "copied_tiles": 14094
     },
     {
       "id": "E2E-20",
       "check": "adaptive rate: grows above the start rate with one fast viewer; a 40 KB/s viewer makes it back off or gets paused while the fast viewer keeps getting frames; both end exact",
       "pass": true,
       "start_rate": 300000,
-      "rate_after_growth": 1456656,
-      "min_rate_with_slow_viewer": 319572,
-      "max_lagging_viewers": 0,
-      "fast_distinct_pictures_meanwhile": 83
+      "rate_after_growth": 988782,
+      "min_rate_with_slow_viewer": 524433,
+      "max_lagging_viewers": 1,
+      "fast_distinct_pictures_meanwhile": 96
     },
     {
       "id": "E2E-16",
       "check": "pacing: forwarded stream stays near the 3000 B/s budget during 10 s of ~2.7 changes/s (one container of slack), frames coalesced, final frame exact",
       "pass": true,
       "budget_Bps": 3000,
-      "measured_Bps": 2939,
-      "desktop_changes": 26,
-      "frames_published": 57,
-      "containers_ingested_during_churn": 55
+      "measured_Bps": 4585,
+      "desktop_changes": 27,
+      "frames_published": 114,
+      "containers_ingested_during_churn": 111
     },
     {
       "id": "E2E-17",
@@ -237,44 +237,44 @@
   ],
   "metrics": {
     "screen": "1280x720",
-    "join_to_stopped_screen_s": 1.027,
-    "start_to_picture_s": 1.135,
-    "late_joiner_s": 0.216,
-    "desktop_change_to_both_tvs_s": 0.42,
-    "outage_recovery_s": 8.286,
-    "stop_to_tv_off_s": 0.06,
+    "join_to_stopped_screen_s": 1.034,
+    "start_to_picture_s": 1.128,
+    "late_joiner_s": 0.217,
+    "desktop_change_to_both_tvs_s": 0.428,
+    "outage_recovery_s": 8.319,
+    "stop_to_tv_off_s": 0.107,
     "profile": "max",
     "frame_service_responses_after_outage": 2,
-    "http_requests_by_roblox_server": 18,
-    "http_body_bytes": 35968,
-    "server_forwarded_part_bytes": 34016,
-    "server_containers": 19,
+    "http_requests_by_roblox_server": 20,
+    "http_body_bytes": 37866,
+    "server_forwarded_part_bytes": 35862,
+    "server_containers": 20,
     "server_dropped": 0,
-    "alice_received_bytes": 34684,
-    "alice_remote_messages": 129,
-    "alice_pixel_writes": 16,
-    "frames_published": 16,
-    "frames_captured": 977,
+    "alice_received_bytes": 36562,
+    "alice_remote_messages": 137,
+    "alice_pixel_writes": 17,
+    "frames_published": 17,
+    "frames_captured": 981,
     "E2E-18_refine_s": 0.01,
-    "E2E-19_refine_s": 0.01,
+    "E2E-19_refine_s": 0.0,
     "scroll": {
-      "keyframe_bytes": 105357,
-      "bytes_for_15_scroll_steps": 180681,
-      "copied_tiles": 9091
+      "keyframe_bytes": 113243,
+      "bytes_for_15_scroll_steps": 231581,
+      "copied_tiles": 14094
     },
     "congestion": {
       "start_rate": 300000,
-      "rate_after_growth": 1456656,
-      "min_rate_with_slow_viewer": 319572,
-      "max_lagging_viewers": 0,
-      "fast_distinct_pictures_meanwhile": 83
+      "rate_after_growth": 988782,
+      "min_rate_with_slow_viewer": 524433,
+      "max_lagging_viewers": 1,
+      "fast_distinct_pictures_meanwhile": 96
     },
     "pacing": {
       "budget_Bps": 3000,
-      "measured_Bps": 2939,
-      "desktop_changes": 26,
-      "frames_published": 57,
-      "containers_ingested_during_churn": 55
+      "measured_Bps": 4585,
+      "desktop_changes": 27,
+      "frames_published": 114,
+      "containers_ingested_during_churn": 111
     }
   }
 }

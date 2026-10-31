@@ -17,6 +17,9 @@ if not exist ".venv\Scripts\python.exe" (
 )
 ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -r requirements.txt
 if errorlevel 1 ( pause & exit /b 1 )
+rem Optional: DXGI Desktop Duplication capture (faster than GDI, sees hardware-accelerated video). Not fatal if it fails.
+".venv\Scripts\python.exe" -m pip install --disable-pip-version-check dxcam
+if errorlevel 1 echo dxcam could not be installed - the app uses mss (GDI) capture instead.
 echo.
 echo Setup complete.
 echo   1. scripts\windows\show-token.bat   - prints the token to store as the Roblox secret "rlps_token"

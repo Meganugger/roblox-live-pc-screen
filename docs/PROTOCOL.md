@@ -1,129 +1,148 @@
 # RLPS wire protocol, version 1 (normative)
 
 This document specifies every byte that travels from the desktop app to the Roblox clients. It is the contract between
-`desktop/rlps/protocol.py` + `codec.py` + `server.py` (producer, reference decoder) and
-`roblox/src/shared/RlpsProtocol.luau` + `RlpsDecoder.luau` + `RlpsClientCore.luau` + `roblox/src/server/RlpsRelayCore.luau`
-(consumers). Both implementations are cross-checked by `roblox/tests/run_luau_tests.py` (identical error strings).
+`desktop/rlps/protocol.py` + `codec.py` + `dct.py` + `hybrid.py` + `server.py` (producer, reference decoder) and
+`roblox/src/shared/RlpsProtocol.luau` + `RlpsDecoder.luau` + `RlpsDct.luau` + `RlpsClientCore.luau` +
+`roblox/src/server/RlpsRelayCore.luau` (consumers). Both implementations are cross-checked by
+`roblox/tests/run_luau_tests.py` (identical error strings, bit-identical pixels).
 
-All integers are **little-endian** and unsigned. "MUST reject" means: discard the whole unit, change no state, report
-the error string.
+All integers are **little-endian**. "MUST reject" means: discard the whole unit, change no state, report the error.
 
-## 1. HTTP endpoint
+## 1. HTTP endpoints
 
 ```
-GET /v1/frames?after=<u32>&session=<u32>&key=<0|1>&wait=<ms>&idle=<0|1>
+GET /v1/frames?after=<u32>&session=<u32>&key=<0|1>&wait=<ms>&idle=<0|1>&rate=<B/s>&fps=<n>&batch=<ms>&max=<bytes>&enc=<0|1>
+GET /v1/probe
 Authorization: Bearer <token>
 ```
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `after` | 0 | seq of the last frame the poller forwarded (0 = none) |
+| `after` | 0 | seq of the last frame the poller has (0 = none) |
 | `session` | 0 | session id of that frame |
-| `key` | 0 | 1 = answer with a keyframe |
+| `key` | 0 | 1 = start from a keyframe |
 | `wait` | 10000 | long-poll: max ms to wait for a frame newer than `after` (≤ 25000) |
 | `idle` | 0 | 1 = the poller already shows STOPPED; hold the poll while sharing is off |
+| `rate` | 0 | byte rate the poller's viewers sustain (congestion control, §6); 0 = not reported |
+| `fps` | 0 | frame rate the poller's viewers can decode (§6); 0 = not reported |
+| `batch` | 0 | after the first new frame, keep collecting frames for this many ms (≤ 1000) |
+| `max` | 4 MiB | response size cap (65536 … 16 MiB); at least one frame is always returned |
+| `enc` | 0 | 0 = base64 text body, 1 = raw binary body (only after a successful probe) |
 
-* Only this path and method exist. Any other path → 404, other methods → 405, a request body → 400, unknown or repeated
-  parameters, non-decimal or out-of-range values → 400.
-* Authentication: `Bearer` token compared in constant time; failure → 401 (`WWW-Authenticate: Bearer`). Failed attempts
-  are rate-limited separately (0.5/s, burst 10 → 429 `Retry-After: 5`). Authorized requests: 20/s, burst 40 → 429
-  `Retry-After: 1`. At most 8 concurrent polls → 503 `Retry-After: 1`.
-* Success → 200, `Content-Type: text/plain; charset=us-ascii`, `Cache-Control: no-store`. The body is the **standard
-  padded base64 (RFC 4648 §4)** of exactly one container (§2). Base64 is used because binary-safe `RequestAsync`
-  response bodies are not documented by Roblox (F-0007).
+* Only these two paths and GET exist. Other paths → 404, other methods → 405, a request body → 400; unknown or
+  repeated parameters, non-decimal or out-of-range values → 400; `/v1/probe` with parameters → 400.
+* Authentication: `Bearer` token, constant-time compare; failure → 401. Failed attempts: 0.5/s burst 10 → 429
+  `Retry-After: 5`. Authorized requests: 20/s burst 40 → 429 `Retry-After: 1`. ≤ 8 concurrent polls → else 503.
+* `/v1/probe` returns 1024 bytes `00 01 … FF` repeated 4 times (`application/octet-stream`). A poller uses raw bodies
+  only if it receives them unchanged (Roblox does not document binary-safe response bodies, F-0007; community code
+  reads raw bytes, F-0038), and falls back to base64 if a raw body ever fails to parse.
+* `/v1/frames` → 200 with one **bundle** (§2): standard padded base64 (`text/plain`) or raw (`application/octet-stream`).
 
-### 1.1 Which container a poll gets
+### 1.1 What a poll returns
 
-Evaluated under one lock, in this order:
+Frames are **encoded once, at capture time**, into one chain per sharing session (a keyframe, then deltas against the
+decoder-side picture) and kept in a bounded ring (64 MiB / 1024 records). Evaluated under one lock:
 
-1. Sharing off → **STOPPED**. Exception: with `idle=1`, a poll that *arrives* while sharing is off is held until sharing
-   starts (then continue with rule 2) or `wait` expires (then STOPPED). A poll held while sharing is live always learns
-   a stop immediately.
-2. Live, no newer frame within `wait` (or no frame yet) → **LIVE + UNCHANGED** carrying the current `session`/`seq`.
-3. `key=1`, `after=0`, `session` ≠ current session, or frame `after` no longer in the ring (8 frames) → **KEYFRAME**.
-4. Otherwise → **DELTA** from frame `after` to the newest frame: exactly the tiles that differ. If none differ (the
-   content changed and changed back), **LIVE + UNCHANGED** with the newer `seq` (the poller just advances).
+1. Sharing off → bundle `[STOPPED]`. With `idle=1` a poll that *arrives* while sharing is off is held until sharing
+   starts or `wait` expires; a poll held while live always learns a stop at once.
+2. The poller's chain continues (`session` current and `after` within the ring) → every record with seq > `after`.
+3. Otherwise (`key=1`, unknown session, `after` = 0 or left the ring) → the ring from its newest keyframe, if that
+   keyframe is at most 24 records back; else the next capture is forced to be a keyframe and the poll waits for it.
+4. Nothing new within `wait` → bundle `[LIVE + UNCHANGED]` whose seq is `after` (current session) or 0 — **never
+   newer than `after`** (a newer seq would mean "frames identical up to here" and make a relay skip deltas).
+5. Once a record is available, more are collected for `batch` ms (or until `max` bytes) — several frames per HTTP
+   request, so 500 requests/min do not limit the frame rate.
 
-Deltas are computed on demand against the poller's own last frame, so a slow poller receives fewer, larger deltas and
-nothing is ever queued for it (backpressure by coalescing).
+## 2. Bundle (`RLPB`)
 
-## 2. Container
+`magic "RLPB" | version u8 = 1 | reserved u8 | count u16 (1…256) | bodyLength u32`, then `count` ×
+`(tOffsetMs u32, length u32, container[length])`. `tOffsetMs` = capture time of the container relative to the first
+one (the Roblox server plays them out at this spacing). MUST reject: > 16 MiB, short header, bad magic/version,
+`bodyLength` ≠ size − 12, count 0 or > 256, truncated entries, trailing bytes.
+
+## 3. Container (32-byte header + parts)
 
 | Offset | Size | Field | Rule |
 | --- | --- | --- | --- |
 | 0 | 4 | magic | `"RLPS"` |
 | 4 | 1 | version | 1 |
-| 5 | 1 | state | 0 = STOPPED, 1 = LIVE |
-| 6 | 1 | flags | bit0 KEYFRAME, bit1 UNCHANGED; other bits MUST be 0 |
+| 5 | 1 | state | 0 STOPPED, 1 LIVE |
+| 6 | 1 | flags | bit0 KEYFRAME, bit1 UNCHANGED |
 | 7 | 1 | reserved | 0 |
-| 8 | 4 | sessionId | random per sharing session, ≠ 0 when live |
-| 12 | 4 | seq | frame number, 1-based within the session |
-| 16 | 4 | baseSeq | delta base (0 for keyframes; = seq for UNCHANGED) |
-| 20 | 2 | width | 1…1024 (EditableImage maximum) |
-| 22 | 2 | height | 1…1024 |
-| 24 | 1 | format | 1 = RGB565, 2 = RGB888 |
-| 25 | 1 | tileSize | 8, 16 (default) or 32 |
-| 26 | 2 | partCount | 1…512 for frames; 0 for STOPPED/UNCHANGED |
-| 28 | 4 | bodyLength | = total length − 32 |
-| 32 | … | body | `partCount` part records, back to back |
+| 8 | 4 | sessionId | random per sharing session |
+| 12 | 4 | seq | 1-based frame number |
+| 16 | 4 | baseSeq | delta base = previous seq (0 for keyframes) |
+| 20 | 2 / 2 | width / height | 1…1024 |
+| 24 | 1 | format | 1 RGB565, 2 RGB888, 3 RGBA8, **4 HYBRID** |
+| 25 | 1 | tileSize | 8, 16 or 32 (**16** for HYBRID, whose width and height must be multiples of 16) |
+| 26 | 2 | partCount | 1…512 (0 for STOPPED/UNCHANGED) |
+| 28 | 4 | bodyLength | total − 32 |
 
-A decoder MUST reject: total length > 4 MiB or < 32, bad magic/version, `bodyLength` mismatch, unknown flags or state,
-STOPPED/UNCHANGED with parts or body, dimensions/format/tile size out of range, `seq = 0`, a delta with `baseSeq = 0`
-or `baseSeq = seq`, any part whose header disagrees with the container, truncated or trailing bytes.
+MUST reject as before (length, magic, version, flags, state, dimensions, format, tile size, part count, `seq = 0`,
+delta with `baseSeq` 0 or = seq, parts disagreeing with the container — including the REF flag of part 0 —,
+truncation, trailing bytes), plus HYBRID with tile size ≠ 16 or dimensions not divisible by 16.
 
-## 3. Part record = 36-byte header + payload
+## 4. Part record = 36-byte header + payload
 
-| Offset | Size | Field |
-| --- | --- | --- |
-| 0 | 1 | version (1) |
-| 1 | 1 | compression: 0 none, 1 zstd (one standard frame **with content size**) |
-| 2 | 1 | format (as container) |
-| 3 | 1 | flags: bit0 KEYFRAME (must equal the container's) |
-| 4 | 1 | tileSize |
-| 5 | 1 | reserved |
-| 6 | 2 | partIndex (0-based, < partCount) |
-| 8 | 2 | partCount |
-| 10 | 2 | width |
-| 12 | 2 | height |
-| 14 | 2 | tileCount (≥ 1, ≤ number of tiles) |
-| 16 | 4 | sessionId |
-| 20 | 4 | seq |
-| 24 | 4 | baseSeq |
-| 28 | 4 | rawLength (decompressed payload length) |
-| 32 | 4 | compLength (payload length in the record) |
+Header: `version u8 | compression u8 (0 none, 1 zstd with content size) | format u8 | flags u8 | tileSize u8 |
+reserved u8 | partIndex u16 | partCount u16 | width u16 | height u16 | tileCount u16 | sessionId u32 | seq u32 |
+baseSeq u32 | rawLength u32 | compLength u32`.
 
-Every part repeats the frame identity, so a part record is **self-describing**: the Roblox server forwards records
-unchanged to clients (one `RemoteEvent` message each) and a client can validate it without the container.
+Part flags: bit0 KEYFRAME (= container's), bit1 **REF** (the frame copies from the picture as it was before the frame;
+set on every part of the frame; never with KEYFRAME; HYBRID only). Every part repeats the frame identity, so the Roblox
+server forwards records unchanged and clients validate them on their own.
 
-Decompressed payload = `tileCount` × u16 tile indices (strictly increasing, row-major: `index = ty·tilesX + tx`),
-followed by the pixels of those tiles in the same order, each tile row-major. Edge tiles are clipped to the frame,
-not padded. RGB565 pixel = u16 `r5<<11 | g6<<5 | b5`; RGB888 = bytes R, G, B. Clients expand to RGBA8 by bit
-replication (`r8 = r5<<3 | r5>>2`, `g8 = g6<<2 | g6>>4`), alpha 255 — both decoders produce identical bytes.
+Decompressed payload = `tileCount` × u16 tile indices (strictly increasing, row-major), then the tiles' data in the
+same order:
 
-A decoder MUST reject: `2·tileCount < rawLength ≤ min(tileCount·(2 + tileSize²·bpp), 256 KiB)` violated,
-uncompressed `compLength ≠ rawLength`, `compLength = 0` or > 257 KiB, a zstd frame whose declared content size ≠
-`rawLength` (checked *before* decompressing, via `EncodingService:GetDecompressedBufferSize` / zstd frame header),
-decompressed length ≠ `rawLength`, unordered/out-of-range indices, pixel byte count ≠ the tiles' clipped areas.
-The encoder keeps parts ≤ 32 KiB decompressed so each `RemoteEvent` message stays small.
+* RGB565 / RGB888 / RGBA8: the clipped tile's pixels, row-major (2 / 3 / 4 bytes per pixel). Clients expand to RGBA8
+  (RGB565 by bit replication; RGBA8 rows are copied as-is).
+* **HYBRID**: one entry per tile, by its first byte:
+  * `0 RAW`: 1024 bytes = 16×16 RGBA8 (lossless);
+  * `1 DCT`: quality u8 (0…15) + 384 int16 = 6 blocks (Y00, Y01, Y10, Y11, Cb, Cr) × 64 coefficients in zigzag
+    order (YCbCr 4:2:0 macroblock);
+  * `2 COPY`: dx i16, dy i16 — the 16×16 block at (x0+dx, y0+dy) of the reference picture (REF parts only).
 
-## 4. Chain rules (relay and clients)
+**DCT decoding (exact integer specification):** quality q → IJG factor `s = q<50 ? 5000//q : 200−2q` for
+q ∈ {10,20,30,40,50,60,70,75,80,85,88,90,92,94,96,98}; table = `clamp((base·s + 50)//100, 1, 255)` (ITU T.81 Annex K
+luma/chroma bases); `D[k] = coef[k] · table[k]`; `out = Mᵀ·D·M` with `M = round(4096 · DCT-II basis)`;
+sample = `clamp(floor((out + 2²³) / 2²⁴) + 128, 0, 255)`; colour = BT.601 full range in 16.16 fixed point:
+`R = Y + floor((91881·Cr' + 32768)/65536)`, `G = Y − floor((22554·Cb' + 46802·Cr' + 32768)/65536)`,
+`B = Y + floor((116130·Cb' + 32768)/65536)` (Cb' = Cb − 128, nearest-neighbour chroma), clamped, alpha 255. Every
+intermediate is an integer below 2⁵³, so Luau (doubles) and numpy produce identical pixels — required, because the
+encoder predicts later frames from this exact picture.
 
-The stream is a chain per session: a keyframe, then deltas whose `baseSeq` equals the previous `seq`, or *advance*
-messages (`fromSeq → toSeq`, from UNCHANGED containers with a newer `seq`).
+MUST reject (before writing any pixel): raw-length bounds (`2·tileCount < rawLength ≤ min(tileCount·maxTile,
+256 KiB)`, maxTile = 1027 for HYBRID, else 2 + tile²·bpp), compressed-length rules, zstd declared content size ≠
+`rawLength` (checked before decompressing), unordered/out-of-range indices, pixel byte counts (non-hybrid); for HYBRID:
+unknown tile mode, entry overrun, quality ≥ 16, COPY without REF, COPY source outside the frame, trailing bytes, REF
+part without a reference picture.
 
-* The Roblox server (`RlpsRelayCore`) forwards a container only if it extends its chain; otherwise it drops it and asks
-  for a keyframe. It keeps the last keyframe + later deltas/advances (bounded: 384 KiB, then a fresh keyframe) as the
-  history for late joiners. STOPPED clears the chain and the history.
-* A client (`RlpsClientCore`) applies parts in arrival order (reliable `RemoteEvent`s are ordered). Part 0 of a
-  keyframe always restarts; part 0 of a delta needs `sessionId`/`baseSeq` = its last complete frame; later parts must
-  follow in order. Anything else → **desync**: it ignores deltas and requests a `sync`, the server answers with
-  `reset` + status + history. A frame is drawn only when its last part arrived (no torn frames).
-* RemoteEvent messages (server → client): `("status", status, detail?)`, `("part", buffer)`,
-  `("advance", sessionId, fromSeq, toSeq)`, `("reset")`; client → server: `("sync")` (rate-limited on both sides).
+## 5. Chain rules (relay and clients)
 
-## 5. Pacing
+* The Roblox server (`RlpsRelayCore`) forwards a container only if it extends its chain (keyframe, or delta with
+  `baseSeq` = its seq), drops anything else and asks for a keyframe. History for late joiners = last keyframe + later
+  frames (hard cap 48 MiB); a late joiner whose history would exceed 24 frames or 8 MiB is served a **fresh keyframe**
+  instead. STOPPED clears chain, history and the playout queue.
+* A client (`RlpsClientCore`) applies parts in order; part 0 of a keyframe restarts; part 0 of a delta needs its base;
+  later parts must follow in order; anything else → desync → `sync` request (retried every 3 s while desynced). A part
+  0 with REF first snapshots the current picture (COPY tiles read the snapshot). Only complete frames are drawn.
+* RemoteEvent messages, server → client: `("status", s, detail?)`, `("part", buffer)`, `("advance", sid, from, to)`,
+  `("reset")`; client → server: `("sync")`, `("ack", sessionId, seq, decodeMsPerFrame)`.
 
-The Roblox server waits `forwardedBytes / MaxBytesPerSecond` (default 48,000 B/s) before the next poll after a frame,
-plus `MinPollInterval` (default 0.2 s) between poll starts (≤ 300 requests/min of the 500/min HttpService budget).
-Because deltas are computed against the last forwarded frame, pacing lowers the frame rate for busy content instead of
-building a queue anywhere.
+## 6. Flow and congestion control
+
+* **Playout:** the server schedules each container of a bundle at `arrival + tOffsetMs`, never earlier than the
+  previous one; more than 1 s of backlog is forwarded at once.
+* **Acks:** clients acknowledge their newest complete frame (≤ 10/s) with their average decode time per frame.
+* **Rate (AIMD, every 0.5 s):** lag = age of the oldest forwarded frame a viewer has not acknowledged. Max lag over
+  viewers > 2 × `TargetLagSeconds` → rate × 0.7; > target → × 0.9; otherwise, if the stream used ≥ 60 % of the rate,
+  × 1.12 + 20 kB/s. Clamped to [`MinBytesPerSecond`, `MaxBytesPerSecond`]; reported as `rate` on every poll.
+* **Frame rate:** fps cap = min over viewers of `ClientDecodeBudgetMs × 60 × 0.7 / decodeMsPerFrame` (drops at once,
+  rises by ≤ 2 fps per step; × 0.8 when lag is high); reported as `fps`. The desktop app skips captures to respect it.
+* **Encoder budget:** token bucket at `rate` (capacity rate × 0.5 s, keyframes may overdraw); per frame, moving tiles
+  go lossless if they fit, else DCT at the best quality that fits; tiles that stopped moving are refined to lossless with
+  the remaining budget; scrolled content is sent as COPY tiles; a frame that cannot fit at the lowest quality is skipped
+  (the next frame carries its changes).
+* **Lagging viewers:** a viewer more than `LagDropSeconds` behind stops receiving frames until it acknowledged
+  everything it was sent, then it is re-synced; it no longer limits the others.

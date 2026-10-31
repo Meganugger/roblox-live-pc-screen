@@ -192,7 +192,7 @@ class FrameStore:
                 return False
             rate = self.current_rate()
             now = self._clock()
-            self._tokens = min(max(rate * 0.5, 16 * 1024), self._tokens + (now - self._tokens_at) * rate)
+            self._tokens = min(max(rate * 0.5, 4096), self._tokens + (now - self._tokens_at) * rate)
             self._tokens_at = now
             budget = self._tokens
         t0 = time.perf_counter()

@@ -1,77 +1,77 @@
 # PERFORMANCE.md
 
-Every number is labelled **MEASURED** (command, environment, commit), **CALCULATED** (from measured numbers),
-**ESTIMATE** or **ASSUMPTION**. Nothing here was measured inside Roblox (no Roblox runtime in the agent sandbox,
-KI-0002); Roblox-side costs are the owner's Studio/published tests.
+Every number is labelled **MEASURED** (command, environment, commit), **CALCULATED** or **ESTIMATE**. Nothing here was
+measured inside the real Roblox engine (no Roblox runtime in the agent sandbox, KI-0002). Roblox-side figures come
+from the live pipeline test, which runs the real scripts under an engine emulation in Lune (interpreted Luau, much
+slower than Roblox's native code generation).
 
-## Defaults
+## Design targets (owner directive 2026-10-31: maximum quality, PC requirements apply)
 
-| Profile | Frame | Pixel format | Capture rate (max) | Use |
-| --- | --- | --- | --- | --- |
-| low | 320×180 | RGB565 | 2/s | weak devices, many viewers |
-| **balanced (default)** | 480×270 | RGB565 | 4/s | desktop, text, browsing |
-| high | 640×360 | RGB888 | 6/s | few viewers on good connections |
+| Profile | Frame | Capture rate | Coding |
+| --- | --- | --- | --- |
+| **max (default)** | up to 1024×576 (EditableImage limit 1024) | 30 fps | hybrid: lossless / DCT / copy tiles |
+| high | up to 768×432 | 30 fps | hybrid |
+| balanced | up to 640×352 | 24 fps | hybrid |
+| low | up to 512×288 | 15 fps | hybrid |
+| lossless | up to 1024×576 | 15 fps | RGBA8 only (never lossy) |
 
-Roblox server stream budget `MaxBytesPerSecond` = 48,000 B/s (Roblox's planning figure for remote traffic is
-~50 KB/s per client, F-0017 — **ASSUMPTION** that this is a sensible ceiling; the real reliable-RemoteEvent ceiling
-is unverified). Polls: ≤ 5/s (`MinPollInterval` 0.2 s) = ≤ 300/min of the 500/min HttpService limit.
+The byte rate is **not fixed**: it starts at `StartBytesPerSecond` (1 MB/s) and adapts between `MinBytesPerSecond`
+(100 kB/s) and `MaxBytesPerSecond` (8 MB/s) to what every viewer keeps up with (acks). The frame rate is capped by
+the slowest viewer's measured decode time. A 1920×1080 or 3840×2160 desktop is sent at 960×540 (an integer factor,
+letterboxed to 960×544) because integer scaling turns scrolling into exact copies; 2560×1440 and 1366×768 at 1024×576.
 
-## Codec output per workload (MEASURED)
+## Codec (MEASURED)
 
-`python3 scripts/bench.py --frames 15` — agent sandbox, Linux x86_64, 4 vCPU Intel Xeon @ 2.10 GHz, Python 3.11.17,
-numpy 2.4.6, zstandard (level 3), commit `7e63e1c` (codec unchanged since). Sizes are HTTP body bytes (base64
-container, ≈ 4/3 × binary); "delta" is the mean over 14 consecutive frames. Raw data:
-[`docs/testing/evidence/bench.json`](docs/testing/evidence/bench.json).
+`python3 scripts/bench.py --frames 12` — agent sandbox, Linux x86_64, 4 vCPU Intel Xeon @ 2.10 GHz, Python 3.11.17,
+numpy 2.4.6, OpenCV 5.0, zstd level 1; this session's final code. Raw output:
+[`docs/testing/evidence/bench.txt`](docs/testing/evidence/bench.txt) / `bench.json`. Bytes are container bytes per
+frame (raw-body mode; base64 adds 33 %). The budget is a token bucket at the stated rate (what the Roblox server
+reports); "q" = mean IJG quality of DCT tiles in the frames that needed them.
 
-| Profile | Workload | Keyframe | Delta | Encode/delta | Stream at profile rate | Frames/s within 48 KB/s (CALCULATED) |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| low | static desktop | 6.9 KB | 0 | 0.1 ms | 0 | — (nothing sent) |
-| low | text scroll 8 px/frame | 6.9 KB | 6.9 KB | 0.8 ms | 13.8 KB/s | 7 → capped at 2 |
-| low | window drag | 6.5 KB | 0.6 KB | 0.2 ms | 1.2 KB/s | capped at 2 |
-| low | video in ¼ of the screen | 42.6 KB | 38.9 KB | 0.3 ms | 77.8 KB/s | ~1.2 |
-| low | full-screen video | 149 KB | 150 KB | 0.8 ms | 301 KB/s | ~0.3 |
-| balanced | static desktop | 14.8 KB | 0 | 0.2 ms | 0 | — |
-| balanced | text scroll | 15.7 KB | 15.5 KB | 1.3 ms | 62 KB/s | ~3 |
-| balanced | window drag | 13.7 KB | 0.6 KB | 0.3 ms | 2.3 KB/s | capped at 4 |
-| balanced | video in ¼ of the screen | 96 KB | 86 KB | 0.8 ms | 344 KB/s | ~0.6 |
-| balanced | full-screen video | 335 KB | 335 KB | 1.6 ms | 1.3 MB/s | ~0.15 |
-| high | text scroll | 39 KB | 38 KB | 6.8 ms | 227 KB/s | ~1.3 |
-| high | full-screen video | 885 KB | 887 KB | 6.6 ms | 5.3 MB/s | ~0.05 |
+| Profile 1024×576, 30 fps | budget | bytes/frame | stream | DCT q | encode/frame |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| static desktop | any | 0 | 0 | — | 2–3 ms |
+| text scroll 8 px/frame | unlimited | 5.9 kB | 176 kB/s | lossless + copies | 11 ms |
+| text scroll 8 px/frame | 500 kB/s | 4.1 kB | 123 kB/s | 20 (few tiles) | 12 ms |
+| window drag | 2 MB/s | 6.9 kB | 207 kB/s | lossless | 3 ms |
+| video in ¼ of the screen | unlimited | 489 kB | 14.7 MB/s | lossless | 8 ms |
+| video in ¼ of the screen | 2 MB/s | 67.6 kB | 2.0 MB/s | 89 | 27 ms |
+| video in ¼ of the screen | 500 kB/s | 10.7 kB | 322 kB/s | 45 | 20 ms |
+| full-screen video | 2 MB/s | 67.4 kB | 2.0 MB/s | 90 | 26 ms |
+| full-screen video | 500 kB/s | 15.3 kB | 458 kB/s | 37 | 21 ms |
 
-The synthetic "video" is a worst case (smooth moving gradients plus per-pixel noise, which zstd cannot compress);
-real video compresses somewhat better, but the conclusion holds: **this is a desktop-sharing system, not a video
-stream.** Static desktops cost nothing, text and window work is fluid at the profile rate, and full-motion content is
-slowed by design to well under 1 frame/s (pacing coalesces frames instead of queueing them, E2E-16).
+768×432 (high): full-screen video at 2 MB/s → q 96, 19 ms/frame; at 500 kB/s → q 62.
 
-## Capture cost on the PC (MEASURED)
+Caveat: the synthetic "video" (drifting sine gradients plus grain) partly *translates*, which scroll detection
+exploits; real video has less of that, so expect lower DCT quality at the same rate (ESTIMATE). Before this session's
+work the same 480×270 video cost 86 kB per frame losslessly (≈ 0.6 fps at 50 kB/s).
 
-Same environment, real `mss` grab of a 1920×1080 Xvfb screen: grab 3.1–3.3 ms; resize + quantize 40 ms (low),
-51 ms (balanced), 56 ms (high) per frame (pure numpy box + bilinear filter). At the balanced rate that is ~20 % of one
-core **[CALCULATED]**. A real Windows desktop (GDI `BitBlt` through `mss`) is typically slower to grab than Xvfb
-**[ESTIMATE]**; the sharing window shows the actual `ms/frame`. The Windows CI job measures it on a real Windows
-desktop (see `TEST_RESULTS.md`).
+## Capture (MEASURED)
 
-## End-to-end latency (MEASURED, emulated Roblox)
+Same sandbox, real `mss` grab of a 1920×1080 Xvfb screen: grab 1.7–2.0 ms; OpenCV `INTER_AREA` resize + quantize
+2.9–6.7 ms per frame (was 40–56 ms with the numpy filter). On Windows, `--backend auto` uses DXGI Desktop Duplication
+when `dxcam` is installed (faster than GDI, captures hardware-accelerated video; not measurable here).
 
-`python3 tests/e2e/run_e2e.py` (TR-0008; real capture → real frame service over loopback HTTP → unmodified Roblox
-scripts under the Lune emulation, no tunnel, no Roblox network):
+## End to end (MEASURED, real scripts under emulation)
 
-| Event | Time until the TV shows it |
+`python3 tests/e2e/run_e2e.py` (report: [`docs/testing/evidence/e2e-report.json`](docs/testing/evidence/e2e-report.json)):
+
+| Event | Time / result |
 | --- | ---: |
-| join → "Screen sharing is off" | 1.0 s |
-| Start sharing → first picture | 1.0–1.1 s (≤ 1 s `StoppedPollInterval` + one capture) |
-| desktop change → both TVs | 0.2 s (≤ one capture interval at 4/s) |
-| late joiner → picture | 0.26 s |
-| Stop → both TVs off | 0.2 s |
-| frame service back after outage → picture | ~8 s (exponential backoff 2, 4 … s) |
+| Start sharing → picture | 1.1 s |
+| desktop change → both TVs | 0.4 s |
+| late joiner → picture | 0.2 s |
+| Stop → TVs off | 0.06–0.1 s |
+| scrolling a text page 15 steps | 14,094 copy tiles; 232 kB in total (≈ 2 keyframes) |
+| congestion (E2E-20) | rate grew 300 kB/s → 0.99–1.46 MB/s with one viewer; a 40 kB/s viewer was paused while the other kept receiving frames |
 
-In production add the tunnel round trip (tens of ms **[ESTIMATE]**) and Roblox's server→client replication delay
-(unknown, owner test).
+The Lune emulator decodes about 8–15 fps of DCT-heavy 768×432 frames (interpreted Luau); the fps cap followed that
+measured decode time. Real Roblox clients run `--!native` code (documented for server scripts; client behaviour is an
+owner test, F-0040); luavid measured 3.4× for a comparable decoder.
 
-## Multi-client scaling (CALCULATED)
+## What limits quality in a real game (ESTIMATE / owner tests)
 
-One poll per game server regardless of viewers; the server forwards the same compressed records to every viewer, so
-server CPU is O(bytes) and outbound traffic = viewers × stream rate (balanced desktop work ≈ 2–60 KB/s, capped at 48
-KB/s by default). Each additional game server of the same experience polls separately (≤ 8 concurrent polls accepted by
-the frame service). Each client decodes only changed tiles; one `WritePixelsBuffer` per rendered frame covering the
-dirty rectangle. Client decode cost on real devices: **unmeasured** (owner test).
+1. **Roblox replication bandwidth per client** — unknown; the ack-driven controller finds it.
+2. **Client decode time** — DCT tiles cost far more Luau work than RAW/COPY tiles; the fps cap adapts to each viewer.
+3. **PC encode time** — < 33 ms per 1024×576 frame on this 2.1 GHz sandbox for every workload above.
+4. **HTTP** — 500 requests/min per server; batching (150 ms) makes this irrelevant to the frame rate.

@@ -35,8 +35,13 @@ Cloudflare *named* tunnel on your own hostname (optional, see A.3).
 ### A.1 Install
 
 1. Unzip the release (or clone the repository) to a folder without special permissions, e.g. `C:\rlps`.
-2. Double-click `scripts\windows\setup.bat`. It creates `desktop\.venv` and installs `numpy`, `zstandard`, `mss`
-   (versions pinned in `desktop\requirements.txt`).
+2. Double-click `scripts\windows\setup.bat`. It creates `desktop\.venv` and installs `numpy`, `zstandard`, `mss`,
+   `opencv-python-headless` (`desktop\requirements.txt`) and, optionally, `dxcam` (DXGI Desktop Duplication: faster
+   capture that also sees hardware-accelerated video; the app falls back to `mss` without it).
+
+**Recommended PC** (stream encoder at 1024×576 @ 30 fps): a 4-core CPU from the last ~8 years; the encoder needed
+< 33 ms per frame on a 2.1 GHz cloud vCPU. Upload bandwidth: the stream adapts, but 2–8 Mbit/s lets moving content
+stay sharp. Players' PCs decode the picture in Luau: the frame rate adapts to the slowest viewer.
 
 ### A.2 Create the token
 
@@ -51,8 +56,10 @@ Double-click `scripts\windows\show-token.bat`. On first use it creates a random 
 
 1. Double-click `scripts\windows\start-sharing.bat`. A small window opens: grey **Not sharing**, buttons
    **Start sharing** / **Stop sharing**, a quality menu, and a status line. The frame service now listens on
-   `127.0.0.1:8787` (loopback only). Options: `start-sharing.bat --profile low|balanced|high`, `--monitor 2`
-   (list with `--list-monitors`), `--region left,top,width,height`, `--no-gui` (console).
+   `127.0.0.1:8787` (loopback only). Options: `start-sharing.bat --profile max|high|balanced|low|lossless` (default
+   `max` = 1024×576 @ 30 fps), `--max-rate 8` (MB/s cap of the stream), `--backend auto|mss|dxgi`, `--monitor 2`
+   (list with `--list-monitors`), `--region left,top,width,height`, `--no-gui` (console). The window's status shows the
+   stream budget the Roblox server reports, the DCT quality of the last frame and the encode time.
 2. Publish it over HTTPS — pick one:
 
    **Option 1 — Cloudflare quick tunnel (no account; URL changes every start).** Double-click
@@ -112,11 +119,16 @@ Select **ServerScriptService ⟩ Rlps ⟩ RlpsServer**, scroll to **Attributes**
 | `FrameServiceUrl` | your tunnel URL, e.g. `https://word-word-word.trycloudflare.com` (no trailing path) |
 | `SecretName` | `rlps_token` (default; must match the secret's name) |
 | `ViewerUserIds` | optional: comma-separated UserIds allowed to see the screen, e.g. `12345678, 87654321`; empty = everyone |
-| `MaxBytesPerSecond` | 48000 (stream budget per viewer); lower for weak connections |
-| `PollWaitMs`, `MinPollInterval`, `StoppedPollInterval` | leave the defaults (15000, 0.2, 1) |
+| `MaxBytesPerSecond` | 8000000 — upper bound of the adaptive stream rate (per viewer; every viewer gets the same stream) |
+| `StartBytesPerSecond`, `MinBytesPerSecond` | 1000000, 100000 — where the rate starts and how low it may go |
+| `TargetLagSeconds`, `LagDropSeconds` | 0.35, 4 — acceptable delay of the slowest viewer; beyond `LagDropSeconds` a viewer is paused and re-synced |
+| `BatchMs`, `ClientDecodeBudgetMs` | 150, 10 — frames per HTTP response window; decode time per client frame |
+| `PollWaitMs`, `MinPollInterval`, `StoppedPollInterval` | leave the defaults (15000, 0.15, 1) |
 
 The script also *writes* read-only diagnostics there while running: `Status`, `StatusDetail`, `Containers`,
-`ForwardedBytes`, `Dropped`, `LastError`.
+`ForwardedBytes`, `Dropped`, `LastError`, `RateBps` (current stream rate), `FpsCap`, `ForwardFps`, `MaxLagMs`,
+`Viewers`, `LaggingViewers`, `BodyMode` (`raw` or `base64`). Each client's `RlpsClient` script shows `State`, `Seq`,
+`DecodeMsPerFrame`, `QueueLength`, `Desyncs`, `LastError` (Explorer while playing, or the F9 console).
 
 ### C.3 The token secret
 
@@ -134,8 +146,9 @@ The script also *writes* read-only diagnostics there while running: `Status`, `S
    (Output window: no `[RLPS]` warnings. `RlpsServer` attribute `Status` = `stopped`.)
 3. Press **Start sharing** on the PC: the window turns red (**● SHARING YOUR SCREEN**, always on top). Within about a
    second the TV shows your desktop with a red **● LIVE** badge.
-4. Move a window, scroll a page: the TV follows (balanced profile: 480×270, up to 4 captures/s, see
-   [`../../PERFORMANCE.md`](../../PERFORMANCE.md) for what busy content does).
+4. Move a window, scroll a page, play a video: the TV follows (max profile: up to 1024×576 @ 30 fps; the quality of
+   moving content adapts to the bandwidth, and every still part becomes pixel-exact within a few frames — see
+   [`../../PERFORMANCE.md`](../../PERFORMANCE.md)). In Studio watch `RlpsServer` attributes `RateBps` and `FpsCap`.
 5. Press **Stop sharing** (or Esc in the sharing window): the TV returns to **"Screen sharing is off"** within a fraction of
    a second, and every client discards the picture.
 6. Multi-client check: **Test ⟩ Clients and Servers ⟩ 2 players ⟩ Start**: both players see the same picture; a player

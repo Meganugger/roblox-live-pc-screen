@@ -88,3 +88,30 @@
 - **Pacing**: after forwarding N bytes the server waits N / `MaxBytesPerSecond` (48,000) before the next poll. Because
   deltas are computed against the last forwarded frame, busy content lowers the frame rate instead of queueing.
   Rejected: per-client queues (memory growth, latency), dropping parts (breaks the chain).
+
+## D-0007 — Stream v2: maximum quality instead of the 50 KB/s guidance (2026-10-31, 29th session)
+
+- **Owner directive**: "I don't care about Roblox's recommended traffic per player, the game will have PC requirements:
+  make the stream as good as possible." Plus the survey of every public project (T-0005…T-0007, F-0037…F-0040).
+- **Evidence**: lossless tiles cost 86 kB per 480×270 video frame; MahanBig's DCT codec shows ~30× smaller frames for
+  moving content (F-0039); Icy-Monster/MahanBig batch frames per request (F-0037); luavid measured `--!native` 3.4×.
+- **Selected**: (1) hybrid per-tile coding — lossless RAW where the budget allows, DCT (own bit-exact integer
+  implementation) for moving content, COPY tiles for scrolling, lossless refinement once still; (2) encode once at
+  capture time into a chain ring; (3) bundles of frames per request + playout at capture spacing; (4) 1024×576 @ 30 fps
+  default profile; (5) OpenCV INTER_AREA resize, optional DXGI capture, integer scale factors + letterboxing;
+  (6) binary bodies after a probe.
+- **Rejected**: whole-frame DCT as in MahanBig (blurry text, no exact still picture); closed-loop residual coding on top
+  of DCT tiles (more client work for little gain once refinement exists); H.264 & co. (no decoder reachable from Luau);
+  several EditableImages for > 1024 px (only one image updates per frame, F-0002).
+- **Credits**: ideas from Icy-Monster/Screen-Sharing-in-Roblox (MIT) and MahanBig/roblox-screen-stream (MIT); no code
+  copied.
+
+## D-0008 — Congestion control from client acknowledgements (2026-10-31)
+
+- **Problem**: with no fixed budget, the stream must find what Roblox's replication and each client's CPU sustain.
+- **Selected**: clients ack frames (≤ 10/s) with their decode time; the server runs AIMD on the byte rate using the age of
+  the oldest unacknowledged frame, and caps the frame rate from decode time; both go to the PC with every poll; viewers
+  more than `LagDropSeconds` behind are paused and re-synced (with a fresh keyframe when the history is long).
+- **Why decode time**: the live test showed that lowering the bit rate does not help a CPU-bound client (DCT decode cost
+  scales with frames, not bytes) — without the fps cap even an unthrottled emulated client fell behind.
+- **Revisit if**: Roblox exposes per-client network statistics to scripts.

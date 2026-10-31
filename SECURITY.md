@@ -27,7 +27,7 @@ has explicitly pressed Start, only in memory, and only reach Roblox servers that
 | 12 | No undisclosed endpoints | the desktop app makes **no outbound connections**; the Roblox server requests only `FrameServiceUrl` (owner-set attribute, must be `https://`) and the secret only attaches to its domain | `RlpsServer.server.luau` `pollOnce`; F-0011 |
 | 13 | No credentials in client-visible code | token only in `%APPDATA%\rlps\config.json` and in the Roblox secrets store; `GetSecret` is server-only; clients receive frames, never the token | E2E-15 (wrong token → client gets no image, no pixel bytes) |
 | 14 | Authenticated endpoint | `Authorization: Bearer`, `hmac.compare_digest`; token ≥ 24 chars (`secrets.token_urlsafe(32)` = 43) | `test_server.py::test_auth_required`, `test_short_token_refused` |
-| 15 | Validation + rate limits | strict query parser (unknown/repeated/oversized params → 400); token buckets 20/s (ok) and 0.5/s (failed auth); ≤ 8 concurrent polls; long-poll ≤ 25 s; both decoders validate every header, length, index and zstd content size before writing a pixel | `test_server.py` (rate-limit, params), decoder specs (5,344 cases), `test_codec.py` |
+| 15 | Validation + rate limits | strict query parser (unknown/repeated/oversized params → 400); token buckets 20/s (ok) and 0.5/s (failed auth); ≤ 8 concurrent polls; long-poll ≤ 25 s; both decoders validate every header, length, index, tile mode, DCT quality, COPY source rectangle and zstd content size before writing a pixel; bundles and response sizes bounded; client acks type-checked and bounded on the server | `test_server.py`, `test_hybrid.py`, Luau specs (5,984 checks), `test_codec.py` |
 | 16 | Controls restricted to authorized users | sharing is controlled only on the PC; no in-game control surface; optional `ViewerUserIds` allowlist enforced by the server for fan-out *and* sync | E2E-17 (non-listed player: "not authorized", no pixel data) |
 | 17 | No access to local files | no file routes; the service never reads files | code review |
 | 18 | No generic proxy | the Roblox server builds one URL shape from the owner's attribute; players cannot influence it (the only client→server message is `"sync"`, rate-limited) | `RlpsServer.server.luau` |
@@ -38,6 +38,8 @@ has explicitly pressed Start, only in memory, and only reach Roblox servers that
 
 * **Everything on the shared monitor is visible to every authorized viewer.** Close private windows or share a region /
   second monitor. Notifications that pop up are captured too.
+* **Binary bodies**: used only after `/v1/probe` (authenticated, fixed content) proved bytes arrive unchanged; any body
+  that fails to parse switches the server back to base64 for good. No new route exposes anything else.
 * **The tunnel URL is public.** Without the token it only returns 401 (rate-limited); a leaked token lets anyone read
   the frames while sharing is on → rotate it (`--rotate-token`) and update the Roblox secret.
 * **Tunnel provider**: TLS terminates at Cloudflare/Tailscale, which can technically see the (compressed) frames.

@@ -10,32 +10,32 @@
     {
       "profile": "max",
       "source": "1920x1080",
-      "grab_ms_median": 1.85,
-      "resize_quantize_ms_median": 3.34
+      "grab_ms_median": 1.87,
+      "resize_quantize_ms_median": 3.41
     },
     {
       "profile": "high",
       "source": "1920x1080",
-      "grab_ms_median": 1.83,
-      "resize_quantize_ms_median": 5.82
+      "grab_ms_median": 1.71,
+      "resize_quantize_ms_median": 6.42
     },
     {
       "profile": "balanced",
       "source": "1920x1080",
-      "grab_ms_median": 1.82,
-      "resize_quantize_ms_median": 4.99
+      "grab_ms_median": 1.64,
+      "resize_quantize_ms_median": 4.73
     },
     {
       "profile": "low",
       "source": "1920x1080",
-      "grab_ms_median": 1.71,
-      "resize_quantize_ms_median": 2.52
+      "grab_ms_median": 1.79,
+      "resize_quantize_ms_median": 2.68
     },
     {
       "profile": "lossless",
       "source": "1920x1080",
-      "grab_ms_median": 1.74,
-      "resize_quantize_ms_median": 2.84
+      "grab_ms_median": 1.59,
+      "resize_quantize_ms_median": 2.47
     }
   ],
   "codec": [
@@ -49,7 +49,7 @@
       "bytes_per_s_at_fps": 0,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 2.3
+      "encode_ms_median": 2.1
     },
     {
       "profile": "max",
@@ -61,7 +61,7 @@
       "bytes_per_s_at_fps": 197575,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 2.8
+      "encode_ms_median": 2.7
     },
     {
       "profile": "max",
@@ -85,7 +85,7 @@
       "bytes_per_s_at_fps": 175666,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 57.7
+      "encode_ms_median": 10.7
     },
     {
       "profile": "max",
@@ -93,11 +93,11 @@
       "fps": 30.0,
       "workload": "text scroll (8 px/frame)",
       "budget": "2 MB/s",
-      "bytes_per_frame": 5864,
-      "bytes_per_s_at_fps": 175928,
+      "bytes_per_frame": 5873,
+      "bytes_per_s_at_fps": 176204,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 59.2
+      "encode_ms_median": 13.6
     },
     {
       "profile": "max",
@@ -105,11 +105,11 @@
       "fps": 30.0,
       "workload": "text scroll (8 px/frame)",
       "budget": "500 KB/s",
-      "bytes_per_frame": 4074,
-      "bytes_per_s_at_fps": 122212,
+      "bytes_per_frame": 4089,
+      "bytes_per_s_at_fps": 122665,
       "dct_quality_mean": 20,
       "frames_skipped": 5,
-      "encode_ms_median": 63.9
+      "encode_ms_median": 11.9
     },
     {
       "profile": "max",
@@ -121,7 +121,7 @@
       "bytes_per_s_at_fps": 31323,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 2.6
+      "encode_ms_median": 2.8
     },
     {
       "profile": "max",
@@ -133,7 +133,7 @@
       "bytes_per_s_at_fps": 206842,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 2.8
+      "encode_ms_median": 3.0
     },
     {
       "profile": "max",
@@ -145,7 +145,7 @@
       "bytes_per_s_at_fps": 127522,
       "dct_quality_mean": 98,
       "frames_skipped": 4,
-      "encode_ms_median": 3.5
+      "encode_ms_median": 3.8
     },
     {
       "profile": "max",
@@ -157,7 +157,7 @@
       "bytes_per_s_at_fps": 14656443,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 43.3
+      "encode_ms_median": 8.0
     },
     {
       "profile": "max",
@@ -169,7 +169,7 @@
       "bytes_per_s_at_fps": 2026786,
       "dct_quality_mean": 89,
       "frames_skipped": 0,
-      "encode_ms_median": 60.2
+      "encode_ms_median": 26.5
     },
     {
       "profile": "max",
@@ -177,11 +177,11 @@
       "fps": 30.0,
       "workload": "video in a window (1/4 of the screen)",
       "budget": "500 KB/s",
-      "bytes_per_frame": 10752,
-      "bytes_per_s_at_fps": 322549,
-      "dct_quality_mean": 39,
+      "bytes_per_frame": 10749,
+      "bytes_per_s_at_fps": 322462,
+      "dct_quality_mean": 45,
       "frames_skipped": 4,
-      "encode_ms_median": 48.8
+      "encode_ms_median": 19.7
     },
     {
       "profile": "max",
@@ -189,11 +189,11 @@
       "fps": 30.0,
       "workload": "full-screen video",
       "budget": "unlimited",
-      "bytes_per_frame": 1639534,
-      "bytes_per_s_at_fps": 49186006,
+      "bytes_per_frame": 578650,
+      "bytes_per_s_at_fps": 17359508,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 61.6
+      "encode_ms_median": 13.6
     },
     {
       "profile": "max",
@@ -201,11 +201,11 @@
       "fps": 30.0,
       "workload": "full-screen video",
       "budget": "2 MB/s",
-      "bytes_per_frame": 66889,
-      "bytes_per_s_at_fps": 2006662,
-      "dct_quality_mean": 51,
+      "bytes_per_frame": 67365,
+      "bytes_per_s_at_fps": 2020950,
+      "dct_quality_mean": 90,
       "frames_skipped": 0,
-      "encode_ms_median": 100.0
+      "encode_ms_median": 26.4
     },
     {
       "profile": "max",
@@ -213,11 +213,11 @@
       "fps": 30.0,
       "workload": "full-screen video",
       "budget": "500 KB/s",
-      "bytes_per_frame": 13312,
-      "bytes_per_s_at_fps": 399363,
-      "dct_quality_mean": 18,
-      "frames_skipped": 7,
-      "encode_ms_median": 74.2
+      "bytes_per_frame": 15271,
+      "bytes_per_s_at_fps": 458135,
+      "dct_quality_mean": 37,
+      "frames_skipped": 1,
+      "encode_ms_median": 20.5
     },
     {
       "profile": "high",
@@ -229,7 +229,7 @@
       "bytes_per_s_at_fps": 0,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 1.3
+      "encode_ms_median": 1.4
     },
     {
       "profile": "high",
@@ -241,7 +241,7 @@
       "bytes_per_s_at_fps": 112271,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 1.5
+      "encode_ms_median": 1.6
     },
     {
       "profile": "high",
@@ -253,7 +253,7 @@
       "bytes_per_s_at_fps": 113654,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 1.7
+      "encode_ms_median": 2.2
     },
     {
       "profile": "high",
@@ -265,7 +265,7 @@
       "bytes_per_s_at_fps": 110100,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 28.2
+      "encode_ms_median": 6.7
     },
     {
       "profile": "high",
@@ -273,11 +273,11 @@
       "fps": 30.0,
       "workload": "text scroll (8 px/frame)",
       "budget": "2 MB/s",
-      "bytes_per_frame": 3673,
-      "bytes_per_s_at_fps": 110195,
+      "bytes_per_frame": 3677,
+      "bytes_per_s_at_fps": 110296,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 29.2
+      "encode_ms_median": 5.6
     },
     {
       "profile": "high",
@@ -285,11 +285,11 @@
       "fps": 30.0,
       "workload": "text scroll (8 px/frame)",
       "budget": "500 KB/s",
-      "bytes_per_frame": 3737,
-      "bytes_per_s_at_fps": 112099,
-      "dct_quality_mean": 50,
+      "bytes_per_frame": 3688,
+      "bytes_per_s_at_fps": 110643,
+      "dct_quality_mean": 40,
       "frames_skipped": 2,
-      "encode_ms_median": 32.5
+      "encode_ms_median": 7.3
     },
     {
       "profile": "high",
@@ -301,7 +301,7 @@
       "bytes_per_s_at_fps": 26403,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 1.7
+      "encode_ms_median": 1.6
     },
     {
       "profile": "high",
@@ -313,7 +313,7 @@
       "bytes_per_s_at_fps": 125471,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 1.9
+      "encode_ms_median": 1.6
     },
     {
       "profile": "high",
@@ -325,7 +325,7 @@
       "bytes_per_s_at_fps": 128741,
       "dct_quality_mean": 60,
       "frames_skipped": 1,
-      "encode_ms_median": 2.8
+      "encode_ms_median": 2.1
     },
     {
       "profile": "high",
@@ -337,7 +337,7 @@
       "bytes_per_s_at_fps": 8344295,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 27.6
+      "encode_ms_median": 4.6
     },
     {
       "profile": "high",
@@ -349,7 +349,7 @@
       "bytes_per_s_at_fps": 2022766,
       "dct_quality_mean": 95,
       "frames_skipped": 0,
-      "encode_ms_median": 39.3
+      "encode_ms_median": 16.1
     },
     {
       "profile": "high",
@@ -357,11 +357,11 @@
       "fps": 30.0,
       "workload": "video in a window (1/4 of the screen)",
       "budget": "500 KB/s",
-      "bytes_per_frame": 14156,
-      "bytes_per_s_at_fps": 424683,
-      "dct_quality_mean": 49,
+      "bytes_per_frame": 14001,
+      "bytes_per_s_at_fps": 420019,
+      "dct_quality_mean": 51,
       "frames_skipped": 2,
-      "encode_ms_median": 36.9
+      "encode_ms_median": 12.7
     },
     {
       "profile": "high",
@@ -369,11 +369,11 @@
       "fps": 30.0,
       "workload": "full-screen video",
       "budget": "unlimited",
-      "bytes_per_frame": 911734,
-      "bytes_per_s_at_fps": 27352031,
+      "bytes_per_frame": 334536,
+      "bytes_per_s_at_fps": 10036083,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 33.6
+      "encode_ms_median": 8.0
     },
     {
       "profile": "high",
@@ -381,11 +381,11 @@
       "fps": 30.0,
       "workload": "full-screen video",
       "budget": "2 MB/s",
-      "bytes_per_frame": 67670,
-      "bytes_per_s_at_fps": 2030100,
-      "dct_quality_mean": 77,
+      "bytes_per_frame": 67085,
+      "bytes_per_s_at_fps": 2012558,
+      "dct_quality_mean": 96,
       "frames_skipped": 0,
-      "encode_ms_median": 57.2
+      "encode_ms_median": 19.1
     },
     {
       "profile": "high",
@@ -393,11 +393,11 @@
       "fps": 30.0,
       "workload": "full-screen video",
       "budget": "500 KB/s",
-      "bytes_per_frame": 15236,
-      "bytes_per_s_at_fps": 457072,
-      "dct_quality_mean": 18,
-      "frames_skipped": 3,
-      "encode_ms_median": 55.6
+      "bytes_per_frame": 16794,
+      "bytes_per_s_at_fps": 503834,
+      "dct_quality_mean": 62,
+      "frames_skipped": 0,
+      "encode_ms_median": 16.5
     },
     {
       "profile": "balanced",
@@ -421,7 +421,7 @@
       "bytes_per_s_at_fps": 56662,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 1.0
+      "encode_ms_median": 0.8
     },
     {
       "profile": "balanced",
@@ -433,7 +433,7 @@
       "bytes_per_s_at_fps": 59055,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 1.1
+      "encode_ms_median": 0.9
     },
     {
       "profile": "balanced",
@@ -445,7 +445,7 @@
       "bytes_per_s_at_fps": 65559,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 23.6
+      "encode_ms_median": 4.7
     },
     {
       "profile": "balanced",
@@ -454,10 +454,10 @@
       "workload": "text scroll (8 px/frame)",
       "budget": "2 MB/s",
       "bytes_per_frame": 2732,
-      "bytes_per_s_at_fps": 65559,
+      "bytes_per_s_at_fps": 65575,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 21.9
+      "encode_ms_median": 3.9
     },
     {
       "profile": "balanced",
@@ -465,11 +465,11 @@
       "fps": 24.0,
       "workload": "text scroll (8 px/frame)",
       "budget": "500 KB/s",
-      "bytes_per_frame": 2732,
-      "bytes_per_s_at_fps": 65575,
+      "bytes_per_frame": 2737,
+      "bytes_per_s_at_fps": 65692,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 23.4
+      "encode_ms_median": 4.0
     },
     {
       "profile": "balanced",
@@ -481,7 +481,7 @@
       "bytes_per_s_at_fps": 16850,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 1.2
+      "encode_ms_median": 0.9
     },
     {
       "profile": "balanced",
@@ -493,7 +493,7 @@
       "bytes_per_s_at_fps": 67001,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 1.2
+      "encode_ms_median": 0.9
     },
     {
       "profile": "balanced",
@@ -505,7 +505,7 @@
       "bytes_per_s_at_fps": 67285,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 1.3
+      "encode_ms_median": 0.9
     },
     {
       "profile": "balanced",
@@ -517,7 +517,7 @@
       "bytes_per_s_at_fps": 4444525,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 18.7
+      "encode_ms_median": 3.8
     },
     {
       "profile": "balanced",
@@ -529,7 +529,7 @@
       "bytes_per_s_at_fps": 1872260,
       "dct_quality_mean": 98,
       "frames_skipped": 0,
-      "encode_ms_median": 27.0
+      "encode_ms_median": 11.6
     },
     {
       "profile": "balanced",
@@ -541,7 +541,7 @@
       "bytes_per_s_at_fps": 492456,
       "dct_quality_mean": 74,
       "frames_skipped": 0,
-      "encode_ms_median": 23.8
+      "encode_ms_median": 11.0
     },
     {
       "profile": "balanced",
@@ -549,11 +549,11 @@
       "fps": 24.0,
       "workload": "full-screen video",
       "budget": "unlimited",
-      "bytes_per_frame": 727432,
-      "bytes_per_s_at_fps": 17458364,
+      "bytes_per_frame": 224592,
+      "bytes_per_s_at_fps": 5390217,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 24.9
+      "encode_ms_median": 4.9
     },
     {
       "profile": "balanced",
@@ -561,11 +561,11 @@
       "fps": 24.0,
       "workload": "full-screen video",
       "budget": "2 MB/s",
-      "bytes_per_frame": 82793,
-      "bytes_per_s_at_fps": 1987021,
-      "dct_quality_mean": 86,
+      "bytes_per_frame": 83814,
+      "bytes_per_s_at_fps": 2011538,
+      "dct_quality_mean": 98,
       "frames_skipped": 0,
-      "encode_ms_median": 43.7
+      "encode_ms_median": 11.5
     },
     {
       "profile": "balanced",
@@ -573,11 +573,11 @@
       "fps": 24.0,
       "workload": "full-screen video",
       "budget": "500 KB/s",
-      "bytes_per_frame": 21273,
-      "bytes_per_s_at_fps": 510541,
-      "dct_quality_mean": 32,
+      "bytes_per_frame": 21062,
+      "bytes_per_s_at_fps": 505477,
+      "dct_quality_mean": 87,
       "frames_skipped": 0,
-      "encode_ms_median": 51.8
+      "encode_ms_median": 11.2
     },
     {
       "profile": "low",
@@ -589,7 +589,7 @@
       "bytes_per_s_at_fps": 0,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 0.7
+      "encode_ms_median": 0.6
     },
     {
       "profile": "low",
@@ -601,7 +601,7 @@
       "bytes_per_s_at_fps": 0,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 0.7
+      "encode_ms_median": 0.5
     },
     {
       "profile": "low",
@@ -613,7 +613,7 @@
       "bytes_per_s_at_fps": 25336,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 0.7
+      "encode_ms_median": 0.6
     },
     {
       "profile": "low",
@@ -625,7 +625,7 @@
       "bytes_per_s_at_fps": 29594,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 16.3
+      "encode_ms_median": 2.7
     },
     {
       "profile": "low",
@@ -637,7 +637,7 @@
       "bytes_per_s_at_fps": 29594,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 15.1
+      "encode_ms_median": 2.7
     },
     {
       "profile": "low",
@@ -645,11 +645,11 @@
       "fps": 15.0,
       "workload": "text scroll (8 px/frame)",
       "budget": "500 KB/s",
-      "bytes_per_frame": 1973,
-      "bytes_per_s_at_fps": 29594,
+      "bytes_per_frame": 1976,
+      "bytes_per_s_at_fps": 29636,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 17.3
+      "encode_ms_median": 2.7
     },
     {
       "profile": "low",
@@ -661,7 +661,7 @@
       "bytes_per_s_at_fps": 11551,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 0.9
+      "encode_ms_median": 0.8
     },
     {
       "profile": "low",
@@ -673,7 +673,7 @@
       "bytes_per_s_at_fps": 11551,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 0.9
+      "encode_ms_median": 0.7
     },
     {
       "profile": "low",
@@ -697,7 +697,7 @@
       "bytes_per_s_at_fps": 1861006,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 10.0
+      "encode_ms_median": 2.3
     },
     {
       "profile": "low",
@@ -709,7 +709,7 @@
       "bytes_per_s_at_fps": 1861006,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 9.9
+      "encode_ms_median": 2.2
     },
     {
       "profile": "low",
@@ -721,7 +721,7 @@
       "bytes_per_s_at_fps": 504845,
       "dct_quality_mean": 96,
       "frames_skipped": 0,
-      "encode_ms_median": 16.7
+      "encode_ms_median": 7.7
     },
     {
       "profile": "low",
@@ -729,11 +729,11 @@
       "fps": 15.0,
       "workload": "full-screen video",
       "budget": "unlimited",
-      "bytes_per_frame": 488745,
-      "bytes_per_s_at_fps": 7331170,
+      "bytes_per_frame": 153579,
+      "bytes_per_s_at_fps": 2303686,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 13.0
+      "encode_ms_median": 3.3
     },
     {
       "profile": "low",
@@ -741,11 +741,11 @@
       "fps": 15.0,
       "workload": "full-screen video",
       "budget": "2 MB/s",
-      "bytes_per_frame": 138219,
-      "bytes_per_s_at_fps": 2073280,
+      "bytes_per_frame": 136274,
+      "bytes_per_s_at_fps": 2044115,
       "dct_quality_mean": 98,
       "frames_skipped": 0,
-      "encode_ms_median": 24.3
+      "encode_ms_median": 3.3
     },
     {
       "profile": "low",
@@ -753,11 +753,11 @@
       "fps": 15.0,
       "workload": "full-screen video",
       "budget": "500 KB/s",
-      "bytes_per_frame": 33569,
-      "bytes_per_s_at_fps": 503530,
-      "dct_quality_mean": 70,
+      "bytes_per_frame": 33609,
+      "bytes_per_s_at_fps": 504139,
+      "dct_quality_mean": 97,
       "frames_skipped": 0,
-      "encode_ms_median": 25.2
+      "encode_ms_median": 9.4
     },
     {
       "profile": "lossless",
@@ -769,7 +769,7 @@
       "bytes_per_s_at_fps": 0,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 9.2
+      "encode_ms_median": 8.6
     },
     {
       "profile": "lossless",
@@ -781,7 +781,7 @@
       "bytes_per_s_at_fps": 1133471,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 14.3
+      "encode_ms_median": 12.6
     },
     {
       "profile": "lossless",
@@ -793,7 +793,7 @@
       "bytes_per_s_at_fps": 16710,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 9.7
+      "encode_ms_median": 8.3
     },
     {
       "profile": "lossless",
@@ -805,7 +805,7 @@
       "bytes_per_s_at_fps": 7270435,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 12.0
+      "encode_ms_median": 9.5
     },
     {
       "profile": "lossless",
@@ -817,7 +817,7 @@
       "bytes_per_s_at_fps": 28991846,
       "dct_quality_mean": null,
       "frames_skipped": 0,
-      "encode_ms_median": 17.8
+      "encode_ms_median": 14.3
     }
   ]
 }

@@ -216,6 +216,7 @@ def hybrid_sequences():
                                                     for t, b in ((1, 2500), (2, 4000), (3, 6000), (4, 9000))]
     frames += [(img_smooth(w, h, 4), 4000, False)] * 4 + [(extreme, 2500, False), (extreme, 2500, False),
                                                            (extreme, None, False)]
+    frames += [(img_smooth(w, h, 20 + i), b, True) for i, b in enumerate((1500, 2300, 3100, 4000))]  # DCT keyframes
     page = img_text(w, h * 3, 11)  # scrolling text: COPY tiles from the previous picture
     frames += [(page[:h], None, False)] + [(page[6 * k:6 * k + h], 6000, False) for k in range(1, 5)]
     for name, max_part, comp in (("64x48-hybrid-zstd", P.DEFAULT_PART_RAW_BYTES, P.COMP_ZSTD),

@@ -146,3 +146,23 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   → **TOTAL passed=5664 failed=0**, luau-analyze OK; `scripts/check_roblox.sh` → Rojo build OK, luau-lsp (Roblox
   definitions) OK. TR-0001…TR-0007 results are superseded by these reruns (code changed: `server.py`, `app.py`,
   `RlpsServer`, `RlpsClient`, `RlpsRelayCore`).
+
+## TR-0011 — Stream v2 (29th session, 2026-10-31): hybrid codec, bundles, congestion control, scroll copies
+
+- **Environment**: agent sandbox (Linux x86_64, 4 vCPU Xeon 2.1 GHz), Python 3.11.17, numpy 2.4.6, OpenCV 5.0,
+  zstandard, mss 10.x, Xvfb, Lune 0.10.4, Luau 0.744, Rojo 7.7.1, luau-lsp 1.70.1.
+- **Commands / results at the session's final commit**: `cd desktop && python3 -m pytest -q` → **84 passed** (+327
+  subtests; new `test_hybrid.py`: bit-exact float/integer IDCT, budgets, skip, convergence, scroll copies, copy
+  validation); `python3 roblox/tests/run_luau_tests.py --analyze` → **5,984 / 0** (hybrid DCT sequences at many
+  qualities, extreme coefficients, COPY tiles, bundles, hybrid corruption cases — Luau pixels bit-identical to Python);
+  `scripts/check_roblox.sh` → Rojo build + luau-lsp strict (Roblox API types) OK; `python3 tests/e2e/run_e2e.py` →
+  **25 / 25** (`docs/testing/evidence/e2e-report.json`).
+- **Defects found by the live test and fixed during this work**: client queue used `#` on a table with leading `nil`s
+  and silently dropped frame parts (desyncs); a "no news" status carried the newest seq and made the relay skip deltas
+  (v1 advance semantics); a keyframe request could be cleared by a delta finishing at the same time; a desynced client
+  retried sync only once; frame rate was not limited by client decode speed (even an unthrottled client fell behind);
+  long history replays re-lagged resynced clients; scroll detection compared against a lossy picture (never matched)
+  and against the previous capture (sub-pixel drift).
+- **Benchmark**: `scripts/bench.py` → `docs/testing/evidence/bench.txt` (PERFORMANCE.md).
+- **Not verified**: real Roblox (replication throughput, native-code decode speed on clients, raw-body probe outcome on
+  live servers), the owner's PC (encode time, dxcam). CI status of the final commit: see PR #1 checks.

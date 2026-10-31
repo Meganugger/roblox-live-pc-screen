@@ -1,72 +1,72 @@
 {"python": "3.11.17", "machine": "x86_64", "system": "Linux", "cpu_count": 4, "numpy": "2.4.6"}
-capture {"profile": "max", "source": "1920x1080", "grab_ms_median": 1.85, "resize_quantize_ms_median": 3.34}
-capture {"profile": "high", "source": "1920x1080", "grab_ms_median": 1.83, "resize_quantize_ms_median": 5.82}
-capture {"profile": "balanced", "source": "1920x1080", "grab_ms_median": 1.82, "resize_quantize_ms_median": 4.99}
-capture {"profile": "low", "source": "1920x1080", "grab_ms_median": 1.71, "resize_quantize_ms_median": 2.52}
-capture {"profile": "lossless", "source": "1920x1080", "grab_ms_median": 1.74, "resize_quantize_ms_median": 2.84}
+capture {"profile": "max", "source": "1920x1080", "grab_ms_median": 1.87, "resize_quantize_ms_median": 3.41}
+capture {"profile": "high", "source": "1920x1080", "grab_ms_median": 1.71, "resize_quantize_ms_median": 6.42}
+capture {"profile": "balanced", "source": "1920x1080", "grab_ms_median": 1.64, "resize_quantize_ms_median": 4.73}
+capture {"profile": "low", "source": "1920x1080", "grab_ms_median": 1.79, "resize_quantize_ms_median": 2.68}
+capture {"profile": "lossless", "source": "1920x1080", "grab_ms_median": 1.59, "resize_quantize_ms_median": 2.47}
 profile   workload                                   budget  B/frame       B/s  DCT q  skip  enc ms
-max       static desktop                          unlimited        0         0   None     0     2.3
-max       static desktop                             2 MB/s     6586    197575   None     0     2.8
+max       static desktop                          unlimited        0         0   None     0     2.1
+max       static desktop                             2 MB/s     6586    197575   None     0     2.7
 max       static desktop                           500 KB/s     3278     98354   None     0     3.0
-max       text scroll (8 px/frame)                unlimited     5856    175666   None     0    57.7
-max       text scroll (8 px/frame)                   2 MB/s     5864    175928   None     0    59.2
-max       text scroll (8 px/frame)                 500 KB/s     4074    122212     20     5    63.9
-max       window drag (12 px/frame)               unlimited     1044     31323   None     0     2.6
-max       window drag (12 px/frame)                  2 MB/s     6895    206842   None     0     2.8
-max       window drag (12 px/frame)                500 KB/s     4251    127522     98     4     3.5
-max       video in a window (1/4 of the screen)   unlimited   488548  14656443   None     0    43.3
-max       video in a window (1/4 of the screen)      2 MB/s    67560   2026786     89     0    60.2
-max       video in a window (1/4 of the screen)    500 KB/s    10752    322549     39     4    48.8
-max       full-screen video                       unlimited  1639534  49186006   None     0    61.6
-max       full-screen video                          2 MB/s    66889   2006662     51     0   100.0
-max       full-screen video                        500 KB/s    13312    399363     18     7    74.2
-high      static desktop                          unlimited        0         0   None     0     1.3
-high      static desktop                             2 MB/s     3742    112271   None     0     1.5
-high      static desktop                           500 KB/s     3788    113654   None     0     1.7
-high      text scroll (8 px/frame)                unlimited     3670    110100   None     0    28.2
-high      text scroll (8 px/frame)                   2 MB/s     3673    110195   None     0    29.2
-high      text scroll (8 px/frame)                 500 KB/s     3737    112099     50     2    32.5
-high      window drag (12 px/frame)               unlimited      880     26403   None     0     1.7
-high      window drag (12 px/frame)                  2 MB/s     4182    125471   None     0     1.9
-high      window drag (12 px/frame)                500 KB/s     4291    128741     60     1     2.8
-high      video in a window (1/4 of the screen)   unlimited   278143   8344295   None     0    27.6
-high      video in a window (1/4 of the screen)      2 MB/s    67426   2022766     95     0    39.3
-high      video in a window (1/4 of the screen)    500 KB/s    14156    424683     49     2    36.9
-high      full-screen video                       unlimited   911734  27352031   None     0    33.6
-high      full-screen video                          2 MB/s    67670   2030100     77     0    57.2
-high      full-screen video                        500 KB/s    15236    457072     18     3    55.6
+max       text scroll (8 px/frame)                unlimited     5856    175666   None     0    10.7
+max       text scroll (8 px/frame)                   2 MB/s     5873    176204   None     0    13.6
+max       text scroll (8 px/frame)                 500 KB/s     4089    122665     20     5    11.9
+max       window drag (12 px/frame)               unlimited     1044     31323   None     0     2.8
+max       window drag (12 px/frame)                  2 MB/s     6895    206842   None     0     3.0
+max       window drag (12 px/frame)                500 KB/s     4251    127522     98     4     3.8
+max       video in a window (1/4 of the screen)   unlimited   488548  14656443   None     0     8.0
+max       video in a window (1/4 of the screen)      2 MB/s    67560   2026786     89     0    26.5
+max       video in a window (1/4 of the screen)    500 KB/s    10749    322462     45     4    19.7
+max       full-screen video                       unlimited   578650  17359508   None     0    13.6
+max       full-screen video                          2 MB/s    67365   2020950     90     0    26.4
+max       full-screen video                        500 KB/s    15271    458135     37     1    20.5
+high      static desktop                          unlimited        0         0   None     0     1.4
+high      static desktop                             2 MB/s     3742    112271   None     0     1.6
+high      static desktop                           500 KB/s     3788    113654   None     0     2.2
+high      text scroll (8 px/frame)                unlimited     3670    110100   None     0     6.7
+high      text scroll (8 px/frame)                   2 MB/s     3677    110296   None     0     5.6
+high      text scroll (8 px/frame)                 500 KB/s     3688    110643     40     2     7.3
+high      window drag (12 px/frame)               unlimited      880     26403   None     0     1.6
+high      window drag (12 px/frame)                  2 MB/s     4182    125471   None     0     1.6
+high      window drag (12 px/frame)                500 KB/s     4291    128741     60     1     2.1
+high      video in a window (1/4 of the screen)   unlimited   278143   8344295   None     0     4.6
+high      video in a window (1/4 of the screen)      2 MB/s    67426   2022766     95     0    16.1
+high      video in a window (1/4 of the screen)    500 KB/s    14001    420019     51     2    12.7
+high      full-screen video                       unlimited   334536  10036083   None     0     8.0
+high      full-screen video                          2 MB/s    67085   2012558     96     0    19.1
+high      full-screen video                        500 KB/s    16794    503834     62     0    16.5
 balanced  static desktop                          unlimited        0         0   None     0     0.9
-balanced  static desktop                             2 MB/s     2361     56662   None     0     1.0
-balanced  static desktop                           500 KB/s     2461     59055   None     0     1.1
-balanced  text scroll (8 px/frame)                unlimited     2732     65559   None     0    23.6
-balanced  text scroll (8 px/frame)                   2 MB/s     2732     65559   None     0    21.9
-balanced  text scroll (8 px/frame)                 500 KB/s     2732     65575   None     0    23.4
-balanced  window drag (12 px/frame)               unlimited      702     16850   None     0     1.2
-balanced  window drag (12 px/frame)                  2 MB/s     2792     67001   None     0     1.2
-balanced  window drag (12 px/frame)                500 KB/s     2804     67285   None     0     1.3
-balanced  video in a window (1/4 of the screen)   unlimited   185189   4444525   None     0    18.7
-balanced  video in a window (1/4 of the screen)      2 MB/s    78011   1872260     98     0    27.0
-balanced  video in a window (1/4 of the screen)    500 KB/s    20519    492456     74     0    23.8
-balanced  full-screen video                       unlimited   727432  17458364   None     0    24.9
-balanced  full-screen video                          2 MB/s    82793   1987021     86     0    43.7
-balanced  full-screen video                        500 KB/s    21273    510541     32     0    51.8
-low       static desktop                          unlimited        0         0   None     0     0.7
-low       static desktop                             2 MB/s        0         0   None     0     0.7
-low       static desktop                           500 KB/s     1689     25336   None     0     0.7
-low       text scroll (8 px/frame)                unlimited     1973     29594   None     0    16.3
-low       text scroll (8 px/frame)                   2 MB/s     1973     29594   None     0    15.1
-low       text scroll (8 px/frame)                 500 KB/s     1973     29594   None     0    17.3
-low       window drag (12 px/frame)               unlimited      770     11551   None     0     0.9
-low       window drag (12 px/frame)                  2 MB/s      770     11551   None     0     0.9
+balanced  static desktop                             2 MB/s     2361     56662   None     0     0.8
+balanced  static desktop                           500 KB/s     2461     59055   None     0     0.9
+balanced  text scroll (8 px/frame)                unlimited     2732     65559   None     0     4.7
+balanced  text scroll (8 px/frame)                   2 MB/s     2732     65575   None     0     3.9
+balanced  text scroll (8 px/frame)                 500 KB/s     2737     65692   None     0     4.0
+balanced  window drag (12 px/frame)               unlimited      702     16850   None     0     0.9
+balanced  window drag (12 px/frame)                  2 MB/s     2792     67001   None     0     0.9
+balanced  window drag (12 px/frame)                500 KB/s     2804     67285   None     0     0.9
+balanced  video in a window (1/4 of the screen)   unlimited   185189   4444525   None     0     3.8
+balanced  video in a window (1/4 of the screen)      2 MB/s    78011   1872260     98     0    11.6
+balanced  video in a window (1/4 of the screen)    500 KB/s    20519    492456     74     0    11.0
+balanced  full-screen video                       unlimited   224592   5390217   None     0     4.9
+balanced  full-screen video                          2 MB/s    83814   2011538     98     0    11.5
+balanced  full-screen video                        500 KB/s    21062    505477     87     0    11.2
+low       static desktop                          unlimited        0         0   None     0     0.6
+low       static desktop                             2 MB/s        0         0   None     0     0.5
+low       static desktop                           500 KB/s     1689     25336   None     0     0.6
+low       text scroll (8 px/frame)                unlimited     1973     29594   None     0     2.7
+low       text scroll (8 px/frame)                   2 MB/s     1973     29594   None     0     2.7
+low       text scroll (8 px/frame)                 500 KB/s     1976     29636   None     0     2.7
+low       window drag (12 px/frame)               unlimited      770     11551   None     0     0.8
+low       window drag (12 px/frame)                  2 MB/s      770     11551   None     0     0.7
 low       window drag (12 px/frame)                500 KB/s     2205     33075   None     0     0.8
-low       video in a window (1/4 of the screen)   unlimited   124067   1861006   None     0    10.0
-low       video in a window (1/4 of the screen)      2 MB/s   124067   1861006   None     0     9.9
-low       video in a window (1/4 of the screen)    500 KB/s    33656    504845     96     0    16.7
-low       full-screen video                       unlimited   488745   7331170   None     0    13.0
-low       full-screen video                          2 MB/s   138219   2073280     98     0    24.3
-low       full-screen video                        500 KB/s    33569    503530     70     0    25.2
-lossless  static desktop                          unlimited        0         0   None     0     9.2
-lossless  text scroll (8 px/frame)                unlimited    75565   1133471   None     0    14.3
-lossless  window drag (12 px/frame)               unlimited     1114     16710   None     0     9.7
-lossless  video in a window (1/4 of the screen)   unlimited   484696   7270435   None     0    12.0
-lossless  full-screen video                       unlimited  1932790  28991846   None     0    17.8
+low       video in a window (1/4 of the screen)   unlimited   124067   1861006   None     0     2.3
+low       video in a window (1/4 of the screen)      2 MB/s   124067   1861006   None     0     2.2
+low       video in a window (1/4 of the screen)    500 KB/s    33656    504845     96     0     7.7
+low       full-screen video                       unlimited   153579   2303686   None     0     3.3
+low       full-screen video                          2 MB/s   136274   2044115     98     0     3.3
+low       full-screen video                        500 KB/s    33609    504139     97     0     9.4
+lossless  static desktop                          unlimited        0         0   None     0     8.6
+lossless  text scroll (8 px/frame)                unlimited    75565   1133471   None     0    12.6
+lossless  window drag (12 px/frame)               unlimited     1114     16710   None     0     8.3
+lossless  video in a window (1/4 of the screen)   unlimited   484696   7270435   None     0     9.5
+lossless  full-screen video                       unlimited  1932790  28991846   None     0    14.3
