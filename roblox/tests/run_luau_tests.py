@@ -31,7 +31,9 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(REPO, "desktop"))
 
 from rlps import codec as C  # noqa: E402
+from rlps import hybrid as HY  # noqa: E402
 from rlps import protocol as P  # noqa: E402
+from rlps import server as SV  # noqa: E402
 from rlps.protocol import ProtocolError  # noqa: E402
 
 import zstandard  # noqa: E402
@@ -102,10 +104,11 @@ def expect_case(data: bytes) -> dict:
     out = {"fields": fields(c)}
     if c.state == P.STATE_LIVE and not c.flags & P.CFLAG_UNCHANGED:
         frame = np.zeros((c.height, c.width, 4), np.uint8)
+        ref = frame.copy() if c.parts and c.parts[0].flags & P.PFLAG_REF else None
         apply_err = None
         for part in c.parts:
             try:
-                C.apply_part(frame, part)
+                C.apply_part(frame, part, ref)
             except ProtocolError as e:
                 msg = str(e)
                 apply_err = "*" if msg.startswith(("bad zstd frame", "zstd decode failed")) else msg
@@ -168,6 +171,8 @@ def sequences():
          [img_gradient(160, 90), moved_rect(img_gradient(160, 90), 0, 0, 20, (255, 255, 0)), img_noise(160, 90, 5)]),
         ("resize-48x20-then-20x48", P.FMT_RGB565, 16, P.COMP_ZSTD, P.DEFAULT_PART_RAW_BYTES,
          [img_gradient(48, 20), img_gradient(20, 48)]),
+        ("37x21-rgba8-t16-zstd", P.FMT_RGBA8, 16, P.COMP_ZSTD, P.DEFAULT_PART_RAW_BYTES,
+         [img_noise(37, 21, 8), moved_rect(img_noise(37, 21, 8), 30, 14, 7, (255, 0, 255))]),
     ]
     for name, fmt, ts, comp, max_part, frames in configs:
         enc = C.FrameEncoder(compression=comp, max_part_raw_bytes=max_part, tile_size=ts)
@@ -188,6 +193,55 @@ def sequences():
             assert np.array_equal(ref[..., :3] >> 3, C.expand_to_rgba(q, fmt)[..., :3] >> 3)
             steps.append({"data": data, "fields": fields(c), "crc": frame_crc(ref), "dirty": dirty_rect(c)})
             prev_q = q
+        out.append({"name": name, "steps": steps})
+    out.extend(hybrid_sequences())
+    return out
+
+
+def img_smooth(w, h, t):
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    a = np.stack([128 + 110 * np.sin((xx + 9 * t) / 11), 128 + 110 * np.sin((yy - 4 * t) / 7),
+                  128 + 100 * np.sin((xx * 2 + yy) / 13)], axis=2)
+    return np.clip(a + np.random.default_rng(t).normal(0, 9, a.shape), 0, 255).astype(np.uint8)
+
+
+def hybrid_sequences():
+    """FMT_HYBRID chains with DCT tiles at many quality steps, lossless refinement and extreme pixels (clamping)."""
+    out = []
+    w, h = 64, 48
+    extreme = img_solid(w, h, (0, 0, 0))
+    extreme[:, w // 2:] = (255, 255, 255)
+    extreme[::2, ::3] = (255, 0, 0)
+    frames = [(img_smooth(w, h, 0), 1500, True)] + [(img_smooth(w, h, t), b, False)
+                                                    for t, b in ((1, 2500), (2, 4000), (3, 6000), (4, 9000))]
+    frames += [(img_smooth(w, h, 4), 4000, False)] * 4 + [(extreme, 2500, False), (extreme, 2500, False),
+                                                           (extreme, None, False)]
+    frames += [(img_smooth(w, h, 20 + i), b, True) for i, b in enumerate((1500, 2300, 3100, 4000))]  # DCT keyframes
+    page = img_text(w, h * 3, 11)  # scrolling text: COPY tiles from the previous picture
+    frames += [(page[:h], None, False)] + [(page[6 * k:6 * k + h], 6000, False) for k in range(1, 5)]
+    for name, max_part, comp in (("64x48-hybrid-zstd", P.DEFAULT_PART_RAW_BYTES, P.COMP_ZSTD),
+                                 ("64x48-hybrid-none-small-parts", 3 * 1027, P.COMP_NONE)):
+        enc = HY.HybridEncoder(w, h, packer=C.FrameEncoder(compression=comp, tile_size=16, max_part_raw_bytes=max_part))
+        session = 0xB0B0_0000 + len(out)
+        ref, seq, steps, qualities, copies = None, 0, [], set(), 0
+        scale = 1 if comp == P.COMP_ZSTD else 5  # uncompressed DCT tiles are 770 bytes at every quality
+        for rgb, budget, force in frames:
+            data, info = enc.encode(C.quantize(rgb, P.FMT_HYBRID), session_id=session, seq=seq + 1, base_seq=seq,
+                                    budget=None if budget is None else budget * scale, force_keyframe=force)
+            if data is None:
+                continue
+            seq += 1
+            qualities.add(info.quality)
+            copies += info.copied_tiles
+            note_zstd(data)
+            c = C.parse_container(data)
+            ref = C.apply_container(ref, c)
+            assert np.array_equal(ref, enc.recon)
+            steps.append({"data": data, "fields": fields(c), "crc": frame_crc(ref), "dirty": dirty_rect(c)})
+        if comp == P.COMP_ZSTD:
+            assert len(qualities - {-1}) >= 3, qualities  # several DCT quality steps exercised
+        assert -1 in qualities and len(qualities) >= 2, qualities  # lossless and DCT frames
+        assert copies > 0, "scroll frames must produce COPY tiles"
         out.append({"name": name, "steps": steps})
     return out
 
@@ -264,7 +318,79 @@ def payload_cases():
             b[32 + 32:32 + 36] = raw_len.to_bytes(4, "little")
             blob = bytes(b)
         cases.append({"name": name, "data": blob, **expect_case(blob)})
+    cases.extend(hybrid_payload_cases())
     return cases
+
+
+def hybrid_payload_cases():
+    """Hand-built uncompressed FMT_HYBRID parts: tile modes, entry lengths, quality byte, dimensions."""
+    from rlps import dct
+    w, h = 32, 16  # 2x1 tiles
+
+    def container(entries, width=w, height=h, indices=None):
+        idx = list(range(len(entries))) if indices is None else indices
+        raw = np.asarray(idx, "<u2").tobytes() + b"".join(entries)
+        ph = P.PART_HEADER.pack(P.VERSION, P.COMP_NONE, P.FMT_HYBRID, P.PFLAG_KEYFRAME, 16, 0, 0, 1, width, height,
+                                len(idx), 3, 1, 0, len(raw), len(raw))
+        body = ph + raw
+        return P.CONTAINER_HEADER.pack(P.CONTAINER_MAGIC, P.VERSION, P.STATE_LIVE, P.CFLAG_KEYFRAME, 0, 3, 1, 0, width,
+                                       height, P.FMT_HYBRID, 16, 1, len(body)) + body
+
+    raw_tile = bytes((P.TILE_MODE_RAW,)) + bytes(range(256)) * 4
+    qz = dct.quantize(dct.forward_coefficients(img_smooth(16, 16, 3)[None]), 6)
+    dct_tile = dct.pack_entries(qz, 6)[0]
+    max_coef = bytes((P.TILE_MODE_DCT, 15)) + np.full(384, 32767, "<i2").tobytes()
+    min_coef = bytes((P.TILE_MODE_DCT, 0)) + np.full(384, -32768, "<i2").tobytes()
+    def copy_entry(dx, dy):
+        return bytes((P.TILE_MODE_COPY,)) + dx.to_bytes(2, "little", signed=True) + dy.to_bytes(2, "little", signed=True)
+
+    def ref_container(entries, flags=P.PFLAG_REF):
+        idx = list(range(len(entries)))
+        raw = np.asarray(idx, "<u2").tobytes() + b"".join(entries)
+        ph = P.PART_HEADER.pack(P.VERSION, P.COMP_NONE, P.FMT_HYBRID, flags, 16, 0, 0, 1, w, h, len(idx), 3, 2, 1,
+                                len(raw), len(raw))
+        body = ph + raw
+        return P.CONTAINER_HEADER.pack(P.CONTAINER_MAGIC, P.VERSION, P.STATE_LIVE, 0, 0, 3, 2, 1, w, h, P.FMT_HYBRID,
+                                       16, 1, len(body)) + body
+
+    specs = {
+        "hy-copy-ok": ref_container([copy_entry(16, 0), raw_tile]),
+        "hy-copy-outside": ref_container([copy_entry(-1, 0), raw_tile]),
+        "hy-copy-outside-y": ref_container([copy_entry(0, 1), raw_tile]),
+        "hy-copy-no-ref-flag": ref_container([copy_entry(16, 0), raw_tile], flags=0),
+        "hy-key-with-ref": container([raw_tile]) [:32 + 3] + bytes((P.PFLAG_KEYFRAME | P.PFLAG_REF,)) + container([raw_tile])[32 + 4:],
+        "hy-raw+dct": container([raw_tile, dct_tile]),
+        "hy-dct-extremes": container([max_coef, min_coef]),
+        "hy-unknown-mode": container([raw_tile, bytes((5,)) + dct_tile[1:]]),
+        "hy-bad-quality": container([raw_tile, dct_tile[:1] + bytes((16,)) + dct_tile[2:]]),
+        "hy-short-entry": container([raw_tile, dct_tile[:-2]]),
+        "hy-long-data": container([raw_tile, dct_tile + b"\x00"]),
+        "hy-odd-dims": container([raw_tile], width=24, height=16, indices=[0]),
+    }
+    return [{"name": name, "data": blob, **expect_case(blob)} for name, blob in specs.items()]
+
+
+def bundle_cases():
+    """RLPB bundles: a valid one (entries + offsets) and malformed variants with Python's verdict."""
+    good = SV.bundle([(0, b"abc"), (33, b"defgh"), (70000, b"")])
+    variants = {"good": good, "empty-count": SV.bundle([]), "trunc-header": good[:11], "bad-magic": b"RLPX" + good[4:],
+                "bad-version": good[:4] + b"\x02" + good[5:], "length+1": good + b"\x00", "length-1": good[:-1]}
+    big = bytearray(good)
+    big[12 + 4:12 + 8] = (1000).to_bytes(4, "little")  # first entry claims 1000 bytes
+    variants["entry-overrun"] = bytes(big)
+    out = []
+    for name, blob in variants.items():
+        try:
+            entries = SV.parse_bundle(blob)
+            off, offs = P.BUNDLE_HEADER.size, []
+            for t, c in entries:
+                off += P.BUNDLE_ENTRY.size
+                offs.append({"t": t, "offset": off, "length": len(c)})
+                off += len(c)
+            out.append({"name": name, "data": blob, "entries": offs})
+        except ProtocolError as e:
+            out.append({"name": name, "data": blob, "err": str(e)})
+    return out
 
 
 def base64_cases():
@@ -314,6 +440,9 @@ def write_vectors(path):
         fh.write("\t},\n\tpayload = {\n")
         for c in pcases:
             fh.write("\t\t" + lval(c) + ",\n")
+        fh.write("\t},\n\tbundles = {\n")
+        for c in bundle_cases():
+            fh.write("\t\t" + lval(c) + ",\n")
         fh.write("\t},\n\tbase64 = {\n")
         for c in base64_cases():
             fh.write("\t\t" + lval(c) + ",\n")
@@ -344,9 +473,10 @@ def main():
             for fn in sorted(os.listdir(d)) if os.path.isdir(d) else []:
                 # Scripts (*.server.luau / *.client.luau) use Roblox globals: type-checked separately, never run here.
                 if fn.endswith(".luau") and not fn.endswith((".server.luau", ".client.luau")):
-                    src = open(os.path.join(d, fn), encoding="utf-8").read()
-                    src = re.sub(r"require\(script\.Parent\.(\w+)\)", r'require("./\1")', src)
-                    open(os.path.join(tmp, fn), "w", encoding="utf-8").write(src)
+                    with open(os.path.join(d, fn), encoding="utf-8") as fh:
+                        src = re.sub(r"require\(script\.Parent\.(\w+)\)", r'require("./\1")', fh.read())
+                    with open(os.path.join(tmp, fn), "w", encoding="utf-8") as fh:
+                        fh.write(src)
                     modules.append(fn)
         specs = sorted(fn for fn in os.listdir(HERE) if fn.endswith(".spec.luau"))
         for fn in specs + [f for f in os.listdir(HERE) if f.endswith("_helpers.luau")]:
@@ -356,9 +486,10 @@ def main():
         rc = 0
         if a.analyze:
             analyze = os.path.join(os.path.dirname(luau), "luau-analyze")
-            r = subprocess.run([analyze, *modules], cwd=tmp, capture_output=True, text=True)
-            print("luau-analyze (%d modules):" % len(modules), "OK" if r.returncode == 0 else "FAIL")
-            if r.returncode:
+            r = subprocess.run([analyze, *modules, *specs], cwd=tmp, capture_output=True, text=True)
+            clean = r.returncode == 0 and not (r.stdout + r.stderr).strip()  # type errors and lint warnings both fail
+            print(f"luau-analyze ({len(modules)} modules, {len(specs)} specs):", "OK" if clean else "FAIL")
+            if not clean:
                 print(r.stdout + r.stderr)
                 rc = 1
         total_pass = total_fail = 0

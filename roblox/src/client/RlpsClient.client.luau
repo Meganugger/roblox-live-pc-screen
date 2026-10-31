@@ -1,4 +1,5 @@
 --!strict
+--!native
 -- RLPS client script (T-0012): rebuilds the shared desktop on this client and shows it on the in-world TV.
 --
 -- Receives part records from RlpsServer over ReplicatedStorage.RlpsFrames, assembles frames with RlpsClientCore
@@ -22,9 +23,12 @@ local ClientCore = require(Shared:WaitForChild("RlpsClientCore"))
 local frames = ReplicatedStorage:WaitForChild("RlpsFrames") :: RemoteEvent
 
 local SCREEN_TAG = "RlpsScreen"
+local DEFAULT_DECODE_BUDGET_MS = 10 -- per Heartbeat; the server may override it (RemoteEvent attribute DecodeBudgetMs)
+local ACK_INTERVAL = 0.1 -- seconds between "ack" messages (congestion control on the server)
+local MAX_QUEUE = 4000 -- queued messages; beyond it the stream is dropped and re-synced (should never happen)
 local SYNC_COOLDOWN = 3 -- seconds between sync requests (startup retry / desync recovery)
 local RENDER_DISTANCE = 300 -- studs; farther away the picture is not redrawn (frames are still assembled)
-local PIXELS_PER_STUD = 50
+local PIXELS_PER_STUD = 50 -- until the first picture; then the canvas matches the image resolution
 local IMAGE_RETRY = 5 -- seconds between EditableImage creation attempts after a failure
 
 type State = "connecting" | "live" | "stopped" | "error"
@@ -35,6 +39,13 @@ local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
 -- ------------------------------------------------------------------------------------------------- frame assembly
 
 local function decompress(payload: buffer, rawLength: number): (buffer?, string?)
+	-- the declared content size is checked before decompressing, so a bad part can never allocate more than rawLength
+	local okSize, size = pcall(function(): number?
+		return EncodingService:GetDecompressedBufferSize(payload, Enum.CompressionAlgorithm.Zstd)
+	end)
+	if not okSize or size ~= rawLength then
+		return nil, "zstd content size does not match rawLength"
+	end
 	local ok, out = pcall(function(): buffer
 		return EncodingService:DecompressBuffer(payload, Enum.CompressionAlgorithm.Zstd)
 	end)
@@ -93,9 +104,16 @@ local function addScreen(part: Instance)
 	local gui = Instance.new("SurfaceGui")
 	gui.Name = "RlpsScreenGui"
 	gui.Adornee = part
+	-- RlpsFace attribute picks the face; an unknown name falls back to Front (indexing Enum.NormalId with an unknown
+	-- name raises, so look it up among the enum items instead)
 	local faceName = part:GetAttribute("RlpsFace")
-	gui.Face = if typeof(faceName) == "string" and (Enum.NormalId :: any)[faceName] then (Enum.NormalId :: any)[faceName]
-		else Enum.NormalId.Front
+	local face = Enum.NormalId.Front
+	for _, item in Enum.NormalId:GetEnumItems() do
+		if item.Name == faceName then
+			face = item
+		end
+	end
+	gui.Face = face
 	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
 	gui.PixelsPerStud = PIXELS_PER_STUD
 	gui.LightInfluence = 0
@@ -200,6 +218,9 @@ local function ensureImage(w: number, h: number): EditableImage?
 	end
 	editable = res
 	needFullRedraw = true
+	for _, s in screens do -- one canvas pixel per image pixel across the screen's width: no extra blur
+		s.gui.PixelsPerStud = math.clamp(w / math.max(s.part.Size.X, 0.1), 10, 400)
+	end
 	refreshAll()
 	return res
 end
@@ -253,17 +274,50 @@ end
 
 -- ------------------------------------------------------------------------------------------------------ networking
 
+-- Bytes of part records processed (or dropped) so far. The server keeps what it sent but this client has not
+-- processed yet — its backlog — within about a second of this client's speed (RlpsFanout); acks report it.
+local processed = 0
+
 local lastSync = -math.huge
 local function requestSync()
 	local now = os.clock()
 	if now - lastSync >= SYNC_COOLDOWN then
 		lastSync = now
-		frames:FireServer("sync")
+		frames:FireServer("sync", processed)
 	end
 end
 
-frames.OnClientEvent:Connect(function(kind: unknown, a: unknown, b: unknown, c: unknown)
+-- Messages are queued and processed on Heartbeat within a time budget, so a large frame never freezes the game:
+-- a frame may be assembled over several game frames (the EditableImage keeps showing the previous complete one).
+type Msg = { kind: string, a: unknown, b: unknown, c: unknown }
+local queue: { Msg } = {}
+local qHead, qTail = 1, 0 -- explicit bounds: processed slots are set to nil, so `#queue` would be meaningless
+local lastAckAt = 0
+local ackedSession, ackedSeq, ackedBytes = 0, 0, 0
+local decodeSpent = 0 -- seconds of decoding spent on the frame being assembled
+local costMs = 0 -- moving average decode cost of one complete frame (sent with acks: the server derives a fps cap)
+
+local function countPart(a: unknown)
+	if typeof(a) == "buffer" then
+		processed += buffer.len(a :: buffer)
+	end
+end
+
+local function dropQueue()
+	for i = qHead, qTail do
+		local m = queue[i]
+		if m and m.kind == "part" then
+			countPart(m.a) -- dropped parts count as processed: the server must not wait for them
+		end
+	end
+	table.clear(queue)
+	qHead, qTail = 1, 0
+end
+
+local function handle(m: Msg)
+	local kind, a, b, c = m.kind, m.a, m.b, m.c
 	if kind == "part" then
+		countPart(a)
 		if typeof(a) ~= "buffer" then
 			return
 		end
@@ -280,26 +334,109 @@ frames.OnClientEvent:Connect(function(kind: unknown, a: unknown, b: unknown, c: 
 			end
 		end
 	elseif kind == "status" then
-		local s = if typeof(a) == "string" then a else "error"
+		local st = if typeof(a) == "string" then a else "error"
 		local d = if typeof(b) == "string" then b else nil
-		if s == "live" then
+		if st == "live" then
 			setState(if core.framesCompleted > 0 and editable then "live" else "connecting", d)
 			renderPending = true
-		elseif s == "stopped" or s == "error" or s == "connecting" then
-			setState(s :: State, d)
+		elseif st == "stopped" or st == "error" or st == "connecting" then
+			setState(st :: State, d)
 		end
 	elseif kind == "reset" then
 		core:reset()
 		needFullRedraw = true
 	end
+end
+
+frames.OnClientEvent:Connect(function(kind: unknown, a: unknown, b: unknown, c: unknown)
+	if typeof(kind) ~= "string" then
+		return
+	end
+	if kind == "status" and a == "stopped" then
+		-- sharing stopped: drop everything still queued at once (no further pixel of the owner's screen is shown)
+		dropQueue()
+	end
+	if qTail - qHead + 1 >= MAX_QUEUE then
+		dropQueue()
+		if kind == "part" then
+			countPart(a)
+		end
+		core:reset()
+		requestSync()
+		return
+	end
+	qTail += 1
+	queue[qTail] = { kind = kind :: string, a = a, b = b, c = c }
 end)
 
+local function processQueue()
+	local budgetMs = frames:GetAttribute("DecodeBudgetMs")
+	local budget = (if typeof(budgetMs) == "number" then budgetMs else DEFAULT_DECODE_BUDGET_MS) / 1000
+	local started = os.clock()
+	while qHead <= qTail do
+		local m = queue[qHead]
+		queue[qHead] = nil :: any
+		qHead += 1
+		local t0 = os.clock()
+		handle(m)
+		decodeSpent += os.clock() - t0
+		if m.kind == "part" and renderPending and core.pendingSeq == 0 then
+			local ms = decodeSpent * 1000
+			costMs = if costMs == 0 then ms else costMs * 0.8 + ms * 0.2
+			decodeSpent = 0
+		end
+		if renderPending and core.pendingSeq == 0 then
+			render() -- each completed frame goes to the EditableImage before the next one is assembled
+		end
+		if os.clock() - started >= budget then
+			break
+		end
+	end
+	if qHead > qTail then
+		table.clear(queue)
+		qHead, qTail = 1, 0
+	end
+end
+
+local function sendAck()
+	local now = os.clock()
+	if now - lastAckAt < ACK_INTERVAL then
+		return
+	end
+	if core.sessionId ~= ackedSession or core.seq ~= ackedSeq or processed ~= ackedBytes then
+		lastAckAt = now
+		ackedSession, ackedSeq, ackedBytes = core.sessionId, core.seq, processed
+		frames:FireServer("ack", core.sessionId, core.seq, costMs, processed)
+	end
+end
+
+local lastDiag = 0
+local function diagnostics()
+	-- visible in the client's Explorer / F9 console: StarterPlayerScripts.RlpsClient attributes
+	local now = os.clock()
+	if now - lastDiag < 1 then
+		return
+	end
+	lastDiag = now
+	script:SetAttribute("State", state)
+	script:SetAttribute("Seq", core.seq)
+	script:SetAttribute("FramesCompleted", core.framesCompleted)
+	script:SetAttribute("Desyncs", core.desyncs)
+	script:SetAttribute("LastError", core.lastError or "")
+	script:SetAttribute("LastDetail", core.lastDetail or "")
+	script:SetAttribute("QueueLength", qTail - qHead + 1)
+	script:SetAttribute("DecodeMsPerFrame", math.floor(costMs * 10 + 0.5) / 10)
+end
+
 RunService.Heartbeat:Connect(function()
+	processQueue()
+	diagnostics()
 	if renderPending or needFullRedraw then
 		render()
 	end
-	if state == "connecting" and core.framesCompleted == 0 then
-		requestSync() -- rate-limited: retries until the server answers with its history
+	sendAck()
+	if (state == "connecting" and core.framesCompleted == 0) or (core.desynced and state == "live") then
+		requestSync() -- rate-limited: retries until the server answers with its history / a keyframe arrives
 	end
 end)
 

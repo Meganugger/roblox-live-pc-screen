@@ -1,5 +1,6 @@
 -- Standalone-Luau spec for RlpsRelayCore (server relay): poll cursor, chain-validated forwarding, stale/duplicate
--- drops, advances, status transitions, failure threshold, late-joiner history, and relay -> RlpsClientCore end to end.
+-- drops, advances, status transitions, failure threshold, fresh-keyframe requests, and relay -> RlpsClientCore end to
+-- end. (Late joiners replay the played history: RlpsFanout.spec.luau.)
 local Protocol = require("./RlpsProtocol")
 local RelayCore = require("./RlpsRelayCore")
 local ClientCore = require("./RlpsClientCore")
@@ -71,11 +72,14 @@ local SID = TEXT.steps[1].fields.sessionId
 -- 1. Fresh relay asks for a keyframe; STOPPED reports the stopped state once.
 do
 	local r = RelayCore.new()
-	local after, session, key = r:pollParams()
+	local after, session, key, idle = r:pollParams()
 	T.check(after == 0 and session == 0 and key == true, "fresh poll params", after .. "/" .. session)
+	T.check(idle == false, "fresh relay is not idle (first poll must learn the state at once)")
 	T.eq(r.status, "connecting", "fresh status")
 	local msgs = r:ingest(status(Protocol.STATE_STOPPED, 0, 0))
 	T.eq(kinds(msgs), "status:stopped", "stopped message")
+	local _, _, _, idle2 = r:pollParams()
+	T.check(idle2 == true, "relay reporting stopped polls with idle=1")
 	T.eq(kinds(r:ingest(status(Protocol.STATE_STOPPED, 0, 0))), "", "stopped again is silent")
 end
 
@@ -95,7 +99,6 @@ do
 		T.check(after == st.fields.seq and session == SID and key == false, "seq step " .. i .. " cursor",
 			after .. "/" .. session .. "/" .. tostring(key))
 	end
-	T.eq(#r.history, 3, "history keyframe + 2 deltas")
 
 	-- 3. Re-delivered delta: dropped as stale, nothing forwarded, no keyframe needed.
 	local msgs = r:ingest(buffer.fromstring(TEXT.steps[2].data))
@@ -120,16 +123,13 @@ do
 	T.eq(client.seq, seq + 4, "client advanced")
 	T.eq(kinds(r:ingest(status(Protocol.STATE_LIVE, SID, seq + 4, 320, 180))), "", "unchanged same seq is silent")
 
-	-- 6. Late joiner: status + history replay gives the same frame and chain position.
-	local late = ClientCore.new(H.decompress)
-	local sync = r:syncMessages()
-	T.eq(kinds(sync), "status:live,records,records,records,advance", "sync messages")
-	if deliver(late, sync, "late joiner") then
-		T.eq(crc(late), TEXT.steps[3].crc, "late joiner crc")
-		T.eq(late.seq, seq + 4, "late joiner seq")
-	end
+	-- 6. Fresh keyframe for viewers: the chain continues (fresh=1, never key=1), a newer keyframe answers it.
+	r:requestFreshKeyframe()
+	local a6, s6, k6, _, f6 = r:pollParams()
+	T.check(a6 == seq + 4 and s6 == SID and k6 == false and f6 == true, "fresh request keeps the cursor",
+		a6 .. "/" .. s6 .. "/" .. tostring(k6) .. "/" .. tostring(f6))
 
-	-- 7. STOPPED: clears the chain and history, clients reset, next poll asks for a keyframe.
+	-- 7. STOPPED: clears the chain, clients reset, next poll asks for a keyframe.
 	msgs = r:ingest(status(Protocol.STATE_STOPPED, 0, 0))
 	T.eq(kinds(msgs), "status:stopped", "stop message")
 	if msgs then
@@ -137,8 +137,11 @@ do
 	end
 	T.check(client.frame == nil, "client dropped pixels on stop")
 	local after, session, key = r:pollParams()
-	T.check(after == 0 and session == 0 and key and #r.history == 0, "stop clears chain")
-	T.eq(kinds(r:syncMessages()), "status:stopped", "sync while stopped")
+	local _, _, _, _, fresh = r:pollParams()
+	T.check(after == 0 and session == 0 and key and not fresh, "stop clears chain (and the fresh request)")
+	r:requestFreshKeyframe()
+	local _, _, key7, _, fresh7 = r:pollParams()
+	T.check(key7 and not fresh7, "fresh request without a chain is a keyframe request")
 end
 
 -- 8. A delta that skips a frame never reaches clients; the relay asks for a keyframe instead.
@@ -165,7 +168,7 @@ do
 	T.eq(r.detail, nil, "detail cleared by the first frame")
 	msgs = r:ingest(status(Protocol.STATE_LIVE, SID + 1, 3, 320, 180))
 	local _, session, key = r:pollParams()
-	T.check(key and session == 0 and #r.history == 0, "new session clears the chain and wants a keyframe")
+	T.check(key and session == 0 and r.seq == 0, "new session clears the chain and wants a keyframe")
 	T.eq(kinds(msgs), "", "new session unchanged forwards nothing")
 	-- the old session's delta must not be forwarded after the switch
 	T.eq(kinds(r:ingest(buffer.fromstring(TEXT.steps[2].data))), "", "old-session delta dropped")
@@ -191,24 +194,28 @@ do
 	T.eq(r.consecutiveErrors, 0, "errors reset")
 end
 
--- 11. History limit: a big history requests a keyframe; the keyframe replaces the history.
+-- 11. A keyframe whose parts disagree with the container header is rejected; records carry the keyframe flag.
 do
-	local r = RelayCore.new({ historyLimitBytes = 1 })
-	r:ingest(buffer.fromstring(TEXT.steps[1].data))
-	local _, _, key = r:pollParams()
-	T.eq(key, true, "over-limit history wants a keyframe")
-	r:ingest(buffer.fromstring(TEXT.steps[2].data))
-	T.eq(#r.history, 2, "delta still forwarded while waiting")
+	local r = RelayCore.new()
 	local copy = buffer.fromstring(TEXT.steps[1].data)
 	buffer.writeu32(copy, 12, 9) -- container seq 9 (still a valid keyframe; parts carry their own seq)
 	local msgs, err = r:ingest(copy)
 	T.check(msgs == nil and err == "part 0 header inconsistent with container", "inconsistent keyframe rejected",
 		tostring(err))
-	r:ingest(buffer.fromstring(TEXT.steps[1].data))
-	T.eq(#r.history, 1, "keyframe replaced the history")
+	local k = r:ingest(buffer.fromstring(TEXT.steps[1].data)) :: { any }
+	local d = r:ingest(buffer.fromstring(TEXT.steps[2].data)) :: { any }
+	T.check(k[#k].keyframe == true and d[#d].keyframe == false, "records messages carry the keyframe flag")
+	r:requestFreshKeyframe()
+	local _, _, _, _, fresh = r:pollParams()
+	T.eq(fresh, true, "fresh request pending")
+	r:ingest(buffer.fromstring(TEXT.steps[3].data))
+	local _, _, _, _, fresh2 = r:pollParams()
+	T.eq(fresh2, true, "a delta does not answer a fresh request")
+	local newer = r:ingest(buffer.fromstring(TEXT.steps[1].data)) -- not newer, not wanted: dropped
+	T.eq(kinds(newer), "", "old keyframe does not answer it either")
 end
 
--- 12. Every vector sequence through relay + client, with a late joiner after each step.
+-- 12. Every vector sequence through relay + client.
 for _, s in V.sequences do
 	local r = RelayCore.new()
 	local client = ClientCore.new(H.decompress)
@@ -217,10 +224,6 @@ for _, s in V.sequences do
 		local msgs = r:ingest(buffer.fromstring(st.data))
 		if msgs and deliver(client, msgs, name) then
 			T.eq(crc(client), st.crc, name .. " relayed crc")
-		end
-		local late = ClientCore.new(H.decompress)
-		if deliver(late, r:syncMessages(), name .. " late") then
-			T.eq(crc(late), st.crc, name .. " late crc")
 		end
 	end
 	T.eq(r.dropped, 0, s.name .. " nothing dropped")

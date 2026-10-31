@@ -62,10 +62,16 @@ end
 
 -- Apply every part of a parsed LIVE container; returns error string or nil.
 local function applyAll(frame: buffer, c: any, data: buffer): string?
+	local snapshot: buffer? = nil
+	if #c.parts > 0 and c.parts[1].header.usesRef then -- COPY tiles read the picture as it was before the frame
+		local snap = buffer.create(buffer.len(frame))
+		buffer.copy(snap, 0, frame)
+		snapshot = snap
+	end
 	for _, ref in c.parts do
 		local rec = Decoder.extractRecord(data, ref)
 		local before = crc32(frame)
-		local n, err = Decoder.applyRecord(frame, c.width, c.height, rec, decompress)
+		local n, err = Decoder.applyRecord(frame, c.width, c.height, rec, decompress, nil, snapshot)
 		if n == nil then
 			if crc32(frame) ~= before then
 				return "FRAME MODIFIED BY FAILED PART: " .. tostring(err)

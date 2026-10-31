@@ -96,3 +96,106 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   `python3 roblox/tests/run_luau_tests.py --analyze` → luau-analyze OK, **TOTAL passed=5660 failed=0**;
   `scripts/check_roblox.sh` → `Built project to RlpsDemo.rbxlx`, `luau-lsp analyze (Roblox definitions, roblox/src): OK`
   → **PASS** (static + unit level only; no Roblox runtime, KI-0002).
+
+## TR-0008 — Live pipeline test L3: real capture → frame service → unmodified Roblox scripts under emulation (28th session)
+
+- **Purpose**: first run of the complete pipeline with real pixels: Xvfb desktop drawn by `tests/e2e/painter.py` →
+  `mss` → `SharingController`/`CaptureLoop` → `FrameService` (loopback HTTP, real token) → unmodified
+  `RlpsServer.server.luau` and 2 × `RlpsClient.client.luau` (plus all modules, placed as in `default.project.json`)
+  under `tests/e2e/roblox_emulator.luau` (Lune 0.10.4; emulates Instances/attributes, ordered copied RemoteEvent
+  delivery, HttpService via real HTTP + secrets, EncodingService base64/zstd/GetDecompressedBufferSize,
+  EditableImage pixel store, Heartbeat). Docs: `docs/testing/E2E.md`.
+- **Environment**: agent sandbox Linux x86_64 4 vCPU, Python 3.11.17, numpy 2.4.6, zstandard, mss 10.x, python-xlib
+  0.33, Xvfb 1280×720×24, Lune 0.10.4. Command: `python3 tests/e2e/run_e2e.py`.
+- **Result history**: first run at `2e1ff4c`+harness: 9/10 then FAIL E2E-08 — a **test** bug (the wait accepted the old
+  frame before the capture loop saw the change) → `wait_match(after_seq=…)`. Defects found **in the product** by this
+  test and fixed: (1) frame service printed a traceback when a poller hung up mid long-poll (`960f9df`, later widened to
+  any `ConnectionError` on read or write, `339d6a3`); (2) Start took 3.1 s to reach the TV (stopped polls every 3 s) →
+  `idle=1` held polls (`a6bdd7f`): 1.0 s; a first version of that change delayed *stop* news by 15 s (caught by the
+  test: stop latency 15.25 s) and was corrected before commit; (3) no byte-rate pacing → `MaxBytesPerSecond` (`7e63e1c`);
+  (4) `Enum.NormalId[<unknown>]` would raise in `addScreen` → enum-item lookup; (5) zstd content size not checked
+  before decompressing on clients → `GetDecompressedBufferSize` check (`31d8e3d`).
+- **Final result at `339d6a3`**: **21/21 PASS** (E2E-01…17, `docs/testing/evidence/e2e-report.json` from the
+  `7e63e1c` run + TV snapshots `tv-*.png`): byte-exact EditableImage == newest captured frame for 2 clients, late
+  joiner, deltas, 9 rapid changes, outage → error screen → recovery, Stop → TVs off and images destroyed, no script
+  errors, pacing within budget (2,161 B/s ≤ 3,000), viewer allowlist, wrong token → no pixels. Latencies in
+  `PERFORMANCE.md`.
+- **Limits**: emulated Roblox engine (no real RemoteEvent limits, timeouts, EditableImage budget or rendering; tunnel
+  hop emulated by URL rewrite). Not Studio, not published (KI-0002).
+
+## TR-0009 — CI on GitHub Actions, including the live pipeline test on a real Windows desktop (28th session)
+
+- **Workflow**: `.github/workflows/ci.yml` (jobs: Python tests ubuntu + windows; Luau specs + Rojo + luau-lsp; e2e on
+  Ubuntu/Xvfb; e2e on `windows-latest` with real `mss` capture of the runner's desktop). Results read with GitHub MCP
+  `pull_request_read get_check_runs`; failure output is posted by the workflow as a PR comment (no log API available
+  to the agent, KI-0003 workaround).
+- **Run at `fb6bcdd` (PR #1)**: Linux jobs PASS. `windows-latest` Python tests FAIL: the new hang-up test (Windows
+  raises the reset on the *read* of the next keep-alive request, which the fix did not cover). e2e Windows: one run
+  PASS, one FAIL — **E2E-01…16 all passed on the real Windows desktop (1024×768: start → picture 0.99 s, change → both
+  TVs 0.16 s, stop 0.20 s)**; the failure was the test reading `state.json` while Lune replaced it
+  (`PermissionError`) during E2E-15.
+- **Fixes**: `339d6a3` (handler ignores `ConnectionError` on either side; test tolerates the replace race; emulator
+  retries the replace). **Rerun at `6033ac1` (PR #1 head): all 5 jobs green** — Python ubuntu + windows, Luau/Rojo/
+  luau-lsp, e2e Linux, **e2e Windows (real desktop capture, all scenarios)** (`get_check_runs`, completed 15:02:37Z).
+- **Significance**: first evidence of **real Windows screen capture** through the whole pipeline (KI-0001 partially
+  closed: Windows Server runner desktop, not the owner's PC/monitor setup).
+
+## TR-0010 — Baseline suites at the end of the 28th session
+
+- `cd desktop && python3 -m pytest -q` → **66 passed, 327 subtests**; `python3 roblox/tests/run_luau_tests.py --analyze`
+  → **TOTAL passed=5664 failed=0**, luau-analyze OK; `scripts/check_roblox.sh` → Rojo build OK, luau-lsp (Roblox
+  definitions) OK. TR-0001…TR-0007 results are superseded by these reruns (code changed: `server.py`, `app.py`,
+  `RlpsServer`, `RlpsClient`, `RlpsRelayCore`).
+
+## TR-0011 — Stream v2 (29th session, 2026-10-31): hybrid codec, bundles, congestion control, scroll copies
+
+- **Environment**: agent sandbox (Linux x86_64, 4 vCPU Xeon 2.1 GHz), Python 3.11.17, numpy 2.4.6, OpenCV 5.0,
+  zstandard, mss 10.x, Xvfb, Lune 0.10.4, Luau 0.744, Rojo 7.7.1, luau-lsp 1.70.1.
+- **Commands / results at the session's final commit**: `cd desktop && python3 -m pytest -q` → **84 passed** (+327
+  subtests; new `test_hybrid.py`: bit-exact float/integer IDCT, budgets, skip, convergence, scroll copies, copy
+  validation); `python3 roblox/tests/run_luau_tests.py --analyze` → **5,984 / 0** (hybrid DCT sequences at many
+  qualities, extreme coefficients, COPY tiles, bundles, hybrid corruption cases — Luau pixels bit-identical to Python);
+  `scripts/check_roblox.sh` → Rojo build + luau-lsp strict (Roblox API types) OK; `python3 tests/e2e/run_e2e.py` →
+  **25 / 25** (`docs/testing/evidence/e2e-report.json`).
+- **Defects found by the live test and fixed during this work**: client queue used `#` on a table with leading `nil`s
+  and silently dropped frame parts (desyncs); a "no news" status carried the newest seq and made the relay skip deltas
+  (v1 advance semantics); a keyframe request could be cleared by a delta finishing at the same time; a desynced client
+  retried sync only once; frame rate was not limited by client decode speed (even an unthrottled client fell behind);
+  long history replays re-lagged resynced clients; scroll detection compared against a lossy picture (never matched)
+  and against the previous capture (sub-pixel drift).
+- **Benchmark**: `scripts/bench.py` → `docs/testing/evidence/bench.txt` (PERFORMANCE.md).
+- **Not verified**: real Roblox (replication throughput, native-code decode speed on clients, raw-body probe outcome on
+  live servers), the owner's PC (encode time, dxcam). CI status of the final commit: see PR #1 checks.
+- **CI** at `96badc5`: 4/5 green; the Windows live test failed E2E-20 (`min_rate == rate_after_growth`,
+  `max_lagging_viewers` 0: the 10 kB/s viewer was never detected) — root cause and fix in TR-0012 / D-0009. The failure
+  report itself was missing: the Windows step runs `bash -eo pipefail` and a `grep` without matches ended it before it
+  posted (fixed in `ce34fa9`).
+
+## TR-0012 — Per-viewer flow control (29th session, 2026-10-31)
+
+- **Commands / results**: `cd desktop && python3 -m pytest -q` → **85 passed** (+327 subtests; new
+  `test_fresh_continues_the_chain_and_forces_one_new_keyframe`); `python3 roblox/tests/run_luau_tests.py --analyze` →
+  luau-analyze OK, **6,588 / 0** (new `RlpsFanout.spec.luau`: 659 checks — every vector sequence relayed to an early
+  viewer and a late joiner after every step with CRC-exact pictures, Stop, ack clamping, sync suppression, hold +
+  suffix catch-up, waiting for a keyframe, history limit, median stats, and a 60 Hz network simulation);
+  `scripts/check_roblox.sh` → Rojo + luau-lsp strict OK; `python3 tests/e2e/run_e2e.py` → **25 / 25**.
+- **Simulation** (`RlpsFanout.spec.luau` §C, per-viewer bandwidth + latency): 1 MB/s, 30 fps stream, fast viewer 8 MB/s
+  + 10 kB/s viewer → fast viewer received all 1,031 frames, held once while warming up, backlog ≤ 363 KiB; slow viewer
+  backlog ≤ 120 KiB, 4 pictures, ended on the last frame; 8 keyframes in 70 s. Three similar viewers at 60 fps / 2.4 MB/s
+  → no frame skipped after warm-up. A 500 kB/s viewer next to a fast one: fast unaffected, the slow one saw ~45 % of
+  the frames.
+- **E2E-20**: rate 300 kB/s → 1.46 MB/s, unchanged when the 10 kB/s viewer joined (`LaggingViewers` = 1), fast viewer
+  107 distinct pictures in 14 s, both exact at the end.
+- **CI** at `5a56a07` (PR #1): **5 / 5 green** — Python on Linux and Windows, Luau specs + Rojo + luau-lsp, live test on
+  Xvfb and on the real Windows desktop (where E2E-20 had failed at `96badc5`).
+
+## TR-0013 — Repository clean-up (29th session, 2026-10-31)
+
+- **Commands / results**: `ruff check .` → clean (new `ruff.toml`; also a CI step); `cd desktop && python3 -m pytest -q`
+  → **85 passed** (+327 subtests); `python3 roblox/tests/run_luau_tests.py --analyze` → luau-analyze OK on 7 modules
+  **and the 6 specs** (lint warnings now fail too), **6,588 / 0**; `scripts/check_roblox.sh` → OK;
+  `python3 tests/e2e/run_e2e.py` → **25 / 25**.
+- **Finding**: E2E-21's byte bound (½ × 15 lossless keyframes) was inside the run-to-run spread — 262–386 kB for the
+  same ~32,400 copied tiles, because refinement during the 0.12 s pauses depends on machine load. One full-suite run
+  failed at 385.5 kB vs 377.6 kB; bound set to ⅔ (docs/testing/E2E.md); the copy-share criterion is unchanged.
+- **CI** at `bc9ea90`: **5 / 5 green** (ruff now runs in both Python jobs).

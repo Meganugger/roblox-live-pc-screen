@@ -57,7 +57,10 @@ class ProfileTests(unittest.TestCase):
     def test_profiles_valid(self):
         for p in app.PROFILES.values():
             self.assertIn(p.fmt, P.BYTES_PER_PIXEL)
-            self.assertTrue(1 <= p.max_w <= P.MAX_DIM and 1 <= p.max_h <= P.MAX_DIM and 0 < p.fps <= 10)
+            self.assertTrue(1 <= p.max_w <= P.MAX_DIM and 1 <= p.max_h <= P.MAX_DIM and 0 < p.fps <= 60)
+            if p.fmt == P.FMT_HYBRID:
+                self.assertEqual((p.max_w % 16, p.max_h % 16), (0, 0))
+        self.assertEqual(app.PROFILES[app.DEFAULT_PROFILE].max_w, P.MAX_DIM)  # best quality by default
 
 
 class ControllerTests(unittest.TestCase):
@@ -89,7 +92,7 @@ class ControllerTests(unittest.TestCase):
         src = self.sources[0]
         self.assertTrue(src.closed)
         self.assertFalse(self.store.live)
-        self.assertEqual(len(self.store._frames), 0)
+        self.assertEqual(len(self.store._ring), 0)
         grabs = src.grabs
         time.sleep(0.15)
         self.assertEqual(src.grabs, grabs)  # no capture after stop
@@ -131,21 +134,21 @@ class EndToEndServiceTests(unittest.TestCase):
         ctl = app.SharingController(store, lambda: src, app.Profile("slow", 320, 180, P.FMT_RGB565, 2.0))
         try:
             c = Client(svc.address[1])
-            self.assertEqual(c.poll().state, P.STATE_STOPPED)
+            self.assertEqual(c.last().state, P.STATE_STOPPED)
             sid = ctl.start()
             self.assertTrue(wait_for(lambda: store.seq >= 1))
-            k = c.poll(after=0, session=sid, wait=0)
+            [k] = c.poll(after=0, session=sid, wait=0)[:1]
             self.assertTrue(k.keyframe)
             img = codec.apply_container(None, k)
-            with store._cond:
-                latest = store._frames[k.seq]
-            self.assertTrue(np.array_equal(img, codec.expand_to_rgba(latest, P.FMT_RGB565)))
-            d = c.poll(after=k.seq, session=sid, wait=3000)  # next capture changes the top-left tile only
+            first = codec.expand_to_rgba(codec.quantize(capture.bgra_to_rgb(src.frame(1), 320, 180), P.FMT_RGB565),
+                                         P.FMT_RGB565)
+            self.assertTrue(np.array_equal(img, first))
+            d = c.poll(after=k.seq, session=sid, wait=3000)[0]  # next capture changes the top-left tile only
             self.assertFalse(d.keyframe)
             self.assertEqual(sum(p.tile_count for p in d.parts), 1)
             img = codec.apply_container(img, d)
             ctl.stop()
-            self.assertEqual(c.poll(after=d.seq, session=sid).state, P.STATE_STOPPED)
+            self.assertEqual(c.poll(after=d.seq, session=sid)[-1].state, P.STATE_STOPPED)
             self.assertGreater(svc.bytes_sent, 0)
             self.assertIn("roblox server: last poll", ctl.status_text(svc))
         finally:
@@ -199,6 +202,28 @@ class ConsoleTests(unittest.TestCase):
         self.assertIn("SHARING YOUR SCREEN", out.getvalue())
         self.assertIn("sharing stopped", out.getvalue())
         self.assertFalse(store.live)
+
+
+class CliTests(unittest.TestCase):
+    def test_token_only_creates_prints_and_exits(self):
+        import contextlib
+        import io
+        import tempfile
+        from pathlib import Path
+
+        from rlps import app as A
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "rlps" / "config.json"
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(A.main(["--config", str(cfg), "--token-only"]), 0)
+            token = A.load_or_create_config(cfg)[0]["token"]
+            self.assertIn(token, out.getvalue())
+            out2 = io.StringIO()
+            with contextlib.redirect_stdout(out2):
+                self.assertEqual(A.main(["--config", str(cfg), "--token-only"]), 0)
+            self.assertIn(token, out2.getvalue())  # same token on the second run, nothing started
+            self.assertIn("existing", out2.getvalue())
 
 
 if __name__ == "__main__":

@@ -1,30 +1,49 @@
 # SESSION_HANDOFF.md — Resume from a completely clean conversation
 
-_Last updated: 2026-10-25 ~11:31 UTC, 15th session start. Read `WORK_LOG.md` (last rows) and `list_commits` first: later
-commits may already contain the work listed under "Exact next task"._
+_Last updated: 2026-10-31, end of the 29th session (Notion custom agent through the Claude harness)._
 
-- **Repository**: https://github.com/Meganugger/roblox-live-pc-screen (private) · **Branch**: `main`.
-- **Baseline verified by the 25th session**: `e34d392fa6190b87d493e1e92252672f60cf2044` (24th-session start record on top of `7775c3e`).
-- **Architecture**: D-0002 / `ARCHITECTURE.md` (capture app → authenticated delta frame service over an HTTPS tunnel →
-  Roblox server long-poll → reliable `RemoteEvent` buffers → client zstd decode → `EditableImage` on a TV `SurfaceGui`).
-- **Done (code + sandbox tests)**: Python codec, frame service, capture, sharing app (`desktop/rlps/`, TR-0001…TR-0003);
-  Luau protocol/decoder/base64/client core + server relay core (`roblox/src/shared`, `roblox/src/server/RlpsRelayCore.luau`,
-  spec harness TR-0004/TR-0005); server script `RlpsServer.server.luau`, client script `RlpsClient.client.luau`, TV model +
-  Rojo project (Rojo build + strict Roblox-API analysis TR-0006).
-- **Not done**: end-to-end integration harness (in progress), `docs/PROTOCOL.md`, tunnel/deployment guide (T-0014), CI
-  (T-0013), release ZIP. Real Windows capture and every Roblox runtime behaviour are unverified (KI-0001/KI-0002).
+- **Repository**: https://github.com/Meganugger/roblox-live-pc-screen (private).
+- **Newest work**: `main` (PR #1 merged, D-0010). First calls: `list_pull_requests` (an open PR is newer than `main`),
+  `list_commits` on `main`. New work: a new `claude/*` branch + draft PR; CI failures are posted on the PR as comments
+  by the workflow (`get_comments`).
+- **What exists**: complete pipeline at maximum quality (stream v2: `ARCHITECTURE.md`, `docs/PROTOCOL.md`, D-0007,
+  D-0008; per-viewer flow control `RlpsFanout`, D-0009); research of every public project found (`docs/research/EXISTING_PROJECTS.md`); install / troubleshooting /
+  security / performance docs; Windows scripts; CI (ruff, pytest, Luau specs + luau-analyze, Rojo + luau-lsp, live test on
+  Linux and Windows); explainer `docs/explainers/PR-1.md`; docs index `docs/README.md`.
+- **Verified**: Python 85/85, Luau 6,588/0, Rojo + luau-lsp OK, live pipeline 25/25 in the sandbox (TR-0011, TR-0012).
+  Unverified: real Roblox and the owner's PC (KI-0002, KI-0007).
+- **Failed approaches (do not repeat)**: holding every poll while stopped (15 s stop delay); "no news" status with the
+  newest seq (made relays skip deltas); `#t` on a queue with leading nils (dropped parts); scroll detection against
+  the lossy client picture with exact matching (never matched) or against the previous capture (sub-pixel drift);
+  lowering only the byte rate for CPU-bound clients (needs the fps cap); detecting slow viewers by time-based lag from
+  a global forward log (sync retries reset the window, bytes of a viewer that acked nothing were invisible → D-0009);
+  `key=1` for keyframes wanted by viewers (replays old frames to everyone → `fresh=1`); reading CI logs via
+  `api.github.com` (401/403); Roblox help center from the sandbox (403).
 
-## How to recover a working copy (no git credentials in the agent sandbox)
+## Reproduce the baseline (≈ 5 minutes)
 
-1. `list_commits` on `main` → head SHA. 2. `get_file_contents` for each file you need (directory listings give blob SHAs).
-3. Faster (23rd–25th sessions): per-directory listings with `fields: [type,path,size,download_url]`, `save_tool_result_to_file`,
-   then download every tokenized `download_url` with curl/urllib **immediately** (tokens expire within minutes); `git init`. Internet works (pip, curl, public GitHub releases); the private repo cannot be cloned.
-4. Checkpoint: `scripts/agent/make_push_payload.py` → `run_mcp_tool_from_file` with GitHub `push_files`; verify with
-   `list_commits` + `get_file_contents` listings (blob SHAs must MATCH). Push within ~8 minutes of starting and after every
-   coherent unit (KI-0004: four sessions lost unpushed work).
+```bash
+pip install -r desktop/requirements.txt pytest ruff python-xlib  # + Xvfb, Luau CLI 0.744, Lune 0.10.4
+ruff check .                                                      # lint (ruff.toml)
+(cd desktop && python3 -m pytest -q)                              # 85 passed
+python3 roblox/tests/run_luau_tests.py --analyze                  # TOTAL passed=6588 failed=0
+scripts/check_roblox.sh                                           # Rojo build + luau-lsp OK -> build/RlpsDemo.rbxlx
+python3 tests/e2e/run_e2e.py                                      # 25/25, ~2.5 min
+DISPLAY=:N python3 scripts/bench.py --frames 12                   # codec + capture numbers (needs an X display)
+```
+
+Release ZIP: `git archive --format=zip --prefix=rlps/ -o dist/rlps-src.zip HEAD`, then add `build/RlpsDemo.rbxlx`.
 
 ## Exact next task
 
-T-0012/T-0013 integration harness: run the unmodified `RlpsServer.server.luau` and two `RlpsClient.client.luau` instances
-under Lune with a Roblox API emulation against the real `desktop/rlps/server.py` fed by the real capture loop; assert the
-reconstructed EditableImage pixels, live updates and the STOPPED state. Then `docs/PROTOCOL.md`, deployment guide, ZIP.
+**T-0018 — owner acceptance test** (needs Windows + Roblox Studio + the owner's account; the agent cannot do it).
+Dependencies: none (PR #1 merged, T-0019). Procedure: `docs/deployment/INSTALL.md` parts A–E. Completion criteria: in a
+published private server the TV shows the real desktop, follows window moves, scrolling and a video, sharpens when
+still, and shows "Screen sharing is off" after Stop. Record TR-0014: Windows version, monitor size/scaling, profile,
+tunnel type, `RlpsServer` `RateBps` / `FpsCap` / `LagMs` / `MaxLagMs` / `LaggingViewers` / `BodyMode` / `LastError`,
+client `DecodeMsPerFrame`,
+the sharing window's `encode … ms`, and screenshots.
+
+**Then (agent)**: tune `StartBytesPerSecond`, `ClientDecodeBudgetMs`, profile defaults from TR-0012; if `BodyMode` is
+base64 on live servers, drop the probe; if clients decode slowly, consider a lower default profile for weak PCs.
+Optional: T-0017 (tunnel URL as a secret).

@@ -1,37 +1,57 @@
 --!strict
--- RLPS server script (T-0012): the single frame-service poll loop of this experience server + RemoteEvent fan-out.
+-- RLPS server script: the single frame-service poll loop of this experience server, playout, per-viewer delivery
+-- (RlpsFanout) and congestion control from client acknowledgements.
 --
--- Polls GET <FrameServiceUrl>/v1/frames (desktop/rlps/server.py) with the Bearer token stored as an experience secret,
--- feeds every container to RlpsRelayCore and forwards the resulting messages, in order, over one reliable RemoteEvent:
+-- Polls GET <FrameServiceUrl>/v1/frames (desktop/rlps/server.py) with the Bearer token stored as an experience secret.
+-- Each response is a bundle of containers (several frames per request — HttpService allows 500 requests/min); every
+-- container goes through RlpsRelayCore and the resulting messages are played out at the frames' capture spacing over
+-- one reliable RemoteEvent:
 --   server -> client: ("status", status, detail?) | ("part", record: buffer) | ("advance", sessionId, fromSeq, toSeq)
 --                     | ("reset")  [start of a sync: drop local state, a status + keyframe chain follows]
---   client -> server: ("sync")     [late joiner / desynced client: send me the relay history]
+--   client -> server: ("sync", processed)                        [join / lost the chain: send me the stream]
+--                     ("ack", sessionId, seq, costMs, processed) [frame seq is on my screen; decoding a frame costs
+--                                                                 costMs; I processed `processed` bytes of parts]
 -- EditableImage changes never replicate, so every client rebuilds the picture itself (RlpsClient.client.luau).
 --
--- Layout (default.project.json): ServerScriptService.Rlps = this Script + RlpsRelayCore + RlpsProtocol + RlpsDecoder +
--- RlpsBase64 (server copies of the shared modules). The RemoteEvent ReplicatedStorage.RlpsFrames is created here.
+-- Congestion control: each viewer's backlog (bytes sent, not yet processed) stays within about one second of its own
+-- measured delivery rate (RlpsFanout: a slow viewer is held, then catches up or waits for a keyframe — it never slows
+-- the others down or piles up minutes of stream). The stream byte rate starts at StartBytesPerSecond and adapts
+-- (AIMD) to how far behind the median viewer is (age of the oldest frame it has not processed). The rate is sent with
+-- every poll; the desktop app encodes at that budget (quality and frame rate follow). Clients also report their
+-- decode time per frame, which caps the frame rate (FpsCap) so that the median viewer's CPU keeps up.
 --
--- Configuration = attributes on this script (Studio: select the script, edit Attributes; no code changes needed):
+-- Configuration = attributes on this script (Studio: select the script, edit Attributes):
 --   FrameServiceUrl      string  public HTTPS base URL of the frame service (tunnel), e.g. https://xyz.trycloudflare.com
---   SecretName           string  experience secret holding the token (default "rlps_token"; Creator Hub > Secrets)
---   PollWaitMs           number  long-poll wait sent to the service (default 15000, service maximum 25000; lowered
---                                automatically when Roblox times a poll out — its default request timeout is undocumented)
---   MinPollInterval      number  seconds between poll starts (default 0.2 => <= 300 requests/min; HttpService allows 500)
---   StoppedPollInterval  number  seconds between polls while the owner is not sharing (default 3)
+--   SecretName           string  experience secret holding the token (default "rlps_token")
+--   PollWaitMs           number  long-poll wait (default 15000, service max 25000; halved on request timeouts)
+--   MinPollInterval      number  seconds between poll starts (default 0.15 => <= 400 requests/min of the 500 allowed)
+--   StoppedPollInterval  number  seconds between polls while the owner is not sharing (default 1)
+--   BatchMs              number  frames collected per response after the first new one (default 150 ms)
+--   MaxBytesPerSecond    number  upper bound of the stream rate (default 8000000)
+--   StartBytesPerSecond  number  initial stream rate (default 1000000)
+--   MinBytesPerSecond    number  lower bound (default 100000)
+--   TargetLagSeconds     number  acceptable delay of the median viewer (default 0.35)
+--   ClientDecodeBudgetMs number  decode time per client Heartbeat (default 10 ms; replicated to clients)
 --   ViewerUserIds        string  optional comma-separated UserIds allowed to see the screen (empty = everyone)
--- Read-only status attributes written here: Status, StatusDetail, Containers, ForwardedBytes, Dropped, LastError.
+-- Read-only status attributes: Status, StatusDetail, Containers, ForwardedBytes, Dropped, LastError, RateBps, LagMs
+-- (median viewer delay), MaxLagMs, FpsCap, Viewers, LaggingViewers (held or waiting for a keyframe), BodyMode,
+-- ForwardFps.
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local RelayCore = require(script.Parent.RlpsRelayCore)
+local Fanout = require(script.Parent.RlpsFanout)
+local Decoder = require(script.Parent.RlpsDecoder)
 local Base64 = require(script.Parent.RlpsBase64)
 
 local REMOTE_NAME = "RlpsFrames"
-local SYNC_COOLDOWN = 2 -- seconds between history syncs for one player
-local KEYFRAME_COOLDOWN = 2 -- seconds between keyframe requests caused by clients
-local HISTORY_LIMIT = 384 * 1024 -- late-joiner history bound (bytes); beyond it the next poll asks for a keyframe
+local KEYFRAME_COOLDOWN = 2 -- seconds between keyframe requests made for viewers
+local CONTROL_INTERVAL = 0.5
+local MAX_PLAYOUT_BACKLOG = 1.0 -- seconds; beyond it queued frames are forwarded at once (catch up)
+local NOT_AUTHORIZED = "not authorized to view this screen"
 
 local function attr(name: string, default: any): any
 	local v = script:GetAttribute(name)
@@ -40,6 +60,10 @@ local function attr(name: string, default: any): any
 		return default
 	end
 	return v
+end
+
+local function num(name: string, default: number, lo: number, hi: number): number
+	return math.clamp(tonumber(attr(name, default)) or default, lo, hi)
 end
 
 local remote = ReplicatedStorage:FindFirstChild(REMOTE_NAME) :: RemoteEvent?
@@ -51,11 +75,21 @@ if remote == nil then
 end
 local frames = remote :: RemoteEvent
 
-local relay = RelayCore.new({ historyLimitBytes = HISTORY_LIMIT, errorThreshold = 3 })
+local relay = RelayCore.new({ errorThreshold = 3 })
 
--- ------------------------------------------------------------------------------------------------- viewers / fan-out
+-- --------------------------------------------------------------------------------------------- viewers / fan-out
+
+local fan = Fanout.new(function(player: Player, kind: string, ...: any)
+	frames:FireClient(player, kind, ...)
+end)
+local forwardedFrames = 0
 
 local allowed: { [number]: boolean }? = nil
+local function canView(player: Player): boolean
+	local set = allowed
+	return set == nil or set[player.UserId] == true
+end
+
 local function readViewers()
 	local raw = tostring(attr("ViewerUserIds", ""))
 	local set: { [number]: boolean } = {}
@@ -67,47 +101,26 @@ local function readViewers()
 	allowed = if any then set else nil
 end
 readViewers()
-script:GetAttributeChangedSignal("ViewerUserIds"):Connect(readViewers)
-
-local function canView(player: Player): boolean
-	local set = allowed
-	return set == nil or set[player.UserId] == true
-end
-
-local function fire(target: Player?, ...: any)
-	if target then
-		if canView(target) then
-			frames:FireClient(target, ...)
+script:GetAttributeChangedSignal("ViewerUserIds"):Connect(function()
+	readViewers()
+	for _, p in Players:GetPlayers() do
+		if fan:viewer(p) and not canView(p) then
+			fan:remove(p) -- no further pixel; its client hides the picture on the error status
+			frames:FireClient(p, "status", "error", NOT_AUTHORIZED)
+		elseif canView(p) and fan:viewer(p) == nil then
+			frames:FireClient(p, "status", "connecting", nil) -- newly allowed: its client asks for the stream
 		end
-	elseif allowed == nil then
-		frames:FireAllClients(...)
-	else
-		for _, p in Players:GetPlayers() do
-			if canView(p) then
-				frames:FireClient(p, ...)
-			end
-		end
+	end
+end)
+
+local function broadcast(m: RelayCore.Message)
+	fan:broadcast(m, os.clock())
+	if m.kind ~= "status" then
+		forwardedFrames += 1
 	end
 end
 
-local function send(target: Player?, m: RelayCore.Message)
-	if m.kind == "records" then
-		for _, record in m.records :: { buffer } do
-			fire(target, "part", record)
-		end
-	elseif m.kind == "advance" then
-		fire(target, "advance", m.sessionId, m.fromSeq, m.toSeq)
-	else
-		fire(target, "status", m.status, m.detail)
-	end
-end
-
-local function broadcast(messages: { RelayCore.Message }?)
-	if messages then
-		for _, m in messages do
-			send(nil, m)
-		end
-	end
+local function publishStatus()
 	script:SetAttribute("Status", relay.status)
 	script:SetAttribute("StatusDetail", relay.detail or "")
 	script:SetAttribute("Containers", relay.containers)
@@ -115,51 +128,138 @@ local function broadcast(messages: { RelayCore.Message }?)
 	script:SetAttribute("Dropped", relay.dropped)
 end
 
--- Server-side status that does not come from the frame service (configuration problems).
-local function setServerStatus(status: RelayCore.Status, detail: string?)
-	if relay.status ~= status or relay.detail ~= detail then
-		relay.status, relay.detail = status, detail
-		broadcast({ { kind = "status", status = status, detail = detail } :: RelayCore.Message })
-	end
-end
+-- Playout queue: messages of one container become due at its capture-time offset within the bundle.
+type Due = { due: number, messages: { RelayCore.Message } }
+local playout: { Due } = {}
+local lastDue = 0
 
--- ------------------------------------------------------------------------------------------------------ client sync
-
-local lastSync: { [Player]: number } = {}
-local lastKeyframeRequest = 0
-
-local function syncPlayer(player: Player)
-	if not canView(player) then
-		frames:FireClient(player, "status", "error", "not authorized to view this screen")
+local function enqueue(messages: { RelayCore.Message }, due: number)
+	if #messages == 0 then
 		return
 	end
 	local now = os.clock()
-	if now - (lastSync[player] or -math.huge) < SYNC_COOLDOWN then
-		return
+	due = math.max(due, lastDue)
+	if due - now > MAX_PLAYOUT_BACKLOG then
+		due = now -- far behind: stop pacing, catch up
 	end
-	lastSync[player] = now
-	frames:FireClient(player, "reset")
-	local messages = relay:syncMessages()
-	for _, m in messages do
-		send(player, m)
+	lastDue = due
+	table.insert(playout, { due = due, messages = messages })
+end
+
+local function flushPlayout(now: number)
+	while #playout > 0 and playout[1].due <= now do
+		local item = table.remove(playout, 1) :: Due
+		for _, m in item.messages do
+			broadcast(m)
+		end
 	end
-	if #messages <= 1 and relay.status == "live" and now - lastKeyframeRequest >= KEYFRAME_COOLDOWN then
-		lastKeyframeRequest = now
-		relay:requestKeyframe() -- no keyframe in the history yet: the next poll asks for one (broadcast to all)
+	publishStatus()
+end
+
+-- Server-side status that does not come from the frame service (configuration problems): immediate.
+local function setServerStatus(status: RelayCore.Status, detail: string?)
+	if relay.status ~= status or relay.detail ~= detail then
+		relay.status, relay.detail = status, detail
+		broadcast({ kind = "status", status = status, detail = detail } :: RelayCore.Message)
+		publishStatus()
 	end
 end
 
-frames.OnServerEvent:Connect(function(player: Player, kind: unknown)
+local function broadcastNow(messages: { RelayCore.Message }?)
+	if messages then
+		for _, m in messages do
+			broadcast(m)
+		end
+	end
+	publishStatus()
+end
+
+-- ------------------------------------------------------------------------------------------------ client messages
+
+local function count(x: unknown, hi: number): number?
+	if typeof(x) == "number" and x == x and x >= 0 and x < hi then
+		return x :: number
+	end
+	return nil
+end
+
+frames.OnServerEvent:Connect(function(player: Player, kind: unknown, a: unknown, _b: unknown, c: unknown, d: unknown)
 	if kind == "sync" then
-		syncPlayer(player)
+		if not canView(player) then
+			frames:FireClient(player, "status", "error", NOT_AUTHORIZED)
+			return
+		end
+		fan:sync(player, count(a, 1e15), os.clock())
+	elseif kind == "ack" then
+		local processed = count(d, 1e15)
+		if processed then
+			fan:ack(player, processed, os.clock(), count(c, 10000))
+		end
 	end
 end)
 
 Players.PlayerRemoving:Connect(function(player: Player)
-	lastSync[player] = nil
+	fan:remove(player)
 end)
 
--- -------------------------------------------------------------------------------------------------------- poll loop
+-- ---------------------------------------------------------------------------------------------- rate control
+
+local rate = num("StartBytesPerSecond", 1000000, 10000, 1e9)
+local fpsCap = 10 -- frames/s the median viewer can decode (from the decode cost reported with acks); ramps up from 10
+local controlBytes, controlAt = 0, os.clock()
+local lastKeyframeRequest = -math.huge
+
+local function control()
+	local now = os.clock()
+	local dt = now - controlAt
+	if dt < CONTROL_INTERVAL then
+		return
+	end
+	local maxRate = num("MaxBytesPerSecond", 8000000, 10000, 1e9)
+	local minRate = math.min(num("MinBytesPerSecond", 100000, 10000, 1e9), maxRate)
+	local target = num("TargetLagSeconds", 0.35, 0.05, 10)
+	local demand = (relay.forwardedBytes - controlBytes) / dt
+	controlBytes, controlAt = relay.forwardedBytes, now
+	local budgetMs = num("ClientDecodeBudgetMs", 10, 2, 50)
+	local st = fan:stats(now)
+	if st.measured > 0 then
+		if st.lag > target * 2 then
+			rate = math.max(minRate, rate * 0.7)
+		elseif st.lag > target then
+			rate = math.max(minRate, rate * 0.9)
+		elseif demand >= rate * 0.6 then
+			rate = math.min(maxRate, rate * 1.12 + 20000) -- the stream uses the budget and viewers keep up: grow
+		end
+		-- a client decodes for budgetMs per Heartbeat (~60 Hz); keep 30 % headroom
+		local decodeFps = if st.costMs > 0 then budgetMs * 60 * 0.7 / st.costMs else 60
+		local fpsTarget = math.clamp(decodeFps, 2, 60)
+		fpsCap = if fpsTarget < fpsCap then fpsTarget else math.min(fpsTarget, fpsCap + 2) -- drop at once, recover slowly
+		if st.lag > target * 2 then
+			fpsCap = math.max(2, fpsCap * 0.8)
+		end
+	end
+	rate = math.clamp(rate, minRate, maxRate)
+	if fan:wantsKeyframe() and now - lastKeyframeRequest >= KEYFRAME_COOLDOWN then
+		lastKeyframeRequest = now
+		relay:requestFreshKeyframe() -- late joiners / slow viewers wait for it; the next polls ask for one
+	end
+	script:SetAttribute("FpsCap", math.floor(fpsCap * 10 + 0.5) / 10)
+	script:SetAttribute("RateBps", math.floor(rate))
+	script:SetAttribute("LagMs", math.floor(math.min(st.lag, 999) * 1000))
+	script:SetAttribute("MaxLagMs", math.floor(math.min(st.maxLag, 999) * 1000))
+	script:SetAttribute("Viewers", st.viewers)
+	script:SetAttribute("LaggingViewers", st.lagging)
+	script:SetAttribute("ForwardFps", math.floor(forwardedFrames / dt * 10 + 0.5) / 10)
+	forwardedFrames = 0
+	frames:SetAttribute("DecodeBudgetMs", num("ClientDecodeBudgetMs", 10, 2, 50))
+end
+
+RunService.Heartbeat:Connect(function()
+	flushPlayout(os.clock())
+	control()
+end)
+
+-- ---------------------------------------------------------------------------------------------------- polling
 
 local function header(headers: { [string]: string }?, name: string): string?
 	if headers == nil then
@@ -173,7 +273,7 @@ local function header(headers: { [string]: string }?, name: string): string?
 	return nil
 end
 
-local function decodeBody(body: string): (buffer?, string?)
+local function decodeBase64(body: string): (buffer?, string?)
 	local ok, out = pcall(function(): buffer
 		return game:GetService("EncodingService"):Base64Decode(buffer.fromstring(body))
 	end)
@@ -190,7 +290,6 @@ local function friendly(err: string): string
 	return err
 end
 
--- Long-poll wait actually used: PollWaitMs, halved (>= MIN_WAIT_MS) whenever Roblox times a request out.
 local MIN_WAIT_MS = 2000
 local effectiveWaitMs: number? = nil
 local function isTimeout(reason: string): boolean
@@ -215,6 +314,51 @@ local function getAuth(): (any, string?)
 	return res, nil
 end
 
+-- Binary bodies save the base64 overhead (25 %) but Roblox does not document that response bodies are binary-safe:
+-- they are used only when /v1/probe (all 256 byte values) arrives unchanged. Re-probed when the URL changes.
+local PROBE: string
+do
+	local b = buffer.create(1024)
+	for i = 0, 1023 do
+		buffer.writeu8(b, i, i % 256)
+	end
+	PROBE = buffer.tostring(b)
+end
+local bodyMode: "raw" | "base64" | nil = nil
+local probedUrl = ""
+
+local function probe(base: string, auth: any)
+	local ok, res = pcall(function(): any
+		return HttpService:RequestAsync({ Url = base .. "/v1/probe", Method = "GET", Headers = { Authorization = auth } })
+	end)
+	bodyMode = if ok and res.Success and res.Body == PROBE then "raw" else "base64"
+	probedUrl = base
+	script:SetAttribute("BodyMode", bodyMode)
+end
+
+local function schedule(data: buffer): (boolean, string?)
+	local entries, berr = Decoder.parseBundle(data)
+	if entries == nil then
+		return false, "invalid bundle: " .. tostring(berr)
+	end
+	local arrival = os.clock()
+	for _, e in entries do
+		local container = Decoder.extractEntry(data, e)
+		local messages, ierr = relay:ingest(container)
+		if messages == nil then
+			return false, "invalid container: " .. tostring(ierr)
+		end
+		if relay.status == "stopped" then
+			table.clear(playout) -- sharing stopped: nothing queued may still reach a screen
+			lastDue = 0
+			broadcastNow(messages)
+		else
+			enqueue(messages, arrival + e.tOffsetMs / 1000)
+		end
+	end
+	return true, nil
+end
+
 -- One poll. Returns the number of seconds to wait before the next poll.
 local function pollOnce(): number
 	local base = tostring(attr("FrameServiceUrl", ""))
@@ -228,11 +372,18 @@ local function pollOnce(): number
 		setServerStatus("error", aerr)
 		return 10
 	end
-	local after, session, key = relay:pollParams()
-	local configuredMs = math.clamp(math.floor(tonumber(attr("PollWaitMs", 15000)) or 15000), 0, 25000)
+	if bodyMode == nil or probedUrl ~= base then
+		probe(base, auth)
+	end
+	local after, session, key, idle, fresh = relay:pollParams()
+	local configuredMs = math.floor(num("PollWaitMs", 15000, 0, 25000))
 	local waitMs = math.min(configuredMs, effectiveWaitMs or configuredMs)
-	local url = string.format("%s/v1/frames?after=%d&session=%d&key=%d&wait=%d", base, after, session,
-		if key then 1 else 0, waitMs)
+	local batchMs = math.floor(num("BatchMs", 150, 0, 1000))
+	local maxBytes = math.floor(math.clamp(rate * 1.5, 256 * 1024, 8 * 1024 * 1024))
+	local url = string.format(
+		"%s/v1/frames?after=%d&session=%d&key=%d&fresh=%d&wait=%d&idle=%d&rate=%d&batch=%d&max=%d&enc=%d&fps=%d",
+		base, after, session, if key then 1 else 0, if fresh then 1 else 0, waitMs, if idle then 1 else 0,
+		math.floor(rate), batchMs, maxBytes, if bodyMode == "raw" then 1 else 0, math.max(1, math.floor(fpsCap)))
 	local ok, res = pcall(function(): any
 		return HttpService:RequestAsync({ Url = url, Method = "GET", Headers = { Authorization = auth } })
 	end)
@@ -243,7 +394,7 @@ local function pollOnce(): number
 			warn(string.format("[RLPS] frame request timed out; long-poll wait lowered to %d ms", effectiveWaitMs :: number))
 		end
 		script:SetAttribute("LastError", reason)
-		broadcast(relay:fail("request failed: " .. reason))
+		broadcastNow(relay:fail("request failed: " .. reason))
 		return math.min(30, 2 ^ math.min(relay.consecutiveErrors, 5))
 	end
 	if not res.Success then
@@ -253,28 +404,40 @@ local function pollOnce(): number
 			reason = "frame service rejected the token (HTTP 401): check the secret"
 		end
 		script:SetAttribute("LastError", reason)
-		broadcast(relay:fail(reason))
+		broadcastNow(relay:fail(reason))
 		local retry = tonumber(header(res.Headers, "retry-after") or "")
 		if retry then
 			return math.clamp(retry, 1, 60)
 		end
 		return math.min(30, 2 ^ math.min(relay.consecutiveErrors, 5))
 	end
-	local data, derr = decodeBody(res.Body :: string)
+	local body = res.Body :: string
+	local data: buffer?, derr: string?
+	if bodyMode == "raw" then
+		data = buffer.fromstring(body)
+	else
+		data, derr = decodeBase64(body)
+	end
 	if data == nil then
 		script:SetAttribute("LastError", "bad body: " .. tostring(derr))
-		broadcast(relay:fail("bad response body: " .. tostring(derr)))
+		broadcastNow(relay:fail("bad response body: " .. tostring(derr)))
 		return 2
 	end
-	local messages, ierr = relay:ingest(data)
-	if messages == nil then
-		script:SetAttribute("LastError", "invalid container: " .. tostring(ierr))
-		broadcast(relay:fail("invalid container: " .. tostring(ierr)))
+	local scheduled, serr = schedule(data :: buffer)
+	if not scheduled then
+		if bodyMode == "raw" then
+			bodyMode = "base64" -- bytes were altered on the way: never trust raw bodies on this server again
+			probedUrl = base
+			script:SetAttribute("BodyMode", "base64")
+			warn("[RLPS] binary response body was altered in transit; switched to base64")
+		end
+		script:SetAttribute("LastError", tostring(serr))
+		broadcastNow(relay:fail(tostring(serr)))
 		return 2
 	end
-	broadcast(messages)
+	publishStatus()
 	if relay.status == "stopped" then
-		return math.max(1, tonumber(attr("StoppedPollInterval", 3)) or 3)
+		return num("StoppedPollInterval", 1, 0.5, 30)
 	end
 	return 0
 end
@@ -289,7 +452,7 @@ local function anyViewer(): boolean
 end
 
 task.spawn(function()
-	broadcast({})
+	publishStatus()
 	while true do
 		if not anyViewer() then
 			task.wait(1) -- nobody can see the screen: do not pull frames from the owner's PC
@@ -302,7 +465,7 @@ task.spawn(function()
 			script:SetAttribute("LastError", "poll loop error: " .. tostring(delayOrErr))
 			warn("[RLPS] poll loop error:", delayOrErr)
 		end
-		local minInterval = math.max(0.05, tonumber(attr("MinPollInterval", 0.2)) or 0.2)
+		local minInterval = num("MinPollInterval", 0.15, 0.05, 60)
 		local elapsed = os.clock() - started
 		task.wait(math.max(delay, minInterval - elapsed, 0.03))
 	end

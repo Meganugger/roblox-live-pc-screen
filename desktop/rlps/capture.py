@@ -10,7 +10,9 @@ the EditableImage limit, F-0001). Nothing is written to disk.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
+import sys
 import time
 from dataclasses import dataclass
 
@@ -33,7 +35,7 @@ class Region:
     height: int
 
     @classmethod
-    def parse(cls, text: str) -> "Region":
+    def parse(cls, text: str) -> Region:
         """Parse ``left,top,width,height`` (virtual-screen pixels)."""
         try:
             left, top, width, height = (int(v) for v in text.split(","))
@@ -47,13 +49,19 @@ class Region:
         return {"left": self.left, "top": self.top, "width": self.width, "height": self.height}
 
 
-def fit_size(src_w: int, src_h: int, max_w: int, max_h: int) -> tuple[int, int]:
-    """Largest (w, h) <= (max_w, max_h) and <= MAX_DIM with the source aspect ratio; never upscales."""
-    if src_w < 1 or src_h < 1 or max_w < 1 or max_h < 1:
+def fit_size(src_w: int, src_h: int, max_w: int, max_h: int, align: int = 1) -> tuple[int, int]:
+    """Largest (w, h) <= (max_w, max_h) and <= MAX_DIM with the source aspect ratio; never upscales.
+
+    ``align`` > 1 rounds both sides down to a multiple of it (hybrid frames need 16; the picture is scaled to fit,
+    a deviation of at most align-1 pixels per side)."""
+    if src_w < 1 or src_h < 1 or max_w < 1 or max_h < 1 or align < 1:
         raise ValueError("sizes must be positive")
     max_w, max_h = min(max_w, P.MAX_DIM), min(max_h, P.MAX_DIM)
     scale = min(max_w / src_w, max_h / src_h, 1.0)
-    return min(max_w, max(1, round(src_w * scale))), min(max_h, max(1, round(src_h * scale)))
+    w, h = min(max_w, max(1, round(src_w * scale))), min(max_h, max(1, round(src_h * scale)))
+    if align > 1:
+        w, h = max(align, w // align * align), max(align, h // align * align)
+    return w, h
 
 
 def _bilinear(img: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
@@ -90,14 +98,52 @@ def resize(img: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
     return np.clip(work + 0.5, 0, 255).astype(np.uint8) if work.dtype != np.uint8 else work
 
 
-def bgra_to_rgb(bgra: np.ndarray, max_w: int, max_h: int) -> np.ndarray:
+def stream_size(src_w: int, src_h: int, max_w: int, max_h: int, align: int = 1) -> tuple[int, int, int, int]:
+    """(content_w, content_h, frame_w, frame_h) for streaming a src_w x src_h screen.
+
+    The content keeps the source aspect ratio; an *integer* downscale factor is preferred when it keeps >= 90 % of
+    the width (integer area averaging maps scrolled content to identical pixels, so scrolling is sent as exact
+    copies). With ``align`` > 1 the frame is the content letterboxed (black bars) to a multiple of ``align``."""
+    cw, ch = fit_size(src_w, src_h, max_w, max_h)
+    if (cw, ch) != (src_w, src_h):
+        k = -(-src_w // cw) if src_w * ch >= src_h * cw else -(-src_h // ch)
+        iw, ih = src_w // k, src_h // k
+        while (iw > max_w or ih > max_h) and k < 64:
+            k += 1
+            iw, ih = src_w // k, src_h // k
+        if iw >= 0.9 * cw and iw >= 1 and ih >= 1:
+            cw, ch = iw, ih
+    if align <= 1:
+        return cw, ch, cw, ch
+    fw = min(max(align, -(-cw // align) * align), max(align, min(max_w, P.MAX_DIM) // align * align))
+    fh = min(max(align, -(-ch // align) * align), max(align, min(max_h, P.MAX_DIM) // align * align))
+    return min(cw, fw), min(ch, fh), fw, fh
+
+
+try:  # optional, much faster area-averaging resize (opencv-python-headless); numpy fallback otherwise
+    import cv2 as _cv2
+except ImportError:  # pragma: no cover - depends on the machine
+    _cv2 = None
+
+
+def bgra_to_rgb(bgra: np.ndarray, max_w: int, max_h: int, align: int = 1, use_cv2: bool = True) -> np.ndarray:
     """(H, W, 4) BGRA screen pixels -> contiguous (h, w, 3) RGB uint8 that fits (max_w, max_h)."""
     if bgra.ndim != 3 or bgra.shape[2] != 4 or bgra.dtype != np.uint8:
         raise ValueError(f"expected (H, W, 4) uint8 BGRA, got {bgra.shape} {bgra.dtype}")
     h, w = bgra.shape[:2]
-    out_w, out_h = fit_size(w, h, max_w, max_h)
-    small_bgr = resize(bgra[:, :, :3], out_w, out_h)  # resize first, reorder channels on the small image
-    return np.ascontiguousarray(small_bgr[:, :, ::-1])
+    cw, ch, out_w, out_h = stream_size(w, h, max_w, max_h, align)
+    if use_cv2 and _cv2 is not None:
+        small = bgra if (w, h) == (cw, ch) else _cv2.resize(bgra, (cw, ch), interpolation=_cv2.INTER_AREA)
+        rgb = _cv2.cvtColor(small, _cv2.COLOR_BGRA2RGB)
+    else:
+        small_bgr = resize(bgra[:, :, :3], cw, ch)  # resize first, reorder channels on the small image
+        rgb = np.ascontiguousarray(small_bgr[:, :, ::-1])
+    if (cw, ch) == (out_w, out_h):
+        return rgb
+    out = np.zeros((out_h, out_w, 3), np.uint8)  # letterbox: content centred, black bars
+    y0, x0 = (out_h - ch) // 2, (out_w - cw) // 2
+    out[y0:y0 + ch, x0:x0 + cw] = rgb
+    return out
 
 
 def _default_factory():
@@ -175,6 +221,77 @@ class MssSource:
             except Exception:  # pragma: no cover - best effort cleanup
                 pass
             self._sct = None
+
+
+class DxgiSource:
+    """Windows DXGI Desktop Duplication through the optional ``dxcam`` package: much faster than GDI and it also
+    captures hardware-accelerated video. ``monitor`` uses mss numbering (1 = primary). Only whole monitors."""
+
+    def __init__(self, monitor: int = 1):
+        if monitor < 1:
+            raise CaptureError("DXGI capture needs a single monitor (1, 2, …)")
+        if importlib.util.find_spec("dxcam") is None:
+            raise CaptureError("the optional 'dxcam' package is not installed (pip install dxcam)")
+        self.monitor = monitor
+        self._cam = None
+        self._last: np.ndarray | None = None
+
+    def _open(self):
+        import dxcam
+        try:
+            self._cam = dxcam.create(output_idx=self.monitor - 1, output_color="BGRA")
+        except Exception as exc:
+            raise CaptureError(f"cannot initialise DXGI capture: {exc}") from exc
+        if self._cam is None:
+            raise CaptureError("DXGI capture is not available for this monitor")
+
+    def grab_bgra(self) -> np.ndarray:
+        if self._cam is None:
+            self._open()
+        try:
+            frame = self._cam.grab()
+        except Exception as exc:  # desktop switch, mode change, lost device
+            self.close()
+            raise CaptureError(f"DXGI grab failed: {exc}") from exc
+        if frame is None:  # dxcam returns None when the screen did not change since the last grab
+            if self._last is None:
+                for _ in range(10):
+                    time.sleep(0.01)
+                    frame = self._cam.grab()
+                    if frame is not None:
+                        break
+                if frame is None:
+                    raise CaptureError("DXGI capture returned no frame")
+            else:
+                return self._last
+        self._last = np.ascontiguousarray(frame)
+        return self._last
+
+    def close(self) -> None:
+        if self._cam is not None:
+            try:
+                self._cam.release()
+            except Exception:  # pragma: no cover - best effort cleanup
+                pass
+            self._cam = None
+        self._last = None
+
+
+def make_source(backend: str = "auto", monitor: int = 1, region: Region | None = None):
+    """``mss`` (GDI/X11/Quartz), ``dxgi`` (dxcam), or ``auto``: DXGI on Windows when available, otherwise mss."""
+    if backend not in ("auto", "mss", "dxgi"):
+        raise ValueError(f"unknown capture backend {backend!r}")
+    if backend == "dxgi" or (backend == "auto" and sys.platform == "win32" and region is None and monitor >= 1):
+        try:
+            src = DxgiSource(monitor)
+            src.grab_bgra()  # fail now (and fall back) rather than in the capture loop
+            src.close()  # reopened lazily by the capture thread that uses it
+            return src
+        except CaptureError as exc:
+            if backend == "dxgi":
+                raise
+            log.info("DXGI capture unavailable (%s); using mss", exc)
+    return MssSource(monitor, region)
 
 
 def list_monitors(factory=_default_factory) -> list[dict]:

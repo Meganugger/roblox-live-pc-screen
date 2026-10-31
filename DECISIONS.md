@@ -61,3 +61,96 @@
   them. T-0016 (content policy) stays required before publishing guidance (T-0014).
 - **Consequences**: next tasks are T-0009 (codec + protocol), T-0010 (capture app), T-0011 (frame service), T-0012
   (Roblox scripts + TV), T-0013 (tests).
+
+## D-0004 — Write path changes to branch + draft PR (2026-10-31, 28th session) — revises D-0001
+
+- **Evidence**: this environment mounts a git clone whose credentials can push only `claude/*` branches; the owner's
+  agent instructions require a draft PR for code changes.
+- **Selected**: work on `claude/rlps-session-28-finish`, PR #1 into `main`; CI runs on the PR.
+- **Consequence**: `main` stays at `e44fa8a` until the owner merges PR #1. **The next session must check open PRs and
+  `claude/*` branches first** (recorded in README/SESSION_HANDOFF).
+- **Amended by D-0010**: the owner may ask the agent to merge.
+
+## D-0005 — Verification without Roblox: emulate the engine, run the real scripts (2026-10-31)
+
+- **Problem**: the scripts that matter most (`RlpsServer`, `RlpsClient`) had only static checks; the 26th session had
+  rejected an engine emulation as too large.
+- **Options**: (a) test only the pure cores (done, TR-0004/5); (b) a minimal Roblox emulation under Lune that runs the
+  unmodified scripts against the real frame service; (c) wait for owner Studio tests.
+- **Selected**: (b), ~700 lines, limited to documented behaviour the scripts use; unknown members raise like the engine.
+  It found 5 product defects in its first hours (TR-0008).
+- **Limits**: cannot prove real Roblox limits/rendering; owner acceptance (INSTALL D/E) stays mandatory.
+
+## D-0006 — Start latency and backpressure (2026-10-31)
+
+- **idle long-poll**: a poll with `idle=1` (relay already shows STOPPED) is held by the frame service until sharing
+  starts; every other poll learns STOPPED immediately. Start → picture 3.1 s → 1.0 s, fewer requests while idle.
+  Rejected: holding every poll while stopped (delayed stop news by up to 15 s — measured).
+- **Pacing**: after forwarding N bytes the server waits N / `MaxBytesPerSecond` (48,000) before the next poll. Because
+  deltas are computed against the last forwarded frame, busy content lowers the frame rate instead of queueing.
+  Rejected: per-client queues (memory growth, latency), dropping parts (breaks the chain).
+
+## D-0007 — Stream v2: maximum quality instead of the 50 KB/s guidance (2026-10-31, 29th session)
+
+- **Owner directive**: "I don't care about Roblox's recommended traffic per player, the game will have PC requirements:
+  make the stream as good as possible." Plus the survey of every public project (T-0005…T-0007, F-0037…F-0040).
+- **Evidence**: lossless tiles cost 86 kB per 480×270 video frame; MahanBig's DCT codec shows ~30× smaller frames for
+  moving content (F-0039); Icy-Monster/MahanBig batch frames per request (F-0037); luavid measured `--!native` 3.4×.
+- **Selected**: (1) hybrid per-tile coding — lossless RAW where the budget allows, DCT (own bit-exact integer
+  implementation) for moving content, COPY tiles for scrolling, lossless refinement once still; (2) encode once at
+  capture time into a chain ring; (3) bundles of frames per request + playout at capture spacing; (4) 1024×576 @ 30 fps
+  default profile; (5) OpenCV INTER_AREA resize, optional DXGI capture, integer scale factors + letterboxing;
+  (6) binary bodies after a probe.
+- **Rejected**: whole-frame DCT as in MahanBig (blurry text, no exact still picture); closed-loop residual coding on top
+  of DCT tiles (more client work for little gain once refinement exists); H.264 & co. (no decoder reachable from Luau);
+  several EditableImages for > 1024 px (only one image updates per frame, F-0002).
+- **Credits**: ideas from Icy-Monster/Screen-Sharing-in-Roblox (MIT) and MahanBig/roblox-screen-stream (MIT); no code
+  copied.
+
+## D-0008 — Congestion control from client acknowledgements (2026-10-31)
+
+- **Problem**: with no fixed budget, the stream must find what Roblox's replication and each client's CPU sustain.
+- **Selected**: clients ack frames (≤ 10/s) with their decode time; the server runs AIMD on the byte rate using the age of
+  the oldest unacknowledged frame, and caps the frame rate from decode time; both go to the PC with every poll; viewers
+  more than `LagDropSeconds` behind are paused and re-synced (with a fresh keyframe when the history is long).
+- **Why decode time**: the live test showed that lowering the bit rate does not help a CPU-bound client (DCT decode cost
+  scales with frames, not bytes) — without the fps cap even an unthrottled emulated client fell behind.
+- **Revisit if**: Roblox exposes per-client network statistics to scripts.
+- **Superseded in part by D-0009** (2026-10-31): the pause rule (`LagDropSeconds`) is replaced by per-viewer flow
+  control; the rate follows the median viewer instead of the slowest.
+
+## D-0009 — Per-viewer flow control from processed-byte acks; the median viewer sets the rate (2026-10-31)
+
+- **Problem** (found by the live test on the Windows CI runner, then reproduced in a simulation): a client still
+  waiting for its first picture re-requests `sync` every 3 s; each re-sync restarted the lag measurement window and
+  re-sent the whole history to a viewer that was already too slow, so a 10 KB/s viewer was never detected and its
+  backlog kept growing. More generally, a time-based lag rule reacts only after the backlog of a slow viewer has grown
+  at the full stream rate for seconds (at 1 MB/s → minutes to drain at 10 KB/s), and the global "forward log" could not
+  count bytes for a viewer that had not acknowledged anything yet.
+- **Selected**: clients report the *bytes of parts they processed* (ack and sync); the server knows exactly what each
+  viewer has in flight. `RlpsFanout` keeps each viewer's backlog within max(128 KiB, 1 s × its measured delivery
+  rate) — measured BBR-style from message flights; a full window *holds* the viewer; once drained it gets exactly the
+  frames it missed from the played history, or waits for a fresh keyframe when that is cheaper. Syncs are ignored while
+  the previous answer is in flight. The AIMD rate follows the *lower median* viewer delay (majority rules: with PC
+  requirements the stream should be as good as most viewers sustain, not as poor as the worst). Keyframes for viewers
+  are requested with a new `fresh=1` poll flag (continue the chain, next capture is a keyframe) because `key=1`
+  replayed the ring's newest keyframe chain — every TV briefly rewound to old frames.
+- **Evidence**: `roblox/tests/RlpsFanout.spec.luau` network simulation (fast viewer 8 MB/s + 10 KB/s viewer on a 1 MB/s,
+  30 fps stream: the fast viewer receives all 1,031 frames, held once during warm-up; the slow one's backlog ≤ 120 KiB,
+  4 pictures, ends on the last frame); live test E2E-20 (rate keeps following the fast viewer, slow viewer held).
+- **Rejected**: lowering the rate to the slowest viewer (one bad connection ruins the stream for everyone and a client
+  could degrade it on purpose); per-viewer encodes / simulcast (one encoder on the owner's PC; a low-resolution second
+  layer for slow viewers stays a possible extension, KI-0008).
+- **Revisit if**: Roblox exposes per-client network statistics to scripts, or real servers show a different delivery
+  pattern (T-0018).
+
+## D-0010 — The agent merges PR #1 at the owner's request (2026-10-31, 29th session)
+
+- **Evidence**: owner message "Push and merge and do everything yourself"; PR #1 head `047ce14` green in all 5 CI jobs
+  (Python on Linux + Windows with ruff, Luau specs + Rojo + luau-lsp, live pipeline test on Xvfb and on a real
+  Windows desktop); every suite also green in the sandbox (TR-0013).
+- **Selected**: mark PR #1 ready for review and merge it into `main` with a merge commit (keeps the per-step history
+  that WORK_LOG and TEST_RESULTS reference by SHA); delete the merged branch. Later work: new `claude/*` branch + PR.
+- **Limit**: merging does not make Roblox Studio / published-server behaviour verified — that remains the owner's
+  acceptance test T-0018 (no Roblox runtime in the agent sandbox, KI-0002).
+

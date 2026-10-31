@@ -37,12 +37,17 @@ class Profile:
     fps: float
 
 
-# Bandwidth planning: ~50 KB/s per Roblox client (F-0017) and <= 400 polls/min per game server (D-0002).
+# Hybrid profiles: lossless tiles where the bandwidth allows, DCT for moving content, lossless refinement when still
+# (rlps.hybrid). The byte rate is not fixed here: the Roblox server measures what its players keep up with (client
+# acks) and reports it with every poll; --max-rate caps it. 1024 px is the EditableImage maximum width.
 PROFILES = {
-    "low": Profile("low", 320, 180, P.FMT_RGB565, 2.0),
-    "balanced": Profile("balanced", 480, 270, P.FMT_RGB565, 4.0),
-    "high": Profile("high", 640, 360, P.FMT_RGB888, 6.0),
+    "max": Profile("max", 1024, 576, P.FMT_HYBRID, 30.0),
+    "high": Profile("high", 768, 432, P.FMT_HYBRID, 30.0),
+    "balanced": Profile("balanced", 640, 352, P.FMT_HYBRID, 24.0),
+    "low": Profile("low", 512, 288, P.FMT_HYBRID, 15.0),
+    "lossless": Profile("lossless", 1024, 576, P.FMT_RGBA8, 15.0),  # never lossy (text work on fast networks)
 }
+DEFAULT_PROFILE = "max"
 
 
 @dataclass
@@ -80,7 +85,8 @@ class CaptureLoop(threading.Thread):
                 t0 = self.clock()
                 try:
                     bgra = self.source.grab_bgra()
-                    rgb = capture.bgra_to_rgb(bgra, self.profile.max_w, self.profile.max_h)
+                    align = P.HYBRID_TILE if self.profile.fmt == P.FMT_HYBRID else 1
+                    rgb = capture.bgra_to_rgb(bgra, self.profile.max_w, self.profile.max_h, align)
                     q = codec.quantize(rgb, self.profile.fmt)
                 except capture.CaptureError as exc:
                     with self.stats.lock:
@@ -165,9 +171,14 @@ class SharingController:
         s = self.stats.snapshot()
         lines = [f"sharing: {'ON' if self.active else 'off'} ({s['state']}), profile {self.profile.name}"]
         if self.active:
-            lines.append(f"frames: {s['frames_published']} published / {s['frames_captured']} captured, "
+            lines.append(f"frames: {s['frames_published']} sent / {s['frames_captured']} captured, "
                          f"{s['frame_size'][0]}x{s['frame_size'][1]} from {s['source_size'][0]}x{s['source_size'][1]}"
                          f", {s['last_capture_ms']:.0f} ms/frame, errors {s['errors']}")
+            e = self.store.status
+            quality = f"DCT q{e.last_quality}" if e.last_mode == "dct" else (e.last_mode or "-")
+            lines.append(f"stream: budget {e.rate / 1e6:.2f} MB/s, last frame {quality}, "
+                         f"encode {e.last_encode_ms:.0f} ms, skipped {e.skipped} (over budget) / "
+                         f"{e.fps_skipped} (viewers' fps cap)")
             if s["last_error"]:
                 lines.append(f"last error: {s['last_error']}")
         last = self.store.last_poll
@@ -283,7 +294,11 @@ def run_gui(controller: SharingController, service: server.FrameService) -> None
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m rlps.app", description=__doc__.split("\n\n")[0])
-    ap.add_argument("--profile", choices=sorted(PROFILES), default="balanced")
+    ap.add_argument("--profile", choices=sorted(PROFILES), default=DEFAULT_PROFILE)
+    ap.add_argument("--backend", choices=("auto", "mss", "dxgi"), default="auto",
+                    help="capture backend: auto = DXGI Desktop Duplication on Windows when dxcam is installed")
+    ap.add_argument("--max-rate", type=float, default=8.0, metavar="MB/s",
+                    help="upper bound of the stream byte rate (default 8 MB/s; Roblox reports what it sustains)")
     ap.add_argument("--monitor", type=int, default=1, help="mss monitor index: 1 = primary (default), 0 = all")
     ap.add_argument("--region", type=capture.Region.parse, help="capture left,top,width,height instead")
     ap.add_argument("--host", default="127.0.0.1", help="bind address (keep loopback; publish with a tunnel)")
@@ -291,6 +306,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", type=Path, default=default_config_path())
     ap.add_argument("--rotate-token", action="store_true", help="generate a new token (old one stops working)")
     ap.add_argument("--show-token", action="store_true", help="print the token (store it as a Roblox secret)")
+    ap.add_argument("--token-only", action="store_true",
+                    help="print the token (creating it on first use) and exit without starting anything")
     ap.add_argument("--no-gui", action="store_true")
     ap.add_argument("--start", action="store_true", help="start sharing immediately")
     ap.add_argument("--list-monitors", action="store_true")
@@ -304,12 +321,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{i}: {m['width']}x{m['height']} at ({m['left']},{m['top']})" + ("  (all)" if i == 0 else ""))
         return 0
     cfg, created = load_or_create_config(args.config, rotate=args.rotate_token)
-    if created or args.show_token:
+    if created or args.show_token or args.token_only:
         print(f"token ({'new' if created else 'existing'}, saved in {args.config}):\n  {cfg['token']}\n"
               "store it in the Roblox experience secrets (see docs/deployment) — never share it or commit it")
+    if args.token_only:
+        return 0
     if args.host not in ("127.0.0.1", "::1", "localhost"):
         log.warning("binding to %s exposes the frame service beyond this PC; prefer 127.0.0.1 + a tunnel", args.host)
-    store = server.FrameStore()
+    store = server.FrameStore(max_rate=args.max_rate * 1e6)
     try:
         service = server.FrameService(store, cfg["token"], host=args.host, port=args.port)
     except OSError as exc:
@@ -318,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     service.start()
     log.info("frame service on http://%s:%d%s", *service.address, server.FRAMES_PATH)
-    controller = SharingController(store, lambda: capture.MssSource(args.monitor, args.region),
+    controller = SharingController(store, lambda: capture.make_source(args.backend, args.monitor, args.region),
                                    PROFILES[args.profile])
     try:
         if args.start:
