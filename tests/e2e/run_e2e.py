@@ -153,18 +153,26 @@ class Harness:
             raise Failure(f"{cid}: {desc}")
 
     @staticmethod
-    def read_state(ctl: str) -> dict:
-        try:
-            with open(os.path.join(ctl, "state.json"), encoding="utf-8") as fh:
-                return json.load(fh)
-        except (OSError, json.JSONDecodeError):  # missing, or being replaced right now (Windows: PermissionError)
-            return {}
+    def read_state(ctl: str, timeout: float = 3.0) -> dict:
+        """Newest emulator state; retries while the file is missing or being replaced (Windows: PermissionError)."""
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                with open(os.path.join(ctl, "state.json"), encoding="utf-8") as fh:
+                    st = json.load(fh)
+                if "server" in st and "clients" in st:
+                    return st
+            except (OSError, json.JSONDecodeError):
+                pass
+            if time.monotonic() >= deadline:
+                return {}
+            time.sleep(0.02)
 
     def wait_for(self, ctl: str, pred, timeout: float, what: str):
         deadline = time.monotonic() + timeout
         last = {}
         while time.monotonic() < deadline:
-            st = self.read_state(ctl)
+            st = self.read_state(ctl, timeout=0.2)
             if st:
                 last = st
                 errs = st["server"]["errors"] or [e for c in st["clients"].values() for e in (c["errors"] or [])]
@@ -534,9 +542,13 @@ class Harness:
             self.wait_for(ctl, exact, 60, "page exact after scrolling")
             self.metrics["scroll"] = {"keyframe_bytes": keyframe_bytes, "bytes_for_15_scroll_steps": sent,
                                       "copied_tiles": copied}
-            self.check("E2E-21", "scrolling a text page: tiles sent as copies of the previous picture, 15 scroll steps "
-                       "cost less than 3 keyframes, client ends on the exact page",
-                       copied > 500 and sent < 3 * keyframe_bytes, **self.metrics["scroll"])
+            tiles = (store.width // 16) * (store.height // 16)
+            # without copies every step changes ~every tile: about one keyframe per step, lossless. Copies cost a few
+            # bytes per tile; the pauses between steps are (correctly) spent refining lossy copies to lossless.
+            self.check("E2E-21", "scrolling a text page: most changed tiles sent as copies of the previous picture, "
+                       "15 scroll steps cost less than half of resending them, client ends on the exact page",
+                       copied > 15 * tiles * 0.5 and sent < 0.5 * 15 * keyframe_bytes, tiles_per_frame=tiles,
+                       **self.metrics["scroll"])
         finally:
             open(os.path.join(ctl, "quit"), "w").close()
             try:
