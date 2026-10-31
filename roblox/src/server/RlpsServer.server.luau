@@ -17,6 +17,11 @@
 --   PollWaitMs           number  long-poll wait sent to the service (default 15000, service maximum 25000; lowered
 --                                automatically when Roblox times a poll out — its default request timeout is undocumented)
 --   MinPollInterval      number  seconds between poll starts (default 0.2 => <= 300 requests/min; HttpService allows 500)
+--   MaxBytesPerSecond    number  pacing budget of the forwarded stream (default 48000, every viewer receives it): after
+--                                forwarding N bytes the next poll waits N / MaxBytesPerSecond seconds. Deltas are
+--                                computed against the last forwarded frame, so busy content lowers the frame rate
+--                                instead of queueing frames (backpressure); ~50 KB/s per client is Roblox's planning
+--                                figure for remote traffic (F-0017)
 --   StoppedPollInterval  number  seconds between polls while the owner is not sharing (default 1; the frame service
 --                                holds such an idle=1 poll until sharing starts or PollWaitMs passes: Start shows at
 --                                once, and a stop is still reported immediately to every non-idle poll)
@@ -275,6 +280,16 @@ local function pollOnce(): number
 		return 2
 	end
 	broadcast(messages)
+	local forwarded = 0
+	for _, m in messages do
+		if m.kind == "records" then
+			forwarded += m.bytes or 0
+		end
+	end
+	if forwarded > 0 then
+		local rate = math.max(1000, tonumber(attr("MaxBytesPerSecond", 48000)) or 48000)
+		return math.min(10, forwarded / rate)
+	end
 	if relay.status == "stopped" then
 		return math.max(0.5, tonumber(attr("StoppedPollInterval", 1)) or 1)
 	end

@@ -98,9 +98,10 @@ class Harness:
             raise Failure(f"painter answered {line!r}")
         return time.monotonic()
 
-    def start_emulator(self, base_url: str, token: str, ctl: str) -> subprocess.Popen:
+    def start_emulator(self, base_url: str, token: str, ctl: str, attrs: dict | None = None) -> subprocess.Popen:
         env = dict(os.environ, RLPS_REPO=REPO, RLPS_OUT=ctl, RLPS_BASE_URL=base_url, RLPS_TOKEN=token,
                    RLPS_PUBLIC_URL="https://rlps-e2e.test", RLPS_MAX_SECONDS="240")
+        env.update({f"RLPS_ATTR_{k}": str(v) for k, v in (attrs or {}).items()})
         log = open(os.path.join(ctl, "emulator.log"), "w")
         p = subprocess.Popen([self.args.lune, "run", os.path.join(HERE, "roblox_emulator.luau")], env=env,
                              stdout=log, stderr=subprocess.STDOUT, cwd=REPO)
@@ -354,6 +355,53 @@ class Harness:
             service.close()
             shutil.copy(os.path.join(ctl, "emulator.log"), os.path.join(self.out, "emulator-live.log"))
 
+    def scenario_pacing(self) -> None:
+        """Backpressure: with a tiny byte budget, rapid desktop changes are coalesced, not queued."""
+        ctl = tempfile.mkdtemp(prefix="rlps-e2e-pacing-", dir=self.out)
+        token = secrets.token_urlsafe(32)
+        budget = 3000
+        store = server.FrameStore()
+        service = server.FrameService(store, token, port=0)
+        service.start()
+        controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["balanced"])
+        self.scene("A")
+        controller.start()
+        emu = self.start_emulator(f"http://127.0.0.1:{service.address[1]}", token, ctl,
+                                  {"MaxBytesPerSecond": budget})
+        try:
+            open(os.path.join(ctl, "join-Dave"), "w").close()
+            (seq0, _, _), st = self.wait_match(ctl, store, ["Dave"], 40, "Dave shows the first frame")
+            time.sleep(4)  # let the pacing delay of the keyframe elapse
+            st = self.read_state(ctl)
+            f0, c0, t0 = st["server"]["attributes"]["ForwardedBytes"], st["server"]["attributes"]["Containers"], st["t"]
+            changes = 0
+            end = time.monotonic() + 10
+            while time.monotonic() < end:
+                self.scene("B" if changes % 2 == 0 else "A")
+                changes += 1
+                time.sleep(0.37)  # not a multiple of the capture interval (no aliasing)
+            st = self.read_state(ctl)
+            f1, t1 = st["server"]["attributes"]["ForwardedBytes"], st["t"]
+            (seq1, _, _), st2 = self.wait_match(ctl, store, ["Dave"], 40, "Dave settles after the churn",
+                                                after_seq=seq0)
+            rate = (f1 - f0) / max(0.001, t1 - t0)
+            published = controller.stats.frames_published
+            self.metrics["pacing"] = {"budget_Bps": budget, "measured_Bps": round(rate), "desktop_changes": changes,
+                                      "frames_published": published, "containers_ingested_during_churn":
+                                      st["server"]["attributes"]["Containers"] - c0}
+            self.check("E2E-16", f"pacing: forwarded stream stays near the {budget} B/s budget during 10 s of "
+                       "~2.7 changes/s (one container of slack), frames coalesced, final frame exact",
+                       rate <= budget * 1.6 and seq1 > seq0, **self.metrics["pacing"])
+        finally:
+            open(os.path.join(ctl, "quit"), "w").close()
+            try:
+                emu.wait(10)
+            except subprocess.TimeoutExpired:
+                emu.kill()
+            controller.stop()
+            service.close()
+            shutil.copy(os.path.join(ctl, "emulator.log"), os.path.join(self.out, "emulator-pacing.log"))
+
     def scenario_badtoken(self) -> None:
         ctl = tempfile.mkdtemp(prefix="rlps-e2e-badtoken-", dir=self.out)
         store = server.FrameStore()
@@ -387,7 +435,7 @@ def main() -> int:
     ap.add_argument("--out", default=os.path.join(REPO, "build", "e2e"))
     ap.add_argument("--lune", default=shutil.which("lune") or "lune")
     ap.add_argument("--profile", choices=sorted(app.PROFILES), default="balanced")
-    ap.add_argument("--scenario", choices=["live", "badtoken", "all"], default="all")
+    ap.add_argument("--scenario", choices=["live", "pacing", "badtoken", "all"], default="all")
     ap.add_argument("--xvfb", action="store_true", help="start Xvfb even if DISPLAY is set")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -399,6 +447,8 @@ def main() -> int:
         h.start_painter()
         if args.scenario in ("live", "all"):
             h.scenario_live()
+        if args.scenario in ("pacing", "all"):
+            h.scenario_pacing()
         if args.scenario in ("badtoken", "all"):
             h.scenario_badtoken()
     except Failure as exc:

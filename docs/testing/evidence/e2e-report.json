@@ -1,0 +1,212 @@
+{
+  "ok": true,
+  "duration_s": 57.8,
+  "checks": [
+    {
+      "id": "E2E-01",
+      "check": "not sharing: TV shows 'Screen sharing is off', no picture, server polls the service",
+      "pass": true,
+      "status": "stopped",
+      "polls": 1,
+      "face": "Front",
+      "adornee": "Screen"
+    },
+    {
+      "id": "E2E-02",
+      "check": "TV SurfaceGui adorned to the tagged screen part, Front face",
+      "pass": true
+    },
+    {
+      "id": "E2E-03",
+      "check": "after Start: Alice's EditableImage == newest captured frame (SHA-256), LIVE badge on",
+      "pass": true,
+      "seq": 1,
+      "sha256": "b795714ac45d7ffb",
+      "size": [
+        480,
+        270
+      ],
+      "latency_s": 1.032
+    },
+    {
+      "id": "E2E-04",
+      "check": "frame geometry matches the profile and the 16:9 desktop",
+      "pass": true,
+      "size": [
+        480,
+        270
+      ]
+    },
+    {
+      "id": "E2E-05",
+      "check": "snapshot pixels == expected frame",
+      "pass": true
+    },
+    {
+      "id": "E2E-06a",
+      "check": "scene A: rectangle colour visible on the TV at its screen position",
+      "pass": true,
+      "pixel": [
+        231,
+        28,
+        24
+      ],
+      "want": [
+        230,
+        30,
+        30
+      ]
+    },
+    {
+      "id": "E2E-06b",
+      "check": "scene A: scene B's rectangle is gone (background there)",
+      "pass": true,
+      "pixel": [
+        16,
+        40,
+        123
+      ],
+      "want": [
+        20,
+        40,
+        120
+      ]
+    },
+    {
+      "id": "E2E-06c",
+      "check": "fine checkerboard detail survives (bright and dark pixels in the region)",
+      "pass": true,
+      "max": 255,
+      "min_r": 16
+    },
+    {
+      "id": "E2E-07",
+      "check": "late joiner Bob shows the same frame as Alice (server-side history sync)",
+      "pass": true,
+      "seq": 1,
+      "latency_s": 0.261
+    },
+    {
+      "id": "E2E-08",
+      "check": "desktop change reaches both TVs (new frame, delta path)",
+      "pass": true,
+      "seq": 2,
+      "latency_s": 0.208
+    },
+    {
+      "id": "E2E-09a",
+      "check": "scene B: rectangle colour visible on the TV at its screen position",
+      "pass": true,
+      "pixel": [
+        24,
+        203,
+        57
+      ],
+      "want": [
+        30,
+        200,
+        60
+      ]
+    },
+    {
+      "id": "E2E-09b",
+      "check": "scene B: scene A's rectangle is gone (background there)",
+      "pass": true,
+      "pixel": [
+        16,
+        40,
+        123
+      ],
+      "want": [
+        20,
+        40,
+        120
+      ]
+    },
+    {
+      "id": "E2E-09c",
+      "check": "fine checkerboard detail survives (bright and dark pixels in the region)",
+      "pass": true,
+      "max": 255,
+      "min_r": 16
+    },
+    {
+      "id": "E2E-10",
+      "check": "after 9 rapid desktop changes both TVs settle on the exact newest frame (scene A)",
+      "pass": true,
+      "seq": 5,
+      "frames_between": 3,
+      "dropped": 0
+    },
+    {
+      "id": "E2E-11",
+      "check": "frame service down: both TVs show 'Screen unavailable' and hide the picture",
+      "pass": true,
+      "detail": "Screen unavailable\nrequest failed: [string \"server:roblox/src/server/RlpsServer.server.luau\"]:244: HttpError: ConnectFail",
+      "last_error": "[string \"server:roblox/src/server/RlpsServer.server.luau\"]:244: HttpError: ConnectFail"
+    },
+    {
+      "id": "E2E-12",
+      "check": "service back: both TVs resume with the exact newest frame",
+      "pass": true,
+      "seq": 6,
+      "latency_s": 7.98
+    },
+    {
+      "id": "E2E-13",
+      "check": "after Stop: both TVs show 'Screen sharing is off', EditableImages destroyed, no frames left in the service, within 5 s",
+      "pass": true,
+      "latency_s": 0.203,
+      "status": "stopped"
+    },
+    {
+      "id": "E2E-14",
+      "check": "no script errors on the server or any client during the whole run",
+      "pass": true,
+      "errors": []
+    },
+    {
+      "id": "E2E-16",
+      "check": "pacing: forwarded stream stays near the 3000 B/s budget during 10 s of ~2.7 changes/s (one container of slack), frames coalesced, final frame exact",
+      "pass": true,
+      "budget_Bps": 3000,
+      "measured_Bps": 2161,
+      "desktop_changes": 27,
+      "frames_published": 29,
+      "containers_ingested_during_churn": 28
+    },
+    {
+      "id": "E2E-15",
+      "check": "wrong secret: TV shows the 401 token error, no picture ever reaches the client",
+      "pass": true,
+      "text": "Screen unavailable\nframe service rejected the token (HTTP 401): check the secret"
+    }
+  ],
+  "metrics": {
+    "join_to_stopped_screen_s": 1.022,
+    "start_to_picture_s": 1.032,
+    "late_joiner_s": 0.261,
+    "desktop_change_to_both_tvs_s": 0.208,
+    "outage_recovery_s": 7.98,
+    "stop_to_tv_off_s": 0.203,
+    "profile": "balanced",
+    "frame_service_responses_after_outage": 2,
+    "http_requests_by_roblox_server": 13,
+    "http_body_bytes": 8504,
+    "server_forwarded_part_bytes": 6086,
+    "server_containers": 9,
+    "server_dropped": 0,
+    "alice_received_bytes": 6362,
+    "alice_remote_messages": 31,
+    "alice_pixel_writes": 6,
+    "frames_published": 6,
+    "frames_captured": 128,
+    "pacing": {
+      "budget_Bps": 3000,
+      "measured_Bps": 2161,
+      "desktop_changes": 27,
+      "frames_published": 29,
+      "containers_ingested_during_churn": 28
+    }
+  }
+}

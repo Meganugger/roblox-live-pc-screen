@@ -824,6 +824,12 @@ server.secrets.rlps_token = SECRET_VALUE
 do
 	local serverScript = methods.FindFirstChild(server.game.ServerScriptService.Rlps, "RlpsServer")
 	serverScript:SetAttribute("FrameServiceUrl", PUBLIC_URL)
+	for k, v in ENV do -- RLPS_ATTR_<Name>=<value>: override a server configuration attribute (test knobs)
+		local attrName = string.match(k, "^RLPS_ATTR_(%w+)$")
+		if attrName then
+			serverScript:SetAttribute(attrName, tonumber(v) or v)
+		end
+	end
 	-- replicate every RemoteEvent the server parents to ReplicatedStorage
 	I(server.game.ReplicatedStorage).childAdded:Connect(function(child)
 		if I(child).ClassName == "RemoteEvent" then
