@@ -377,7 +377,7 @@ function Decoder.applyRecord(
 			local mode = readu8(raw, off)
 			local size = if mode == Protocol.TILE_MODE_RAW
 				then Protocol.HYBRID_RAW_ENTRY
-				elseif mode == Protocol.TILE_MODE_DCT then Protocol.HYBRID_DCT_ENTRY
+				elseif mode == Protocol.TILE_MODE_DCT or mode == Protocol.TILE_MODE_DCT2 then Protocol.HYBRID_DCT_ENTRY
 				elseif mode == Protocol.TILE_MODE_COPY then Protocol.HYBRID_COPY_ENTRY
 				else 0
 			if size == 0 then
@@ -386,8 +386,14 @@ function Decoder.applyRecord(
 			if off + size > rawLen then
 				return nil, "tile data length mismatch"
 			end
-			if mode == Protocol.TILE_MODE_DCT and readu8(raw, off + 1) >= nq then
+			if (mode == Protocol.TILE_MODE_DCT or mode == Protocol.TILE_MODE_DCT2) and readu8(raw, off + 1) >= nq then
 				return nil, "invalid DCT quality"
+			end
+			if mode == Protocol.TILE_MODE_DCT2 then
+				local x0, y0 = Protocol.tileRect(readu16(raw, 2 * (i - 1)), w, hgt, ts)
+				if x0 + 32 > w or y0 + 32 > hgt then
+					return nil, "half-resolution tile outside the frame"
+				end
 			end
 			if mode == Protocol.TILE_MODE_COPY then
 				if not h.usesRef then
@@ -410,8 +416,12 @@ function Decoder.applyRecord(
 		off = 2 * n
 		for i = 0, n - 1 do
 			local x0, y0 = Protocol.tileRect(readu16(raw, 2 * i), w, hgt, ts)
-			grow(bounds, x0, y0, 16, 16)
 			local mode = readu8(raw, off)
+			if mode == Protocol.TILE_MODE_DCT2 then
+				grow(bounds, x0, y0, 32, 32)
+			else
+				grow(bounds, x0, y0, 16, 16)
+			end
 			if mode == Protocol.TILE_MODE_RAW then
 				local src = off + 1
 				for row = 0, 15 do
@@ -426,6 +436,9 @@ function Decoder.applyRecord(
 					buffer.copy(frame, (y0 + row) * stride + x0 * 4, r, (sy + row) * stride + sx * 4, 64)
 				end
 				off += Protocol.HYBRID_COPY_ENTRY
+			elseif mode == Protocol.TILE_MODE_DCT2 then
+				Dct.decodeTile2x(raw, off, frame, stride, x0, y0)
+				off += Protocol.HYBRID_DCT_ENTRY
 			else
 				Dct.decodeTile(raw, off, frame, stride, x0, y0)
 				off += Protocol.HYBRID_DCT_ENTRY

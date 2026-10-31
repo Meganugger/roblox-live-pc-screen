@@ -50,6 +50,19 @@ local function domainAllows(pattern: string, host: string): boolean
 end
 local MAX_SECONDS = tonumber(ENV.RLPS_MAX_SECONDS) or 180
 local started = os.clock()
+-- Network model (optional): one-way delay of every RemoteEvent message in both directions, the client links' byte
+-- rate (a reliable, ordered link: messages queue behind each other, like Roblox's send queue above its bandwidth),
+-- and the round trip of every HTTP request through the tunnel. Defaults: none (an instant network).
+local NET_LATENCY = (tonumber(ENV.RLPS_EMU_LATENCY_MS) or 0) / 1000
+local LINK_BPS = tonumber(ENV.RLPS_EMU_LINK_BPS)
+local HTTP_RTT = (tonumber(ENV.RLPS_EMU_HTTP_RTT_MS) or 0) / 1000
+-- Glass-to-glass probe (optional, "x,y,step,bits" in image pixels): the counter the painter draws ("clock" scenes) is
+-- read back from every client's EditableImage after each write and logged with the wall-clock time it appeared.
+local MARKER = ENV.RLPS_EMU_MARKER
+local datetime = require("@lune/datetime")
+local function wallMs(): number
+	return datetime.now().unixTimestampMillis
+end
 
 local function log(...)
 	print(string.format("[emu %7.2f]", os.clock() - started), ...)
@@ -429,15 +442,22 @@ local function deliverToClient(peer, replica, packed, bytes)
 	if not peer.alive then
 		return
 	end
-	table.insert(peer.inbox, { replica, packed, bytes })
+	-- the link sends messages one after another at its byte rate; each arrives NET_LATENCY after it was sent
+	local now = os.clock()
+	local rate = peer.throttle or LINK_BPS
+	local sentAt = math.max(now, peer.linkFree or 0) + (if rate then bytes / rate else 0)
+	peer.linkFree = sentAt
+	table.insert(peer.inbox, { replica, packed, bytes, sentAt + NET_LATENCY })
 	if not peer.pumping then
 		peer.pumping = true
 		task.defer(function()
 			while #peer.inbox > 0 do
-				local item = table.remove(peer.inbox, 1)
-				if peer.throttle then -- emulated slow connection: bytes/s, in order (reliable remotes queue up)
-					task.wait(item[3] / peer.throttle)
+				local item = peer.inbox[1]
+				local wait = item[4] - os.clock()
+				if wait > 0 then
+					task.wait(wait)
 				end
+				table.remove(peer.inbox, 1)
 				if not peer.alive then
 					break
 				end
@@ -486,7 +506,7 @@ classMethods.RemoteEvent = {
 		end
 		local serverRemote = s.serverRemote
 		local player = s.peer.serverPlayer
-		task.defer(function()
+		task.delay(NET_LATENCY, function()
 			if s.peer.alive then
 				I(serverRemote).props.OnServerEvent:Fire(player, table.unpack(packed, 1, packed.n))
 			end
@@ -617,7 +637,13 @@ local function makeServices(peer)
 				end
 			end
 			httpRequests.count += 1
+			if HTTP_RTT > 0 then
+				task.wait(HTTP_RTT / 2) -- to the PC through the tunnel
+			end
 			local ok, res = pcall(net.request, { url = url, method = opts.Method or "GET", headers = headers })
+			if HTTP_RTT > 0 then
+				task.wait(HTTP_RTT / 2) -- and back
+			end
 			if not ok then
 				httpRequests.failures += 1
 				error("HttpError: ConnectFail", 2)
@@ -747,6 +773,24 @@ classMethods.EditableImage = {
 			buffer.copy(s.pixels, ((y + row) * W + x) * 4, buf, row * w * 4, w * 4)
 		end
 		s.peer.pixelWrites += 1
+		if MARKER and s.peer ~= server then
+			local mx, my, step, bits = string.match(MARKER, "^(%d+),(%d+),(%d+),(%d+)$")
+			local value = 0
+			for i = 0, tonumber(bits) :: number - 1 do
+				local px = tonumber(mx) :: number + i * tonumber(step) :: number
+				local o = ((tonumber(my) :: number) * W + px) * 4
+				if o + 2 < buffer.len(s.pixels) then
+					local l = buffer.readu8(s.pixels, o) + buffer.readu8(s.pixels, o + 1) + buffer.readu8(s.pixels, o + 2)
+					if l > 3 * 128 then
+						value += bit32.lshift(1, i)
+					end
+				end
+			end
+			local markers = s.peer.markers
+			if #markers == 0 or markers[#markers][1] ~= value then
+				table.insert(markers, { value, wallMs() })
+			end
+		end
 	end,
 }
 
@@ -850,6 +894,7 @@ local function newPeer(name, isClient)
 		recvMessages = 0,
 		pixelWrites = 0,
 		imagesCreated = 0,
+		markers = {}, -- { {counter value, wall ms first shown} } (RLPS_EMU_MARKER)
 		errors = {},
 		secrets = {},
 		peerOfPlayer = {},
@@ -1122,6 +1167,7 @@ local function clientState(peer)
 		recv_messages = peer.recvMessages,
 		pixel_writes = peer.pixelWrites,
 		images_created = peer.imagesCreated,
+		markers = if MARKER then peer.markers else nil,
 		errors = peer.errors,
 		gui = false,
 	}

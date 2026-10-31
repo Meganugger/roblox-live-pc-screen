@@ -254,3 +254,28 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   page's `data:` URL as its title (it contains the tag too), so the tab query built from it stopped matching once the
   page's `<title>` loaded. Test fix: wait for the page's own title. Product behaviour unaffected (a tab is picked by
   its title; KI-0009). **CI at `2fd54ee` (with the fix): 5 / 5 green.**
+
+## TR-0017 — Latency: owner report "lags way more, a lot more delay" (29th session, 2026-10-31)
+
+- **New measurement** (`run_e2e.py --scenario latency`, E2E-31…34): a 16-bit counter drawn on the real screen is
+  read back from each client's EditableImage when written; delay per counter value. Network models in the emulator:
+  one-way RemoteEvent delay, a queueing per-player link, the tunnel's round trip.
+- **Before** (PR #4 scripts + desktop, same harness, 2.1 GHz sandbox): studio single change 0.236 s, video
+  0.253 / 0.279 s (median / p90); online one player 0.351 / 0.664 / 0.956 s; online two players (3 runs) single
+  0.37 s, video median 0.56 / 0.75 / 0.99 s, p90 1.12 / 1.88 / 1.63 s, 71–93 % of changes shown (an earlier run:
+  1.14 / 1.90 s, 65 %). PR #2 scripts: online one player 0.47 / 0.97 s.
+- **Root causes** (D-0013): client stopped decoding mid-frame and skipped drawing (PR #3 regression); 150 ms batching
+  wait; up to 1 s playout; rate control on frame age with a target near the base delay, 1 MB/s start, 128 KiB / 1 s
+  window, 0.5 s encoder bursts; saved place attributes kept the old tuning; interpreted client DCT decode 0.3 ms/tile.
+- **After**: studio single 0.067–0.08 s, video 0.21–0.22 / 0.25–0.26 s, 99–100 % shown; online one player
+  0.20 / 0.42 / 0.48–0.59 s; online two players (3 runs) 0.21 s, 0.47–0.49 / 0.56–0.63 s, 92–95 % shown; weak
+  (3 ms decode budget) 0.19 / 0.43 / 0.49 s. DCT tile decode 0.306 → 0.170 ms (bit-identical); DCT2 covers 4 tiles
+  for about the cost of one.
+- **Suites**: ruff clean; Python **96 passed**, 2 skipped (Windows-only); Luau **6,779 / 0** (new DCT2 vector
+  sequence, Fanout D: base/queueing delay); Rojo + luau-lsp OK; live pipeline **39 / 39** (E2E-01…34).
+- **Test fixes found on the way**: E2E-08/E2E-09 could accept a refinement frame of the *old* scene captured before the
+  change (the faster pipeline showed it before the new capture was encoded) → `wait_match` requires a capture taken
+  after the scene was on screen (`TimedStore`); E2E-23 waits until earlier motion has refined before measuring one
+  redraw; E2E-20 starts at 100 kB/s (with half-resolution video the stream no longer needs 300 kB/s at the fps the
+  emulator decodes, so "grows" needs a start below demand).
+- **Not verified here**: real Roblox (per-player send budget, client CPU), the owner's tunnel.

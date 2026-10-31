@@ -30,30 +30,38 @@ Windows desktop ─mss/DXGI─► desktop app (Python)                        Ro
 
 1. **Capture and encode once** (`hybrid.py`, D-0007). Each 16×16 tile of the new frame is compared with the picture
    the clients have; the encoder keeps that picture bit-exactly. Moving tiles go **lossless** if the byte budget allows,
-   else **DCT** (YCbCr 4:2:0, JPEG tables, best quality that fits). Scrolled content becomes 5-byte **COPY** tiles from
+   else **DCT** (YCbCr 4:2:0, JPEG tables, best quality that fits; in a large moving area, 2×2 groups of tiles as one
+   **half-resolution DCT2** macroblock — clients decode interpreted Luau, so this quarters the work that limits their
+   frame rate). Scrolled content becomes 5-byte **COPY** tiles from
    the previous picture. Tiles that stopped moving are **refined to lossless** with the remaining budget, so a still
-   screen becomes a pixel-exact copy. The budget is a token bucket at the rate Roblox reports; the frame rate obeys the
-   reported fps cap. Records go into a chain ring (keyframe, then deltas).
+   screen becomes a pixel-exact copy. The budget is a token bucket at the rate Roblox reports (0.25 s deep: bursts wait
+   in the players' network queues); the frame rate obeys the reported fps cap. Records go into a chain ring (keyframe,
+   then deltas).
 2. **Poll** (`server.py`, `RlpsServer`). One long-poll per experience server returns a **bundle** of every record newer
-   than the poller's position (plus 150 ms of batching), so 500 requests/min never cap the frame rate. Bodies are raw
+   than the poller's position as soon as there is one (no batching wait, D-0013); frames captured while the next poll
+   travels come together with it, so 500 requests/min never cap the frame rate. Bodies are raw
    bytes once `/v1/probe` proved them intact, base64 otherwise. While sharing is off the server polls with `idle=1`
    and the service holds the poll until Start (picture ≈ 1 s after Start; TV off ≈ 0.2 s after Stop, D-0006).
 3. **Relay and play out** (`RlpsRelayCore`). Only containers that extend the chain are forwarded; anything else is
-   dropped and the chain is re-requested from a keyframe (`key=1`). Containers are played out at their capture spacing.
+   dropped and the chain is re-requested from a keyframe (`key=1`). Containers are played out at their capture spacing,
+   compressed so that none waits more than `PlayoutMs` (100 ms): smooth motion at a bounded cost in delay.
 4. **Fan out** (`RlpsFanout`, D-0009). The played history (last keyframe + later frames) serves late joiners and
    desynced clients (`sync`). Each viewer's backlog — bytes sent minus bytes it reported processed — stays within
-   max(128 KiB, 1 s × its measured delivery rate). A viewer whose window is full is *held*; once drained it receives
+   max(64 KiB, 0.5 s × its measured delivery rate). A viewer whose window is full is *held*; once drained it receives
    exactly the frames it missed, or waits for the next keyframe when that is cheaper (requested with `fresh=1`: the
    chain continues, the next capture is a keyframe). Status messages, Stop included, reach every viewer at once.
-5. **Decode and show** (`RlpsClient`, `RlpsClientCore`, D-0011). Clients decode within a per-Heartbeat time budget and
-   redraw once per game frame — only the **dirty rectangles** (runs of changed 16 px cells, at most 12, else their
+5. **Decode and show** (`RlpsClient`, `RlpsClientCore`, D-0011, D-0013). Clients decode within a per-Heartbeat time
+   budget, stopping at a frame boundary so the newest complete frame is drawn in the same game frame, and redraw once
+   per game frame — only the **dirty rectangles** (runs of changed 16 px cells, at most 12, else their
    bounding box) are copied (pooled buffers) and written to the one EditableImage that every view shows: each tagged
    TV screen, the **full-screen** overlay, the **mini player**; **cinema** frames a TV with the camera. Redraws are
    skipped while no picture is visible (screens out of range, behind the camera or seen from behind, no overlay
    open) and far screens are redrawn at ≤ 10 Hz; frames are still decoded so the picture is exact when it comes back.
-   Clients acknowledge processed bytes and decode time (≤ 10/s).
-6. **Adapt** (`RlpsServer`, D-0008/D-0009). Every 0.5 s the byte rate follows the **median** viewer's delay (AIMD) and
-   the fps cap its decode time; both go to the PC with every poll. A minority of slow viewers is held and caught up
+   Clients acknowledge processed bytes, decode time, decode-queue wait and the ack's age (≤ 20/s).
+6. **Adapt** (`RlpsServer`, D-0008/D-0009/D-0013). Every 0.5 s the byte rate follows the **median** viewer's
+   *queueing delay* — its send→processed delay above its minimum of the last 10 s, i.e. time in Roblox's network
+   queue (delay-based AIMD, target `TargetQueueMs`, draining to the measured delivery rate when far above) — and the
+   fps cap its decode time and decode-queue wait; both go to the PC with every poll. A minority of slow viewers is held and caught up
    instead of degrading the stream for everyone.
 
 ## Where the safeguards live

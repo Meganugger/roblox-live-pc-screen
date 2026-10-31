@@ -22,6 +22,20 @@ def smooth(t, h=H, w=W):
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
+def tile_modes(container: bytes) -> set[int]:
+    """Tile entry modes used in a hybrid container."""
+    sizes = {P.TILE_MODE_RAW: P.HYBRID_RAW_ENTRY, P.TILE_MODE_DCT: P.HYBRID_DCT_ENTRY,
+             P.TILE_MODE_DCT2: P.HYBRID_DCT_ENTRY, P.TILE_MODE_COPY: P.HYBRID_COPY_ENTRY}
+    modes = set()
+    for part in codec.parse_container(container).parts:
+        raw = codec.decompress_part(part)
+        off = 2 * part.tile_count
+        for _ in range(part.tile_count):
+            modes.add(raw[off])
+            off += sizes[raw[off]]
+    return modes
+
+
 class Chain:
     def __init__(self):
         self.enc = hybrid.HybridEncoder(W, H)
@@ -179,6 +193,56 @@ class HybridTests(unittest.TestCase):
             hybrid.HybridEncoder(100, 96)
         with self.assertRaises(ValueError):
             codec.quantize(np.zeros((90, 160, 3), np.uint8), P.FMT_HYBRID)
+
+    def test_large_moving_area_goes_half_resolution(self):
+        """Video-like motion over the whole frame: complete 2x2 groups become TILE_MODE_DCT2 (a quarter of the decode
+        work); the reference decoder still rebuilds the encoder's picture exactly, and a still picture refines to
+        the exact source."""
+        def video(t):  # every tile changes, nothing a scroll copy could predict
+            return np.clip(smooth(0).astype(np.float32) * (0.55 + 0.1 * t), 0, 255).astype(np.uint8)
+
+        ch = Chain()
+        ch.push(video(0), budget=4000, force=True)
+        modes = set()
+        for t in range(1, 5):
+            c, info = ch.push(video(t), budget=6000)
+            self.assertEqual(info.mode, "dct")
+            modes |= tile_modes(c)
+            self.assertTrue(np.array_equal(ch.img, ch.enc.recon), t)
+        self.assertIn(P.TILE_MODE_DCT2, modes)
+        for _ in range(60):
+            ch.push(video(4), budget=8000)
+        self.assertTrue(np.array_equal(ch.img[..., :3], video(4)))
+
+    def test_small_moving_area_and_disabled_half_res_stay_full_resolution(self):
+        for enc_kw, img_t in (({}, None), ({"half_res": False}, 1)):
+            ch = Chain()
+            ch.enc = hybrid.HybridEncoder(W, H, **enc_kw)
+            ch.push(smooth(0), budget=4000, force=True)
+            src = smooth(0).copy()
+            if img_t is None:
+                src[:32, :32] = smooth(9)[:32, :32]  # 4 moving tiles: below the half-resolution threshold
+            else:
+                src = smooth(img_t)
+            c, _ = ch.push(src, budget=1500)
+            if c is None:
+                continue
+            self.assertNotIn(P.TILE_MODE_DCT2, tile_modes(c))
+            self.assertTrue(np.array_equal(ch.img, ch.enc.recon))
+
+    def test_half_resolution_tile_must_fit_the_frame(self):
+        entry = bytes((P.TILE_MODE_DCT2, 5)) + bytes(768)
+        packer = codec.FrameEncoder(tile_size=16)
+        last_col = W // 16 - 1  # its 32x32 area would leave the frame
+        for idx, ok in ((0, True), (last_col, False), ((H // 16 - 1) * (W // 16), False)):
+            c = packer.pack([(idx, entry)], P.FMT_HYBRID, W, H, session_id=1, seq=1, base_seq=0, keyframe=True)
+            img = np.zeros((H, W, 4), np.uint8)
+            if ok:
+                codec.apply_container(img, codec.parse_container(c))
+                self.assertTrue(np.all(img[:32, :32, 3] == 255) and np.all(img[32:, :, 3] == 0))
+            else:
+                with self.assertRaises(P.ProtocolError):
+                    codec.apply_container(img, codec.parse_container(c))
 
     def test_corrupt_hybrid_parts_rejected(self):
         ch = Chain()

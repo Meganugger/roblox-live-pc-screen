@@ -17,6 +17,7 @@ Protocol.BYTES_PER_PIXEL = { [1] = 2, [2] = 3, [3] = 4, [4] = 4 } :: { [number]:
 Protocol.TILE_MODE_RAW = 0 -- mode u8 | 16*16*4 RGBA8 bytes
 Protocol.TILE_MODE_DCT = 1 -- mode u8 | quality u8 | 384 int16 zigzag coefficients
 Protocol.TILE_MODE_COPY = 2 -- mode u8 | dx i16 | dy i16: 16x16 block of the previous picture (PFLAG_REF parts)
+Protocol.TILE_MODE_DCT2 = 3 -- as DCT, at half resolution: covers this tile + right, lower, lower-right (32x32, doubled)
 Protocol.HYBRID_TILE = 16
 Protocol.HYBRID_RAW_ENTRY = 1025
 Protocol.HYBRID_DCT_ENTRY = 770

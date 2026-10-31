@@ -60,20 +60,30 @@ local deq = table.create(64, 0)
 local tmp = table.create(64, 0)
 local nzPos = table.create(64, 0)
 local colUsed = table.create(8, false)
+local cols = table.create(8, 0)
 local Y = table.create(256, 0) -- 16x16 luma samples
 local CB = table.create(64, 0)
 local CR = table.create(64, 0)
 
+local readu32 = buffer.readu32
+
 -- Decode block `b` (0..5) whose coefficients start at `coef` into `dst` (a 16- or 8-wide sample table).
+-- Clients run this interpreted (native code is server-only), so the work is kept proportional to the non-zero
+-- coefficients: zero runs are skipped four at a time, and the second pass only visits the columns that are used.
 local function idctBlock(raw: buffer, coef: number, tab: { number }, dst: { number }, dstW: number, ox: number, oy: number)
 	local count = 0
-	for k = 1, 64 do
-		local v = readi16(raw, coef + (k - 1) * 2)
-		if v ~= 0 then
-			local pos = ZIGZAG[k]
-			deq[pos + 1] = v * tab[k]
-			count += 1
-			nzPos[count] = pos
+	for g = 0, 15 do -- 16 groups of 4 int16 coefficients (8 bytes)
+		local o = coef + g * 8
+		if readu32(raw, o) ~= 0 or readu32(raw, o + 4) ~= 0 then
+			for k = g * 4 + 1, g * 4 + 4 do
+				local v = readi16(raw, coef + (k - 1) * 2)
+				if v ~= 0 then
+					local pos = ZIGZAG[k]
+					deq[pos + 1] = v * tab[k]
+					count += 1
+					nzPos[count] = pos
+				end
+			end
 		end
 	end
 	if count == 0 then
@@ -98,44 +108,74 @@ local function idctBlock(raw: buffer, coef: number, tab: { number }, dst: { numb
 		end
 		return
 	end
-	-- tmp[i][l] = sum_k M[k][i] * deq[k][l]  over the non-zero coefficients (k, l)
-	for i = 1, 64 do
-		tmp[i] = 0
+	-- tmp[i][l] = sum_k M[k][i] * deq[k][l]  over the non-zero coefficients (k, l); only used columns l are touched
+	local nc = 0
+	for c = 1, count do
+		local l = nzPos[c] % 8
+		if not colUsed[l + 1] then
+			colUsed[l + 1] = true
+			nc += 1
+			cols[nc] = l
+			for i = 0, 7 do
+				tmp[i * 8 + l + 1] = 0
+			end
+		end
 	end
 	for c = 1, count do
 		local pos = nzPos[c]
 		local k, l = pos // 8, pos % 8
 		local d = deq[pos + 1]
 		deq[pos + 1] = 0
-		colUsed[l + 1] = true
 		local mk = k * 8 + 1
 		for i = 0, 7 do
 			tmp[i * 8 + l + 1] += M[mk + i] * d
 		end
 	end
-	-- out[i][j] = sum_l tmp[i][l] * M[l][j]
+	-- out[i][j] = sum_l tmp[i][l] * M[l][j]  (exact integers: the same result in any order)
 	for i = 0, 7 do
 		local ti = i * 8 + 1
-		local row = (oy + i) * dstW + ox + 1
-		for j = 0, 7 do
-			local s = 0
-			for l = 0, 7 do
-				if colUsed[l + 1] then
-					s += tmp[ti + l] * M[l * 8 + j + 1]
-				end
+		local s0, s1, s2, s3, s4, s5, s6, s7 = 0, 0, 0, 0, 0, 0, 0, 0
+		for c = 1, nc do
+			local l = cols[c]
+			local t = tmp[ti + l]
+			if t ~= 0 then
+				local ml = l * 8
+				s0 += t * M[ml + 1]
+				s1 += t * M[ml + 2]
+				s2 += t * M[ml + 3]
+				s3 += t * M[ml + 4]
+				s4 += t * M[ml + 5]
+				s5 += t * M[ml + 6]
+				s6 += t * M[ml + 7]
+				s7 += t * M[ml + 8]
 			end
-			local v = (s + ROUND) // SCALE + 128
-			dst[row + j] = if v < 0 then 0 elseif v > 255 then 255 else v
 		end
+		local row = (oy + i) * dstW + ox + 1
+		local v = (s0 + ROUND) // SCALE + 128
+		dst[row] = if v < 0 then 0 elseif v > 255 then 255 else v
+		v = (s1 + ROUND) // SCALE + 128
+		dst[row + 1] = if v < 0 then 0 elseif v > 255 then 255 else v
+		v = (s2 + ROUND) // SCALE + 128
+		dst[row + 2] = if v < 0 then 0 elseif v > 255 then 255 else v
+		v = (s3 + ROUND) // SCALE + 128
+		dst[row + 3] = if v < 0 then 0 elseif v > 255 then 255 else v
+		v = (s4 + ROUND) // SCALE + 128
+		dst[row + 4] = if v < 0 then 0 elseif v > 255 then 255 else v
+		v = (s5 + ROUND) // SCALE + 128
+		dst[row + 5] = if v < 0 then 0 elseif v > 255 then 255 else v
+		v = (s6 + ROUND) // SCALE + 128
+		dst[row + 6] = if v < 0 then 0 elseif v > 255 then 255 else v
+		v = (s7 + ROUND) // SCALE + 128
+		dst[row + 7] = if v < 0 then 0 elseif v > 255 then 255 else v
 	end
-	for l = 1, 8 do
-		colUsed[l] = false
+	for c = 1, nc do
+		colUsed[cols[c] + 1] = false
 	end
 end
 
 -- Decode the DCT entry at `off` (its mode byte) of `raw` into the 16x16 RGBA8 rectangle at (x0, y0) of `frame`
 -- (row stride `stride` bytes). The caller has validated the entry length and the quality byte.
-function Dct.decodeTile(raw: buffer, off: number, frame: buffer, stride: number, x0: number, y0: number)
+local function decodeSamples(raw: buffer, off: number)
 	local qi = readu8(raw, off + 1)
 	local t = getTables(qi)
 	local luma, chroma = t[1], t[2]
@@ -146,26 +186,76 @@ function Dct.decodeTile(raw: buffer, off: number, frame: buffer, stride: number,
 	idctBlock(raw, coef + 384, luma, Y, 16, 8, 8)
 	idctBlock(raw, coef + 512, chroma, CB, 8, 0, 0)
 	idctBlock(raw, coef + 640, chroma, CR, 8, 0, 0)
+end
+
+-- TILE_MODE_DCT2: the same macroblock drawn at twice its size into the 32x32 rectangle at (x0, y0): every decoded pixel
+-- becomes a 2x2 square (rlps.dct.upscale2). The colour of a pixel is computed once and written four times.
+function Dct.decodeTile2x(raw: buffer, off: number, frame: buffer, stride: number, x0: number, y0: number)
+	decodeSamples(raw, off)
+	for py = 0, 15 do
+		local d0 = (y0 + py * 2) * stride + x0 * 4
+		local d1 = d0 + stride
+		local yrow = py * 16 + 1
+		local crow = (py // 2) * 8 + 1
+		for px = 0, 15 do
+			local ci = crow + px // 2
+			local cb = CB[ci] - 128
+			local cr = CR[ci] - 128
+			local y = Y[yrow + px]
+			local r = y + (91881 * cr + 32768) // 65536
+			local g = y - (22554 * cb + 46802 * cr + 32768) // 65536
+			local b = y + (116130 * cb + 32768) // 65536
+			r = if r < 0 then 0 elseif r > 255 then 255 else r
+			g = if g < 0 then 0 elseif g > 255 then 255 else g
+			b = if b < 0 then 0 elseif b > 255 then 255 else b
+			local v = r + g * 256 + b * 65536 + 0xFF000000
+			local o = px * 8
+			writeu32(frame, d0 + o, v)
+			writeu32(frame, d0 + o + 4, v)
+			writeu32(frame, d1 + o, v)
+			writeu32(frame, d1 + o + 4, v)
+		end
+	end
+end
+
+function Dct.decodeTile(raw: buffer, off: number, frame: buffer, stride: number, x0: number, y0: number)
+	decodeSamples(raw, off)
 	for cy = 0, 7 do
+		local d0 = (y0 + cy * 2) * stride + x0 * 4
+		local y0row = cy * 32 + 1
 		for cx = 0, 7 do
 			local cb = CB[cy * 8 + cx + 1] - 128
 			local cr = CR[cy * 8 + cx + 1] - 128
 			local dr = (91881 * cr + 32768) // 65536
 			local dg = (22554 * cb + 46802 * cr + 32768) // 65536
 			local db = (116130 * cb + 32768) // 65536
-			for sy = 0, 1 do
-				local py = cy * 2 + sy
-				local dst = (y0 + py) * stride + (x0 + cx * 2) * 4
-				local yrow = py * 16 + cx * 2 + 1
-				for sx = 0, 1 do
-					local y = Y[yrow + sx]
-					local r, g, b = y + dr, y - dg, y + db
-					r = if r < 0 then 0 elseif r > 255 then 255 else r
-					g = if g < 0 then 0 elseif g > 255 then 255 else g
-					b = if b < 0 then 0 elseif b > 255 then 255 else b
-					writeu32(frame, dst + sx * 4, r + g * 256 + b * 65536 + 0xFF000000)
-				end
-			end
+			local yi = y0row + cx * 2
+			local dst = d0 + cx * 8
+			-- the 2x2 luma samples sharing this chroma sample: (0,0) (1,0) (0,1) (1,1)
+			local y = Y[yi]
+			local r, g, b = y + dr, y - dg, y + db
+			r = if r < 0 then 0 elseif r > 255 then 255 else r
+			g = if g < 0 then 0 elseif g > 255 then 255 else g
+			b = if b < 0 then 0 elseif b > 255 then 255 else b
+			writeu32(frame, dst, r + g * 256 + b * 65536 + 0xFF000000)
+			y = Y[yi + 1]
+			r, g, b = y + dr, y - dg, y + db
+			r = if r < 0 then 0 elseif r > 255 then 255 else r
+			g = if g < 0 then 0 elseif g > 255 then 255 else g
+			b = if b < 0 then 0 elseif b > 255 then 255 else b
+			writeu32(frame, dst + 4, r + g * 256 + b * 65536 + 0xFF000000)
+			y = Y[yi + 16]
+			r, g, b = y + dr, y - dg, y + db
+			r = if r < 0 then 0 elseif r > 255 then 255 else r
+			g = if g < 0 then 0 elseif g > 255 then 255 else g
+			b = if b < 0 then 0 elseif b > 255 then 255 else b
+			writeu32(frame, dst + stride, r + g * 256 + b * 65536 + 0xFF000000)
+			y = Y[yi + 17]
+			r, g, b = y + dr, y - dg, y + db
+			r = if r < 0 then 0 elseif r > 255 then 255 else r
+			g = if g < 0 then 0 elseif g > 255 then 255 else g
+			b = if b < 0 then 0 elseif b > 255 then 255 else b
+			writeu32(frame, dst + stride + 4, r + g * 256 + b * 65536 + 0xFF000000)
 		end
 	end
 end

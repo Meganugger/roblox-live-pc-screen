@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- 2026-10-31 (29th session, PR #5) — **Latency first** (owner: "it lags way more and has a lot more delay"). A new
+  glass-to-glass test (E2E-31…34) found the cause — since PR #3 a client could stop decoding half-way into a frame and
+  then drew nothing, so the TV fell behind — and the delays built into the stream: a 150 ms batching wait, up to 1 s of
+  playout pacing, and a rate control that let Roblox's send queue fill. Now: frames are drawn the moment they are
+  complete, polls answer at once, pacing is capped at 100 ms, the rate follows each player's measured *queueing
+  delay*, the decoder is 1.8× faster (bit-identical) and large moving areas are sent at half resolution (DCT2, a
+  quarter of the decode work). Measured: single change 0.24 → 0.07 s (Studio-like), 0.35 → 0.20 s (online); video
+  0.66–1.14 s → 0.42 s median, p90 0.96–1.90 s → 0.59 s (online). Places with the old saved tuning switch to the new
+  defaults automatically.
 - 2026-10-31 (29th session, PR #4) — **Forum research** (`docs/research/FORUM_FINDINGS.md`: Reddit via an archive API,
   DevForum, GitHub, official announcements) and what came of it: **moderator kill switch** (`ModeratorUserIds`,
   `Hidden`: hide the screen for everyone from inside the game, logged), **per-player Hide (H)** (nothing sent to that

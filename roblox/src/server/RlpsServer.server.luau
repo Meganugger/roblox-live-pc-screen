@@ -11,16 +11,22 @@
 --   client -> server: ("sync", processed)                        [join / lost the chain: send me the stream]
 --                     ("leave")                                  [this player hid the screen: send nothing more]
 --                     ("moderate", "hide" | "show")              [moderators only: withhold the screen for everyone]
---                     ("ack", sessionId, seq, costMs, processed) [frame seq is on my screen; decoding a frame costs
---                                                                 costMs; I processed `processed` bytes of parts]
+--                     ("ack", sessionId, seq, costMs, processed, waitMs, ageMs) [frame seq is on my screen;
+--                                                 decoding a frame costs costMs; I processed `processed` bytes of
+--                                                 parts; they waited waitMs on average in my decode queue; the newest
+--                                                 was processed ageMs ago]
 -- EditableImage changes never replicate, so every client rebuilds the picture itself (RlpsClient.client.luau).
 --
--- Congestion control: each viewer's backlog (bytes sent, not yet processed) stays within about one second of its own
--- measured delivery rate (RlpsFanout: a slow viewer is held, then catches up or waits for a keyframe — it never slows
--- the others down or piles up minutes of stream). The stream byte rate starts at StartBytesPerSecond and adapts
--- (AIMD) to how far behind the median viewer is (age of the oldest frame it has not processed). The rate is sent with
--- every poll; the desktop app encodes at that budget (quality and frame rate follow). Clients also report their
--- decode time per frame, which caps the frame rate (FpsCap) so that the median viewer's CPU keeps up.
+-- Latency first (D-0013). Polls return as soon as a frame exists (no batching wait); frames of one response are
+-- played out at their capture spacing, compressed to at most PlayoutMs, so motion stays smooth without adding more
+-- than that. Congestion control: each viewer's backlog (bytes sent, not yet processed) stays within about half a
+-- second of its own measured delivery rate (RlpsFanout: a slow viewer is held, then catches up or waits for a
+-- keyframe — it never slows the others down). The stream byte rate starts at StartBytesPerSecond and follows the
+-- median viewer's *queueing delay* (its send -> processed delay above the smallest one seen recently, i.e. time spent
+-- waiting in Roblox's send queue or the decode queue): it grows while that stays below TargetQueueMs and backs off —
+-- to the measured delivery rate when far above — as soon as queues build, so the TV stays close to real time instead of
+-- filling the network. The rate is sent with every poll; the desktop app encodes at that budget (quality and frame
+-- rate follow). Clients also report their decode time per frame, which caps the frame rate (FpsCap).
 --
 -- Configuration = attributes on this script (Studio: select the script, edit Attributes):
 --   FrameServiceUrl      string  public HTTPS base URL of the frame service (tunnel), e.g. https://xyz.trycloudflare.com
@@ -28,11 +34,13 @@
 --   PollWaitMs           number  long-poll wait (default 15000, service max 25000; halved on request timeouts)
 --   MinPollInterval      number  seconds between poll starts (default 0.15 => <= 400 requests/min of the 500 allowed)
 --   StoppedPollInterval  number  seconds between polls while the owner is not sharing (default 1)
---   BatchMs              number  frames collected per response after the first new one (default 150 ms)
+--   BatchMs              number  extra wait for more frames once one is ready (default 0 = answer at once)
+--   PlayoutMs            number  at most this much pacing delay for the frames of one response (default 100 ms)
 --   MaxBytesPerSecond    number  upper bound of the stream rate (default 8000000)
---   StartBytesPerSecond  number  initial stream rate (default 1000000)
---   MinBytesPerSecond    number  lower bound (default 100000)
---   TargetLagSeconds     number  acceptable delay of the median viewer (default 0.35)
+--   StartBytesPerSecond  number  initial stream rate (default 500000)
+--   MinBytesPerSecond    number  lower bound (default 30000)
+--   TargetQueueMs        number  queueing delay the rate control allows the median viewer (default 100 ms)
+--   TargetLagSeconds     number  hard limit: a median viewer this far behind cuts rate and frame rate (default 0.6)
 --   ClientDecodeBudgetMs number  decode time per client Heartbeat (default 10 ms; replicated to clients)
 --   ViewerUserIds        string  optional comma-separated UserIds allowed to see the screen (empty = everyone)
 --   ViewerModes          string  viewer modes offered to players: any of "fullscreen,cinema,mini" (default all;
@@ -42,8 +50,9 @@
 --   Hidden               bool    withhold the screen in this server (set by moderators in game, or by the owner from
 --                                the server console); no frame is pulled from the PC while it is set
 -- Read-only status attributes: Status, StatusDetail, Containers, ForwardedBytes, Dropped, LastError, RateBps, LagMs
--- (median viewer delay), MaxLagMs, FpsCap, Viewers, LaggingViewers (held or waiting for a keyframe), BodyMode,
--- ForwardFps.
+-- (median viewer delay), QueueMs (median viewer network queueing delay), DecodeWaitMs (median wait in the clients'
+-- decode queues), MaxLagMs, FpsCap, Viewers, LaggingViewers (held or
+-- waiting for a keyframe), BodyMode, ForwardFps.
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -58,7 +67,6 @@ local Base64 = require(script.Parent.RlpsBase64)
 local REMOTE_NAME = "RlpsFrames"
 local KEYFRAME_COOLDOWN = 2 -- seconds between keyframe requests made for viewers
 local CONTROL_INTERVAL = 0.5
-local MAX_PLAYOUT_BACKLOG = 1.0 -- seconds; beyond it queued frames are forwarded at once (catch up)
 local NOT_AUTHORIZED = "not authorized to view this screen"
 local HIDDEN_DETAIL = "hidden by a moderator"
 
@@ -73,6 +81,20 @@ end
 
 local function num(name: string, default: number, lo: number, hi: number): number
 	return math.clamp(tonumber(attr(name, default)) or default, lo, hi)
+end
+
+-- Places made before the latency-first defaults (D-0013) carry the old tuning as saved attribute values, which would
+-- override the new defaults: BatchMs 150 + StartBytesPerSecond 1e6 + MinBytesPerSecond 1e5 + TargetLagSeconds 0.35
+-- (all four unchanged) are replaced for this server run, with a note in the Output. Change any of them to keep yours.
+if script:GetAttribute("BatchMs") == 150 and script:GetAttribute("StartBytesPerSecond") == 1000000
+	and script:GetAttribute("MinBytesPerSecond") == 100000 and script:GetAttribute("TargetLagSeconds") == 0.35
+then
+	script:SetAttribute("BatchMs", 0)
+	script:SetAttribute("StartBytesPerSecond", 500000)
+	script:SetAttribute("MinBytesPerSecond", 30000)
+	script:SetAttribute("TargetLagSeconds", 0.6)
+	warn("[RLPS] this place has the old tuning (BatchMs 150 ...): using the low-latency defaults for this run; update "
+		.. "the RlpsServer attributes (INSTALL C.2) to make it permanent")
 end
 
 local remote = ReplicatedStorage:FindFirstChild(REMOTE_NAME) :: RemoteEvent?
@@ -142,14 +164,14 @@ type Due = { due: number, messages: { RelayCore.Message } }
 local playout: { Due } = {}
 local lastDue = 0
 
-local function enqueue(messages: { RelayCore.Message }, due: number)
+local function enqueue(messages: { RelayCore.Message }, due: number, maxDelay: number)
 	if #messages == 0 then
 		return
 	end
 	local now = os.clock()
 	due = math.max(due, lastDue)
-	if due - now > MAX_PLAYOUT_BACKLOG then
-		due = now -- far behind: stop pacing, catch up
+	if due - now > maxDelay then
+		due = now -- behind (responses came faster than their frames' spacing): stop pacing, catch up
 	end
 	lastDue = due
 	table.insert(playout, { due = due, messages = messages })
@@ -241,7 +263,8 @@ local function count(x: unknown, hi: number): number?
 	return nil
 end
 
-frames.OnServerEvent:Connect(function(player: Player, kind: unknown, a: unknown, _b: unknown, c: unknown, d: unknown)
+frames.OnServerEvent:Connect(function(player: Player, kind: unknown, a: unknown, _b: unknown, c: unknown, d: unknown,
+	e: unknown, f: unknown)
 	if kind == "sync" then
 		if not canView(player) then
 			frames:FireClient(player, "status", "error", NOT_AUTHORIZED)
@@ -251,7 +274,7 @@ frames.OnServerEvent:Connect(function(player: Player, kind: unknown, a: unknown,
 	elseif kind == "ack" then
 		local processed = count(d, 1e15)
 		if processed then
-			fan:ack(player, processed, os.clock(), count(c, 10000))
+			fan:ack(player, processed, os.clock(), count(c, 10000), count(e, 60000), count(f, 1000))
 		end
 	elseif kind == "leave" then
 		fan:remove(player) -- the player hid the screen: no more bytes for it until it asks again ("sync")
@@ -270,7 +293,7 @@ end)
 
 -- ---------------------------------------------------------------------------------------------- rate control
 
-local rate = num("StartBytesPerSecond", 1000000, 10000, 1e9)
+local rate = num("StartBytesPerSecond", 500000, 10000, 1e9)
 local fpsCap = 10 -- frames/s the median viewer can decode (from the decode cost reported with acks); ramps up from 10
 local controlBytes, controlAt = 0, os.clock()
 local lastKeyframeRequest = -math.huge
@@ -282,26 +305,35 @@ local function control()
 		return
 	end
 	local maxRate = num("MaxBytesPerSecond", 8000000, 10000, 1e9)
-	local minRate = math.min(num("MinBytesPerSecond", 100000, 10000, 1e9), maxRate)
-	local target = num("TargetLagSeconds", 0.35, 0.05, 10)
+	local minRate = math.min(num("MinBytesPerSecond", 30000, 10000, 1e9), maxRate)
+	local targetQueue = num("TargetQueueMs", 100, 10, 5000) / 1000
+	local lagLimit = num("TargetLagSeconds", 0.6, 0.05, 10)
 	local demand = (relay.forwardedBytes - controlBytes) / dt
 	controlBytes, controlAt = relay.forwardedBytes, now
 	local budgetMs = num("ClientDecodeBudgetMs", 10, 2, 50)
 	local st = fan:stats(now)
 	if st.measured > 0 then
-		if st.lag > target * 2 then
-			rate = math.max(minRate, rate * 0.7)
-		elseif st.lag > target then
+		local q = st.queueDelay
+		if st.lag > lagLimit * 2 or q > targetQueue * 3 then
+			-- queues are building fast: drop to what the median viewer actually receives, so they drain
+			local drain = if st.deliveryRate > 0 then st.deliveryRate * 0.85 else rate * 0.6
+			rate = math.max(minRate, math.min(rate * 0.7, drain))
+		elseif st.lag > lagLimit or q > targetQueue then
 			rate = math.max(minRate, rate * 0.9)
-		elseif demand >= rate * 0.6 then
-			rate = math.min(maxRate, rate * 1.12 + 20000) -- the stream uses the budget and viewers keep up: grow
+		elseif q < targetQueue * 0.5 and demand >= rate * 0.6
+			and (st.deliveryRate <= 0 or rate < st.deliveryRate * 1.25)
+		then
+			-- the stream uses its budget and nothing queues: probe for more (faster while far below the target), but
+			-- not far beyond what viewers were seen to receive — a burst (refinement once the picture stops) at a rate
+			-- the network never carried would fill its queue
+			rate = math.min(maxRate, rate * (if q < targetQueue * 0.25 then 1.12 else 1.04) + 10000)
 		end
 		-- a client decodes for budgetMs per Heartbeat (~60 Hz); keep 30 % headroom
 		local decodeFps = if st.costMs > 0 then budgetMs * 60 * 0.7 / st.costMs else 60
 		local fpsTarget = math.clamp(decodeFps, 2, 60)
 		fpsCap = if fpsTarget < fpsCap then fpsTarget else math.min(fpsTarget, fpsCap + 2) -- drop at once, recover slowly
-		if st.lag > target * 2 then
-			fpsCap = math.max(2, fpsCap * 0.8)
+		if st.lag > lagLimit * 2 or st.decodeWait > targetQueue then
+			fpsCap = math.max(2, fpsCap * 0.8) -- clients cannot decode this many frames: fewer, so none waits
 		end
 	end
 	rate = math.clamp(rate, minRate, maxRate)
@@ -312,6 +344,8 @@ local function control()
 	script:SetAttribute("FpsCap", math.floor(fpsCap * 10 + 0.5) / 10)
 	script:SetAttribute("RateBps", math.floor(rate))
 	script:SetAttribute("LagMs", math.floor(math.min(st.lag, 999) * 1000))
+	script:SetAttribute("QueueMs", math.floor(math.min(st.queueDelay, 999) * 1000))
+	script:SetAttribute("DecodeWaitMs", math.floor(math.min(st.decodeWait, 999) * 1000))
 	script:SetAttribute("MaxLagMs", math.floor(math.min(st.maxLag, 999) * 1000))
 	script:SetAttribute("Viewers", st.viewers)
 	script:SetAttribute("LaggingViewers", st.lagging)
@@ -420,6 +454,10 @@ local function schedule(data: buffer): (boolean, string?)
 		return false, "invalid bundle: " .. tostring(berr)
 	end
 	local arrival = os.clock()
+	-- pace the frames at their capture spacing, compressed so that the newest is due at most PlayoutMs after arrival
+	local maxPlayout = num("PlayoutMs", 100, 0, 1000) / 1000
+	local span = entries[#entries].tOffsetMs / 1000
+	local k = if span > maxPlayout then maxPlayout / span else 1
 	for _, e in entries do
 		local container = Decoder.extractEntry(data, e)
 		local messages, ierr = relay:ingest(container)
@@ -431,7 +469,7 @@ local function schedule(data: buffer): (boolean, string?)
 			lastDue = 0
 			broadcastNow(messages)
 		else
-			enqueue(messages, arrival + e.tOffsetMs / 1000)
+			enqueue(messages, arrival + e.tOffsetMs / 1000 * k, maxPlayout * 2)
 		end
 	end
 	return true, nil
@@ -456,7 +494,7 @@ local function pollOnce(): number
 	local after, session, key, idle, fresh = relay:pollParams()
 	local configuredMs = math.floor(num("PollWaitMs", 15000, 0, 25000))
 	local waitMs = math.min(configuredMs, effectiveWaitMs or configuredMs)
-	local batchMs = math.floor(num("BatchMs", 150, 0, 1000))
+	local batchMs = math.floor(num("BatchMs", 0, 0, 1000))
 	local maxBytes = math.floor(math.clamp(rate * 1.5, 256 * 1024, 8 * 1024 * 1024))
 	local url = string.format(
 		"%s/v1/frames?after=%d&session=%d&key=%d&fresh=%d&wait=%d&idle=%d&rate=%d&batch=%d&max=%d&enc=%d&fps=%d",

@@ -107,6 +107,25 @@ Quick tunnels (`trycloudflare.com`) route through a shared relay and some users 
 the delay in Studio with `FrameServiceUrl` = your tunnel URL vs. the delay with Tailscale Funnel or a named Cloudflare
 tunnel (INSTALL A.3). `RlpsServer.LagMs` measures the delay after the Roblox server, not the tunnel hop.
 
+## The TV is behind the desktop (delay)
+
+Typical glass-to-glass delay (PC screen → players' TVs) measured with the live pipeline test (E2E-31/32): about
+**0.07 s** for a single change and **0.2 s** for video in Studio; **0.2 s / 0.4 s** over an emulated internet path
+(60 ms each way, 150 ms tunnel round trip, 400 kB/s per player). If yours is much more:
+
+* **Old tuning in the place.** Places saved before the latency-first defaults have `BatchMs` 150, `StartBytesPerSecond`
+  1000000, `MinBytesPerSecond` 100000, `TargetLagSeconds` 0.35. The server replaces exactly that combination at run
+  time (Output: "this place has the old tuning…"); set the new values (INSTALL C.2) to make it permanent, and add
+  `PlayoutMs` 100 and `TargetQueueMs` 100.
+* **`QueueMs` high** (≫ 100): the stream waits in Roblox's network queue — the rate backs off by itself within a
+  second or two. If it stays high, lower `MaxBytesPerSecond` or `TargetQueueMs`.
+* **`DecodeWaitMs` high or `FpsCap` low**: the players' PCs cannot decode fast enough (Roblox runs client scripts
+  interpreted; native code is server-only). Moving content is the expensive part — large moving areas are already
+  sent at half resolution. Use `--profile high` (768×432), share one window instead of the whole screen, or make the
+  moving part smaller.
+* **The tunnel.** Every frame crosses it once; a quick tunnel adds its relay (see "The picture lags behind the
+  desktop" below).
+
 ## Slow, blurry or jerky updates
 
 Look at three numbers:
@@ -114,8 +133,9 @@ Look at three numbers:
 * **`RlpsServer.RateBps`** (bytes/s the stream may use). It grows while most viewers keep up and shrinks when the
   median viewer falls behind (`LagMs`; `MaxLagMs` is the worst viewer). Low and not growing → most viewers' connections
   (or Roblox replication) are the limit. `LaggingViewers` > 0 → that many viewers cannot keep up: each is *held* (its
-  backlog stays within about one second of its own speed) and catches up or jumps to the next keyframe — it sees a
-  slideshow, the others are unaffected. Raise `MinBytesPerSecond` only if all viewers have fast connections.
+  backlog stays within about half a second of its own speed) and catches up or jumps to the next keyframe — it sees a
+  slideshow, the others are unaffected. `QueueMs` shows how long the stream waits in Roblox's network queue; the rate
+  is kept so that it stays near `TargetQueueMs`. Raise `MinBytesPerSecond` only if all viewers have fast connections.
 * **`RlpsServer.FpsCap`** (frames/s the median viewer decodes). Low → most viewers' PCs are slow to decode
   (`RlpsClient.DecodeMsPerFrame`); moving content (DCT tiles) is the expensive part. Use `--profile high` (768×432).
 * **The sharing window's `encode … ms`** — above ~33 ms the PC cannot encode 30 fps at this profile: use `--profile

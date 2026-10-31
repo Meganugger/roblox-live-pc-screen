@@ -10,6 +10,7 @@
 | [`explainers/PR-1.md`](explainers/PR-1.md) | Narrative explainer of PR #1 (context, intuition, code, verification, alternatives, quiz) |
 | [`explainers/PR-3.md`](explainers/PR-3.md) | Explainer of PR #3: dirty-rectangle redraws, visibility culling, viewer modes, window / tab sharing |
 | [`explainers/PR-4.md`](explainers/PR-4.md) | Explainer of PR #4: forum research and the moderation controls it led to (kill switch, per-player hide, image-API probe, Sharp) |
+| [`explainers/PR-5.md`](explainers/PR-5.md) | Explainer of PR #5: why the TV fell behind, the glass-to-glass test, latency-first stream, half-resolution motion |
 | [`IMPROVED_PROMPT.md`](IMPROVED_PROMPT.md) | The rewritten project prompt for new sessions |
 | [`ORIGINAL_SPEC_VERBATIM.md`](ORIGINAL_SPEC_VERBATIM.md) | The original assignment, verbatim (`PROJECT_SPEC.md` is the structured version) |
 
