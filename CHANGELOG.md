@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 2026-10-31 (29th session, PR #3) — **Roblox client draws only what changed** (dirty rectangles instead of a bounding
+  box, once per game frame, nothing while no TV is in view, far TVs ≤ 10 Hz; pooled buffers; `--!native --!optimize 2`).
+  **Viewer modes**: full screen (Fit/Fill), cinema (camera framing the TV, bars, background blur, movement held), mini
+  player; buttons near the TV and keys F / C / M; owner setting `ViewerModes`. **Share one app window or one browser
+  tab** (`--window`, `--tab`, `--list-windows`, *Change what is shared…* in the sharing window): captured from the
+  window itself; a tab pauses while another tab is shown.
 - 2026-10-31 (29th session) — **Secret-domain errors explained on the TV**: when Roblox refuses the token secret ("This
   secret cannot be used for a specified domain"), the TV and `LastError` say which domain to enter (e.g.
   `*.trycloudflare.com`) and which host was refused; a failed `/v1/probe` no longer fixes base64 bodies for that URL.

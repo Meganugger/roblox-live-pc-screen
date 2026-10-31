@@ -21,6 +21,9 @@
         },
         "RlpsDct": {
           "$path": "roblox/src/shared/RlpsDct.luau"
+        },
+        "RlpsView": {
+          "$path": "roblox/src/shared/RlpsView.luau"
         }
       }
     },
@@ -41,7 +44,8 @@
             "MinBytesPerSecond": 100000,
             "TargetLagSeconds": 0.35,
             "ClientDecodeBudgetMs": 10,
-            "ViewerUserIds": ""
+            "ViewerUserIds": "",
+            "ViewerModes": "fullscreen,cinema,mini"
           }
         },
         "RlpsRelayCore": {

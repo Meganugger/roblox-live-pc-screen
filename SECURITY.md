@@ -36,8 +36,10 @@ has explicitly pressed Start, only in memory, and only reach Roblox servers that
 
 ## Residual risks the owner accepts by sharing
 
-* **Everything on the shared monitor is visible to every authorized viewer.** Close private windows or share a region /
-  second monitor. Notifications that pop up are captured too.
+* **Everything on the shared monitor is visible to every authorized viewer.** Close private windows, or share less:
+  one window (`--window`: captured from the window itself, so what covers it — notifications included — is not
+  shared) or one browser tab's page (`--tab`: sharing pauses while another tab is shown). Exception: apps that render
+  black for window capture fall back to their screen area (logged), where overlapping windows are visible.
 * **Binary bodies**: used only after `/v1/probe` (authenticated, fixed content) proved bytes arrive unchanged; any body
   that fails to parse switches the server back to base64 for good. No new route exposes anything else.
 * **The tunnel URL is public.** Without the token it only returns 401 (rate-limited); a leaked token lets anyone read

@@ -154,3 +154,29 @@
 - **Limit**: merging does not make Roblox Studio / published-server behaviour verified — that remains the owner's
   acceptance test T-0018 (no Roblox runtime in the agent sandbox, KI-0002).
 
+## D-0011 — Client redraw economy, viewer modes, window / tab capture (2026-10-31, 29th session)
+
+- **Owner request**: "fully optimize the Roblox project (delta updating: only update pixels that changed …); make the
+  project able to focus on one app or browser tab or screen; give the TV a cinema mode, full-screen mode, etc."
+- **Already delta** before this change: only changed 16×16 tiles travel and are decoded; COPY tiles for scrolling.
+  **Not yet economical**: the client wrote the *bounding box* of all changes (two far-apart changes ≈ the whole
+  2.4 MB picture), after *every* completed frame, and also for TVs nobody could see.
+- **Selected**: (1) the decoder marks dirty 16 px cells; the client writes at most 12 rectangles built from runs of
+  cells (bounding box when that is nearly as small), from pooled scratch buffers, once per Heartbeat; (2) redraws are
+  skipped while no picture is visible and far screens are redrawn at ≤ 10 Hz — decoding continues, the dirty map
+  accumulates; (3) one EditableImage shown by every view: TV screens, a full-screen ScreenGui (Fit / Fill), a mini
+  player; cinema = a Scriptable camera at the framing distance (pure function `RlpsView.fitDistance`), letterbox bars,
+  a local DepthOfField blur and movement sunk with ContextActionService; modes chosen by the owner (`ViewerModes`);
+  (4) window capture with `PrintWindow(PW_RENDERFULLCONTENT)` (the window's own pixels — what covers it is not
+  shared); browser tab = the window's Chromium page child (`Chrome_RenderWidgetHostHWND`) as crop, sharing paused while
+  the title does not contain the tab's title; black output → the window's screen area.
+- **Evidence**: E2E-23 (two corner changes: 6,144 of 589,824 pixels written), E2E-24 (45 redraws skipped while looking
+  away, exact picture on looking back), E2E-25…27; `RlpsClientCore.spec` (rectangles rebuild the frame exactly);
+  `RlpsView.spec`; `test_windows.py` (fake Win32 everywhere; real PrintWindow, covered window, Chrome/Edge tab on the
+  Windows CI runner).
+- **Rejected**: one EditableImage per view (memory budget, F-0002 — one image per client is enough); sub-tile (pixel)
+  deltas on the wire (a 16×16 tile costs tens of bytes compressed; finer tiles would add index overhead for every
+  change); Windows Graphics Capture (needs WinRT bindings — an extra dependency; PrintWindow covers the same apps except
+  exclusive full screen, where the monitor can be shared); a browser extension for tabs (installation burden, a second
+  trust boundary).
+

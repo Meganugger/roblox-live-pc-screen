@@ -41,6 +41,8 @@ changed (see "stale" markers in `TEST_RESULTS.md`).
 ## Quick start (owner)
 
 1. Windows: `scripts\windows\setup.bat`, `show-token.bat`, `start-sharing.bat`, `start-tunnel.bat`.
+   To share one app or one browser tab instead of the whole screen: **Change what is shared…** in the sharing window
+   (or `start-sharing.bat --window "Notepad"` / `--tab "YouTube"`).
 2. Roblox Studio: open `RlpsDemo.rbxlx` (release ZIP or CI artifact), set `FrameServiceUrl`, add the `rlps_token`
    secret, enable Allow HTTP Requests + Allow Mesh / Image APIs, Play, press **Start sharing** on the PC.
 3. Full guide: [`docs/deployment/INSTALL.md`](docs/deployment/INSTALL.md); problems:

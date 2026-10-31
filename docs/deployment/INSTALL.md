@@ -124,13 +124,16 @@ Select **ServerScriptService ⟩ Rlps ⟩ RlpsServer**, scroll to **Attributes**
 | `StartBytesPerSecond`, `MinBytesPerSecond` | 1000000, 100000 — where the rate starts and how low it may go |
 | `TargetLagSeconds` | 0.35 — acceptable delay of the median viewer (the rate follows most viewers; slower ones are held and caught up, never slowing the others) |
 | `BatchMs`, `ClientDecodeBudgetMs` | 150, 10 — frames per HTTP response window; decode time per client frame |
+| `ViewerModes` | `fullscreen,cinema,mini` — viewer modes players may use (INSTALL F.2); empty = none |
 | `PollWaitMs`, `MinPollInterval`, `StoppedPollInterval` | leave the defaults (15000, 0.15, 1) |
 
 The script also *writes* read-only diagnostics there while running: `Status`, `StatusDetail`, `Containers`,
 `ForwardedBytes`, `Dropped`, `LastError`, `RateBps` (current stream rate), `FpsCap`, `ForwardFps`, `LagMs` (delay of
 the median viewer), `MaxLagMs`, `Viewers`, `LaggingViewers` (held or waiting for a keyframe), `BodyMode` (`raw` or
 `base64`). Each client's `RlpsClient` script shows `State`, `Seq`,
-`DecodeMsPerFrame`, `QueueLength`, `Desyncs`, `LastError` (Explorer while playing, or the F9 console).
+`DecodeMsPerFrame`, `QueueLength`, `Desyncs`, `LastError`, `ViewMode`, `Redraws`, `LastRedrawPixels` (pixels written
+by the last redraw — only what changed), `SkippedRedraws` (redraws saved while no TV was in view) (Explorer while
+playing, or the F9 console).
 
 ### C.3 The token secret
 
@@ -176,8 +179,39 @@ the median viewer), `MaxLagMs`, `Viewers`, `LaggingViewers` (held or waiting for
    app and the quick tunnel.
 
 **While sharing, everything visible on the shared monitor is visible to every authorized player** — close password
-managers, messages, e-mail and anything personal first, or share a second monitor (`--monitor 2`) or a region
-(`--region`). You are responsible for what you show under the Roblox Terms of Use and Community Standards (do not show
+managers, messages, e-mail and anything personal first, or share less than the whole screen (F.1).
+
+### F.1 Share one app, one browser tab, or one screen
+
+In the sharing window press **Change what is shared…** (or use the command-line options):
+
+| Share | Window picker | Command line |
+| --- | --- | --- |
+| a monitor | *Monitor 2 (1920x1080)* | `--monitor 2` (`python -m rlps.app --list-monitors`) |
+| part of the screen | — | `--region left,top,width,height` |
+| **one app window** | *Window: …* | `--window "Notepad"` — title text, process (`--window chrome.exe`) or `hwnd:<n>` (`--list-windows`) |
+| **one browser tab** | *Window: …* + tick *Browser: share only this tab's page* | `--tab "YouTube"` — text in the tab's title |
+
+* A shared window is captured from the window itself (`PrintWindow`), so windows you put **on top of it are not
+  shared**; it follows the window when you move or resize it. While it is minimized the TV keeps the last picture.
+* A shared **tab** shows only the page (no tabs, address bar or bookmarks) and **pauses while the browser shows another
+  tab** — switch back and it continues. Pages that change their title (e.g. a chat with an unread counter) need a
+  shorter title text, e.g. `--tab YouTube`.
+* Some apps (games in exclusive full screen, DRM-protected video) render black for window capture: the app then
+  shares that window's area of the screen instead (anything on top of it becomes visible) and logs a warning — or
+  share the monitor.
+
+### F.2 What players can do (viewer modes)
+
+Near the TV players see **⛶ Full screen (F)**, **🎬 Cinema (C)** and **▣ Mini player (M)**:
+
+* **Full screen** — the picture over the whole window; **Fill** crops instead of letterboxing; **✕ Exit** or F closes.
+* **Cinema** — the camera frames the TV between black bars, the room is blurred and the character stands still;
+  C or **✕ Exit cinema** returns to the normal camera.
+* **Mini player** — a small picture in the corner that stays while walking around; ⛶ makes it full screen.
+
+Everything is local to each player (nothing replicates). Choose the offered modes with the `RlpsServer` attribute
+`ViewerModes` (default `fullscreen,cinema,mini`; empty = no viewer controls). You are responsible for what you show under the Roblox Terms of Use and Community Standards (do not show
 other people's personal information or content you have no right to share).
 
 ## Local development without Roblox

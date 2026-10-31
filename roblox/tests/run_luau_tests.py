@@ -173,6 +173,13 @@ def sequences():
          [img_gradient(48, 20), img_gradient(20, 48)]),
         ("37x21-rgba8-t16-zstd", P.FMT_RGBA8, 16, P.COMP_ZSTD, P.DEFAULT_PART_RAW_BYTES,
          [img_noise(37, 21, 8), moved_rect(img_noise(37, 21, 8), 30, 14, 7, (255, 0, 255))]),
+        # scattered changes (dirty rectangles): a corner tile, the opposite corner, then an L of three tiles
+        ("200x120-rgb565-t16-scattered", P.FMT_RGB565, 16, P.COMP_ZSTD, P.DEFAULT_PART_RAW_BYTES,
+         [img_gradient(200, 120), moved_rect(moved_rect(img_gradient(200, 120), 2, 3, 5, (255, 0, 0)), 190, 110, 6,
+                                             (0, 255, 0)),
+          moved_rect(moved_rect(moved_rect(moved_rect(moved_rect(img_gradient(200, 120), 2, 3, 5, (255, 0, 0)), 190,
+                                                      110, 6, (0, 255, 0)), 70, 40, 4, (9, 9, 9)), 86, 40, 4,
+                                (9, 9, 9)), 70, 56, 4, (9, 9, 9))]),
     ]
     for name, fmt, ts, comp, max_part, frames in configs:
         enc = C.FrameEncoder(compression=comp, max_part_raw_bytes=max_part, tile_size=ts)

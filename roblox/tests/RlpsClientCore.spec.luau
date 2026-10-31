@@ -242,6 +242,58 @@ do
 	T.eq(c.desyncs, 1, "corrupt payload desync count")
 end
 
+-- 12b. Dirty rectangles: scattered tile changes become separate rectangles (not their bounding box); a shadow image
+-- built only from those rectangles equals the frame; too many rectangles fall back to the bounding box.
+do
+	local SC = H.sequence("200x120-rgb565-t16-scattered")
+	local a = fresh()
+	pushAll(a, H.records(SC.steps[1].data), "scatter key")
+	local full = a:takeDirtyRects(8) :: { any }
+	T.check(full ~= nil and #full == 1 and full[1].w == 200 and full[1].h == 120, "keyframe: one full rectangle")
+	local shadow = buffer.create(200 * 120 * 4)
+	buffer.copy(shadow, 0, a.frame :: buffer)
+	local function paint(rects: { any })
+		for _, r in rects do
+			local sub = a:copyRect(r.x, r.y, r.w, r.h)
+			for row = 0, r.h - 1 do
+				buffer.copy(shadow, ((r.y + row) * 200 + r.x) * 4, sub, row * r.w * 4, r.w * 4)
+			end
+		end
+	end
+	local function str(rects: { any }): string
+		local t = {}
+		for _, r in rects do
+			table.insert(t, string.format("%d,%d %dx%d", r.x, r.y, r.w, r.h))
+		end
+		table.sort(t)
+		return table.concat(t, " ")
+	end
+	pushAll(a, H.records(SC.steps[2].data), "scatter 2")
+	local r2 = a:takeDirtyRects(8) :: { any }
+	T.eq(str(r2), "0,0 16x16 176,96 24x24", "two corners: two rectangles (2x2 tiles merged), clamped to the frame")
+	paint(r2)
+	T.eq(H.crc32(shadow), H.crc32(a.frame :: buffer), "shadow from rectangles == frame (step 2)")
+	pushAll(a, H.records(SC.steps[3].data), "scatter 3")
+	local r3 = a:takeDirtyRects(8) :: { any }
+	paint(r3)
+	T.eq(H.crc32(shadow), H.crc32(a.frame :: buffer), "shadow from rectangles == frame (step 3)")
+	local area = 0
+	for _, r in r3 do
+		area += r.w * r.h
+	end
+	T.check(area <= 4 * 16 * 16, "L of tiles: only the changed cells are redrawn", tostring(area))
+	T.eq(a:takeDirtyRects(8), nil, "rectangles popped")
+	-- too many rectangles for the cap -> one bounding box
+	local b = fresh()
+	pushAll(b, H.records(SC.steps[1].data), "cap key")
+	b:takeDirtyRects(8)
+	pushAll(b, H.records(SC.steps[2].data), "cap 2")
+	local capped = b:takeDirtyRects(1) :: { any }
+	T.check(#capped == 1 and capped[1].x == 0 and capped[1].y == 0 and capped[1].w == 200 and capped[1].h == 120,
+		"cap of one rectangle: bounding box", str(capped))
+	T.check(a:copyRect(0, 0, 16, 16) == a:copyRect(16, 16, 16, 16), "scratch buffers reused per size")
+end
+
 -- 13. copyRect: sub-rectangles are exact copies; the full rectangle is the frame buffer itself; bounds enforced.
 do
 	local a = fresh()

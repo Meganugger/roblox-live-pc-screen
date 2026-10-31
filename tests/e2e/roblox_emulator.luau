@@ -59,17 +59,73 @@ end
 
 local Vector3 = {}
 local V3MT = {}
+local V3methods = {}
 V3MT.__index = function(v, k)
 	if k == "Magnitude" then
 		return math.sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z)
+	elseif k == "Unit" then
+		local m = math.sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z)
+		return Vector3.new(v.X / m, v.Y / m, v.Z / m)
 	end
-	return nil
+	return V3methods[k]
 end
 V3MT.__sub = function(a, b)
 	return Vector3.new(a.X - b.X, a.Y - b.Y, a.Z - b.Z)
 end
+V3MT.__add = function(a, b)
+	return Vector3.new(a.X + b.X, a.Y + b.Y, a.Z + b.Z)
+end
+V3MT.__mul = function(a, b)
+	if type(a) == "number" then
+		a, b = b, a
+	end
+	return Vector3.new(a.X * b, a.Y * b, a.Z * b)
+end
+V3MT.__div = function(a, b)
+	return Vector3.new(a.X / b, a.Y / b, a.Z / b)
+end
+V3MT.__unm = function(a)
+	return Vector3.new(-a.X, -a.Y, -a.Z)
+end
+function V3methods.Dot(a, b)
+	return a.X * b.X + a.Y * b.Y + a.Z * b.Z
+end
+function V3methods.Cross(a, b)
+	return Vector3.new(a.Y * b.Z - a.Z * b.Y, a.Z * b.X - a.X * b.Z, a.X * b.Y - a.Y * b.X)
+end
 function Vector3.new(x, y, z)
 	return setmetatable({ X = x or 0, Y = y or 0, Z = z or 0 }, V3MT)
+end
+
+-- CFrame: position + rotation matrix m (row-major R00 R01 R02 R10 … R22), Roblox component order.
+local CFrame = {}
+local CFMT = {}
+CFMT.__index = function(cf, k)
+	local m = rawget(cf, "m")
+	if k == "Position" then
+		return Vector3.new(rawget(cf, "x"), rawget(cf, "y"), rawget(cf, "z"))
+	elseif k == "RightVector" then
+		return Vector3.new(m[1], m[4], m[7])
+	elseif k == "UpVector" then
+		return Vector3.new(m[2], m[5], m[8])
+	elseif k == "LookVector" then
+		return Vector3.new(-m[3], -m[6], -m[9])
+	end
+	return nil
+end
+function CFrame.new(x, y, z, ...)
+	local r = { ... }
+	if #r ~= 9 then
+		r = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }
+	end
+	return setmetatable({ x = x or 0, y = y or 0, z = z or 0, m = r }, CFMT)
+end
+function CFrame.lookAt(eye, target, up)
+	up = up or Vector3.new(0, 1, 0)
+	local look = (target - eye).Unit
+	local right = look:Cross(up).Unit
+	local up2 = right:Cross(look)
+	return CFrame.new(eye.X, eye.Y, eye.Z, right.X, up2.X, -look.X, right.Y, up2.Y, -look.Y, right.Z, up2.Z, -look.Z)
 end
 
 local Vector2 = {}
@@ -99,18 +155,30 @@ function Content.fromObject(obj)
 end
 
 -- Only the enums the scripts use; unknown items raise like the engine ("X is not a valid member of Y").
+-- Items are listed in value order (0, 1, …) unless given as { name, value }.
 local ENUMS = {
 	NormalId = { "Right", "Top", "Back", "Left", "Bottom", "Front" },
 	SurfaceGuiSizingMode = { "FixedSize", "PixelsPerStud" },
 	ScaleType = { "Stretch", "Slice", "Tile", "Fit", "Crop" },
 	Font = { "GothamMedium", "GothamBold", "SourceSans" },
 	CompressionAlgorithm = { "Zstd", "Gzip", "Deflate" },
+	CameraType = { "Fixed", "Attach", "Watch", "Track", "Follow", "Custom", "Scriptable", "Orbital" },
+	ContextActionPriority = { { "Low", 1000 }, { "Medium", 2000 }, { "Default", 2000 }, { "High", 3000 } },
+	ContextActionResult = { "Sink", "Pass" },
+	PlayerActions = { "CharacterForward", "CharacterBackward", "CharacterLeft", "CharacterRight", "CharacterJump" },
+	KeyCode = { { "C", 99 }, { "F", 102 }, { "M", 109 }, { "X", 120 } },
+	UserInputType = { "MouseButton1", "MouseButton2", "MouseButton3", "MouseWheel", "MouseMovement", "Touch",
+		"Keyboard" },
 }
 local Enum = {}
 for enumName, items in ENUMS do
 	local e = { _items = {} }
-	for i, itemName in items do
-		local item = table.freeze({ Name = itemName, Value = i - 1, EnumType = enumName })
+	for i, spec in items do
+		local itemName, value = spec, i - 1
+		if type(spec) == "table" then
+			itemName, value = spec[1], spec[2]
+		end
+		local item = table.freeze({ Name = itemName, Value = value, EnumType = enumName })
 		e[itemName] = item
 		table.insert(e._items, item)
 	end
@@ -617,6 +685,17 @@ local function makeServices(peer)
 			return img
 		end,
 	}
+	peer.cas = {}
+	svc.ContextActionService = {
+		BindActionAtPriority = function(_, name, fn, _touch, priority, ...)
+			assert(type(fn) == "function" and type(priority) == "number", "BindActionAtPriority arguments")
+			peer.cas[name] = { priority = priority, inputs = select("#", ...) }
+		end,
+		UnbindAction = function(_, name)
+			peer.cas[name] = nil
+		end,
+	}
+	svc.UserInputService = { InputBegan = newSignal() }
 	svc.CollectionService = {
 		GetTagged = function(_, tag)
 			local out = {}
@@ -675,6 +754,9 @@ local SERVICES = {
 	AssetService = true,
 	CollectionService = true,
 	EncodingService = true,
+	ContextActionService = true,
+	Lighting = true,
+	UserInputService = true,
 }
 
 local function convertProp(name, v)
@@ -689,7 +771,7 @@ local function applyProps(inst, props)
 		if k == "Tags" then
 			I(inst).tags = table.clone(v)
 		elseif k == "CFrame" then
-			I(inst).props.CFrame = v
+			I(inst).props.CFrame = CFrame.new(table.unpack(v))
 			I(inst).props.Position = Vector3.new(v[1], v[2], v[3])
 		else
 			I(inst).props[k] = convertProp(k, v)
@@ -823,6 +905,8 @@ local function makeEnv(peer, scriptInst, requireFn)
 					I(inst).props.OnServerEvent = newSignal()
 					I(inst).props.OnClientEvent = newSignal()
 					I(inst).replicas = {}
+				elseif className == "TextButton" or className == "ImageButton" then
+					I(inst).props.Activated = newSignal()
 				end
 				return inst
 			end,
@@ -830,6 +914,7 @@ local function makeEnv(peer, scriptInst, requireFn)
 		Enum = Enum,
 		Vector2 = Vector2,
 		Vector3 = Vector3,
+		CFrame = CFrame,
 		UDim2 = UDim2,
 		Color3 = Color3,
 		Content = Content,
@@ -932,6 +1017,7 @@ local function join(name)
 	local player = newInstance("Player", peer)
 	player.Name = name
 	I(player).props.UserId = nextUserId
+	I(player).props.Character = false -- no avatar in the emulator
 	local gui = newInstance("PlayerGui", peer)
 	gui.Name = "PlayerGui"
 	gui.Parent = player
@@ -942,7 +1028,12 @@ local function join(name)
 	I(peer.game.Players).props.LocalPlayer = player
 	local camera = newInstance("Camera", peer)
 	camera.Name = "Camera"
-	I(camera).props.CFrame = { Position = Vector3.new(0, 6, -12) }
+	-- the spawn-side viewer looks at the TV screen (Workspace.RlpsTV.Screen centre = 0, 8, -30)
+	I(camera).props.CFrame = CFrame.lookAt(Vector3.new(0, 6, -12), Vector3.new(0, 8, -30))
+	I(camera).props.FieldOfView = 70
+	I(camera).props.ViewportSize = Vector2.new(1280, 720)
+	I(camera).props.CameraType = Enum.CameraType.Custom
+	I(camera).props.CameraSubject = false
 	camera.Parent = peer.workspace
 	I(peer.workspace).props.CurrentCamera = camera
 	-- server-side Player object
@@ -1048,6 +1139,59 @@ local function clientState(peer)
 	return st, gui
 end
 
+local function findGui(peer, name)
+	for _, c in I(peer.game.Players.LocalPlayer.PlayerGui).children do
+		if I(c).Name == name then
+			return c
+		end
+	end
+	return nil
+end
+
+local function contentOf(inst)
+	local content = inst and I(inst).props.ImageContent
+	return content and content.Object
+end
+
+-- viewer modes: overlays, cinema camera, controls (what a player would see)
+local function viewState(peer, tvImage)
+	local v = {}
+	local controls = findGui(peer, "RlpsViewerControls")
+	v.controls_enabled = controls ~= nil and I(controls).props.Enabled == true
+	local shown = {}
+	local barFrame = controls and methods.FindFirstChild(controls, "Bar")
+	for _, c in if barFrame then I(barFrame).children else {} do
+		if I(c).props.Visible ~= false then
+			table.insert(shown, I(c).Name)
+		end
+	end
+	table.sort(shown)
+	v.buttons = table.concat(shown, ",")
+	for key, name, holder in
+		string.gmatch("fullscreen=RlpsFullscreen/Background mini=RlpsMiniPlayer/Window cinema=RlpsCinema/", "(%a+)=(%a+)/(%a*)")
+	do
+		local g = findGui(peer, name)
+		v[key .. "_enabled"] = g ~= nil and I(g).props.Enabled == true
+		if g and holder ~= "" then
+			local h = methods.FindFirstChild(g, holder)
+			local pic = h and methods.FindFirstChild(h, "Picture")
+			v[key .. "_same_image"] = pic ~= nil and tvImage ~= nil and contentOf(pic) == tvImage
+			v[key .. "_picture_visible"] = pic ~= nil and I(pic).props.Visible == true
+			v[key .. "_scale"] = pic and I(pic).props.ScaleType and I(pic).props.ScaleType.Name
+		end
+	end
+	local cam = peer.workspace.CurrentCamera
+	local cf = I(cam).props.CFrame
+	local centre = Vector3.new(0, 8, -30 + 0.1) -- screen face centre (front face, depth 0.2)
+	local toTv = centre - cf.Position
+	v.camera_type = I(cam).props.CameraType.Name
+	v.camera_distance = toTv.Magnitude
+	v.camera_aim = cf.LookVector:Dot(toTv.Unit)
+	v.blur = methods.FindFirstChild(peer.game.Lighting, "RlpsCinemaBlur") ~= nil
+	v.movement_held = peer.cas.RlpsCinemaHoldStill ~= nil
+	return v
+end
+
 local function writeState()
 	local serverScript = methods.FindFirstChild(server.game.ServerScriptService.Rlps, "RlpsServer")
 	local state = {
@@ -1062,7 +1206,13 @@ local function writeState()
 		clients = {},
 	}
 	for _, name in clientOrder do
-		state.clients[name] = (clientState(clients[name]))
+		local st, gui = clientState(clients[name])
+		local tvImage = nil
+		if gui then
+			tvImage = contentOf(methods.FindFirstChild(methods.FindFirstChild(gui, "Background"), "Picture"))
+		end
+		st.view = viewState(clients[name], tvImage)
+		state.clients[name] = st
 	end
 	fs.writeFile(OUT .. "/state.json.tmp", serde.encode("json", state))
 	-- Windows: the replace fails while the test reads the file; the next cycle (0.1 s) writes it again
@@ -1102,6 +1252,31 @@ local ok, err = pcall(function()
 			elseif kind == "snap" then
 				fs.removeFile(OUT .. "/" .. entry)
 				snapshot(arg)
+			end
+			-- press-<client>-<ButtonName> | key-<client>-<KeyCode> | look-<client>-<away|tv>
+			local cmd, who, what = string.match(entry, "^(%a+)%-(%w+)%-(%w+)$")
+			local peer = who and clients[who]
+			if peer and (cmd == "press" or cmd == "key" or cmd == "look") then
+				fs.removeFile(OUT .. "/" .. entry)
+				if cmd == "press" then
+					local found = false
+					for _, d in methods.GetDescendants(peer.game.Players.LocalPlayer.PlayerGui) do
+						if I(d).Name == what and I(d).ClassName == "TextButton" then
+							I(d).props.Activated:Fire()
+							found = true
+						end
+					end
+					if not found then
+						log("press: no button", what)
+					end
+				elseif cmd == "key" then
+					local input = { KeyCode = Enum.KeyCode[what], UserInputType = Enum.UserInputType.Keyboard }
+					I(peer.game.UserInputService).props.InputBegan:Fire(input, false)
+				else
+					local cam = peer.workspace.CurrentCamera
+					local target = if what == "away" then Vector3.new(0, 6, 40) else Vector3.new(0, 8, -30)
+					I(cam).props.CFrame = CFrame.lookAt(Vector3.new(0, 6, -12), target)
+				end
 			end
 		end
 		writeState()

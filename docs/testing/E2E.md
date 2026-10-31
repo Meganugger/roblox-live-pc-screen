@@ -19,7 +19,12 @@ roblox_emulator.luau (Lune) ─────────────────�
 
 `run_e2e.py` drives both sides and asserts what a player would see, reading the client's actual GUI objects
 (`SurfaceGui ⟩ Background ⟩ Picture/Status/LiveBadge`) and the SHA-256 of the EditableImage pixels, which must equal
-`codec.expand_to_rgba(<newest frame in the frame service>)` byte for byte.
+`codec.expand_to_rgba(<newest frame in the frame service>)` byte for byte. Viewer actions are injected through the
+control directory: `press-<client>-<ButtonName>` fires a button's `Activated`, `key-<client>-<KeyCode>` an
+`InputBegan`, `look-<client>-away|tv` turns that client's camera; the state file reports the overlays, the camera
+(type, distance and aim at the screen), the cinema blur and held movement, and the client's redraw counters. The
+emulator implements CFrame/Vector3 math, Roblox's secret-domain patterns, ContextActionService, UserInputService and
+Lighting as far as the scripts use them.
 
 ## Checks
 
@@ -40,6 +45,11 @@ roblox_emulator.luau (Lune) ─────────────────�
 | E2E-20 | congestion control: the rate grows above its start with one fast viewer; a viewer throttled to 10 kB/s makes it back off or is held (`LaggingViewers`), the fast viewer keeps receiving frames, both end exact |
 | E2E-21 | scrolling a text page through a non-integer downscale (1280 → 1024): more than half of the changed tiles are COPY tiles, the 15 steps cost less than ⅔ of resending them as lossless keyframes (refinement in the pauses varies with load: 262–386 kB measured), the page ends pixel-exact |
 | E2E-22 | secret domain: with `trycloudflare.com` (no wildcard) Roblox refuses the secret — the TV names `*.trycloudflare.com` and the host, no pixel arrives; with `*.trycloudflare.com` the desktop appears (the emulator enforces Roblox's documented domain patterns) |
+| E2E-23 | a change in two opposite screen corners redraws only those tiles (≤ 2 % of the picture) — dirty rectangles, not their bounding box (≈ the whole screen) |
+| E2E-24 | Alice looks away from the TV: no redraws while frames are still decoded (Bob keeps updating); looking back shows the exact current picture |
+| E2E-25 | full screen (key F) and mini player show the same live EditableImage as the TV; Fill crops; Exit, expand and the key switch modes; the controls hide while a mode is open |
+| E2E-26 | cinema: the camera looks straight at the TV from the computed framing distance, background blur and held movement; leaving restores the default camera |
+| E2E-27 | `ViewerModes = cinema`: only the cinema button is offered, F does nothing; a non-authorized player gets no viewer controls |
 
 ## Run it
 

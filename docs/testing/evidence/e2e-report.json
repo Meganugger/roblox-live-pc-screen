@@ -1,6 +1,6 @@
 {
   "ok": true,
-  "duration_s": 139.1,
+  "duration_s": 126.0,
   "checks": [
     {
       "id": "E2E-01",
@@ -26,7 +26,7 @@
         1024,
         576
       ],
-      "latency_s": 1.138
+      "latency_s": 1.199
     },
     {
       "id": "E2E-04",
@@ -84,14 +84,14 @@
       "check": "late joiner Bob shows the same frame as Alice (server-side history sync)",
       "pass": true,
       "seq": 1,
-      "latency_s": 0.228
+      "latency_s": 0.221
     },
     {
       "id": "E2E-08",
       "check": "desktop change reaches both TVs (new frame, delta path)",
       "pass": true,
       "seq": 3,
-      "latency_s": 0.412
+      "latency_s": 0.327
     },
     {
       "id": "E2E-09a",
@@ -124,6 +124,21 @@
       ]
     },
     {
+      "id": "E2E-09b",
+      "check": "scene B: scene D's rectangle is gone (background there)",
+      "pass": true,
+      "pixel": [
+        20,
+        40,
+        120
+      ],
+      "want": [
+        20,
+        40,
+        120
+      ]
+    },
+    {
       "id": "E2E-09c",
       "check": "fine checkerboard detail survives (bright and dark pixels in the region)",
       "pass": true,
@@ -134,29 +149,64 @@
       "id": "E2E-10",
       "check": "after 9 rapid desktop changes both TVs settle on the exact newest frame (scene A)",
       "pass": true,
-      "seq": 18,
-      "frames_between": 15,
+      "seq": 15,
+      "frames_between": 12,
       "dropped": 0
+    },
+    {
+      "id": "E2E-23",
+      "check": "a change in two opposite corners redraws only those tiles (dirty rectangles), not their bounding box",
+      "pass": true,
+      "last_redraw_pixels": 2048,
+      "frame_pixels": 589824
+    },
+    {
+      "id": "E2E-24",
+      "check": "TV out of view: no redraws while frames are still decoded; looking back shows the exact current picture",
+      "pass": true,
+      "redraws": [
+        17,
+        17
+      ],
+      "skipped": [
+        0,
+        48
+      ]
+    },
+    {
+      "id": "E2E-25",
+      "check": "full screen (key F) and mini player show the live picture (same EditableImage as the TV); Fill crops; Exit, expand and the key close/switch modes; controls hide while a mode is open",
+      "pass": true,
+      "fullscreen": true,
+      "mini": true
+    },
+    {
+      "id": "E2E-26",
+      "check": "cinema: camera looks straight at the TV from the distance that frames it between the bars, background blurred, movement held; leaving restores the player's camera",
+      "pass": true,
+      "camera_distance": 7.97,
+      "want": 7.97,
+      "aim": 1
     },
     {
       "id": "E2E-11",
       "check": "frame service down: both TVs show 'Screen unavailable' and hide the picture",
       "pass": true,
-      "detail": "Screen unavailable\nrequest failed: [string \"server:roblox/src/server/RlpsServer.server.luau\"]:399: HttpError: ConnectFail",
-      "last_error": "[string \"server:roblox/src/server/RlpsServer.server.luau\"]:399: HttpError: ConnectFail"
+      "detail": "Screen unavailable\nrequest failed: [string \"server:roblox/src/server/RlpsServer.server.luau\"]:402: HttpError: ConnectFail",
+      "last_error": "[string \"server:roblox/src/server/RlpsServer.server.luau\"]:402: HttpError: ConnectFail"
     },
     {
       "id": "E2E-12",
       "check": "service back: both TVs resume with the exact newest frame",
       "pass": true,
-      "seq": 19,
-      "latency_s": 8.364
+      "seq": 20,
+      "latency_s": 8.251
     },
     {
       "id": "E2E-13",
       "check": "after Stop: both TVs show 'Screen sharing is off', EditableImages destroyed, no frames left in the service, within 5 s",
       "pass": true,
-      "latency_s": 0.113,
+      "latency_s": 0.103,
       "status": "stopped"
     },
     {
@@ -173,9 +223,9 @@
         "dct",
         "lossless"
       ],
-      "lossy_pictures_matched": 52,
+      "lossy_pictures_matched": 49,
       "body_mode": "raw",
-      "seq": 125,
+      "seq": 148,
       "refine_s": 0.01,
       "errors": {}
     },
@@ -187,9 +237,9 @@
         "dct",
         "lossless"
       ],
-      "lossy_pictures_matched": 52,
+      "lossy_pictures_matched": 57,
       "body_mode": "base64",
-      "seq": 154,
+      "seq": 148,
       "refine_s": 0.0,
       "errors": {}
     },
@@ -199,8 +249,8 @@
       "pass": true,
       "tiles_per_frame": 2304,
       "keyframe_bytes": 50345,
-      "bytes_for_15_scroll_steps": 383706,
-      "copied_tiles": 32344
+      "bytes_for_15_scroll_steps": 460135,
+      "copied_tiles": 32266
     },
     {
       "id": "E2E-20",
@@ -210,17 +260,23 @@
       "rate_after_growth": 1127436,
       "min_rate_with_slow_viewer": 1127436,
       "max_lagging_viewers": 1,
-      "fast_distinct_pictures_meanwhile": 98
+      "fast_distinct_pictures_meanwhile": 97
     },
     {
       "id": "E2E-16",
       "check": "pacing: forwarded stream stays near the 3000 B/s budget during 10 s of ~2.7 changes/s (one container of slack), frames coalesced, final frame exact",
       "pass": true,
       "budget_Bps": 3000,
-      "measured_Bps": 4680,
+      "measured_Bps": 4529,
       "desktop_changes": 26,
-      "frames_published": 137,
-      "containers_ingested_during_churn": 129
+      "frames_published": 134,
+      "containers_ingested_during_churn": 126
+    },
+    {
+      "id": "E2E-27",
+      "check": "ViewerModes = 'cinema': players get only the cinema button, the F key does nothing; a non-authorized player gets no viewer controls",
+      "pass": true,
+      "erin": "CinemaButton"
     },
     {
       "id": "E2E-17",
@@ -244,44 +300,44 @@
   ],
   "metrics": {
     "screen": "1280x720",
-    "join_to_stopped_screen_s": 1.043,
-    "start_to_picture_s": 1.138,
-    "late_joiner_s": 0.228,
-    "desktop_change_to_both_tvs_s": 0.412,
-    "outage_recovery_s": 8.364,
-    "stop_to_tv_off_s": 0.113,
+    "join_to_stopped_screen_s": 1.035,
+    "start_to_picture_s": 1.199,
+    "late_joiner_s": 0.221,
+    "desktop_change_to_both_tvs_s": 0.327,
+    "outage_recovery_s": 8.251,
+    "stop_to_tv_off_s": 0.103,
     "profile": "max",
     "frame_service_responses_after_outage": 2,
-    "http_requests_by_roblox_server": 20,
-    "http_body_bytes": 40150,
-    "server_forwarded_part_bytes": 38066,
-    "server_containers": 22,
+    "http_requests_by_roblox_server": 22,
+    "http_body_bytes": 38913,
+    "server_forwarded_part_bytes": 36765,
+    "server_containers": 23,
     "server_dropped": 0,
-    "alice_received_bytes": 38782,
-    "alice_remote_messages": 141,
-    "alice_pixel_writes": 19,
-    "frames_published": 19,
-    "frames_captured": 983,
+    "alice_received_bytes": 37473,
+    "alice_remote_messages": 139,
+    "alice_pixel_writes": 43,
+    "frames_published": 20,
+    "frames_captured": 1056,
     "E2E-18_refine_s": 0.01,
     "E2E-19_refine_s": 0.0,
     "scroll": {
       "keyframe_bytes": 50345,
-      "bytes_for_15_scroll_steps": 383706,
-      "copied_tiles": 32344
+      "bytes_for_15_scroll_steps": 460135,
+      "copied_tiles": 32266
     },
     "congestion": {
       "start_rate": 300000,
       "rate_after_growth": 1127436,
       "min_rate_with_slow_viewer": 1127436,
       "max_lagging_viewers": 1,
-      "fast_distinct_pictures_meanwhile": 98
+      "fast_distinct_pictures_meanwhile": 97
     },
     "pacing": {
       "budget_Bps": 3000,
-      "measured_Bps": 4680,
+      "measured_Bps": 4529,
       "desktop_changes": 26,
-      "frames_published": 137,
-      "containers_ingested_during_churn": 129
+      "frames_published": 134,
+      "containers_ingested_during_churn": 126
     }
   }
 }

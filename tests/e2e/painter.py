@@ -17,7 +17,10 @@ BACKGROUND = (20, 40, 120)
 SCENES = {
     "A": {"rect": (100, 100, 400, 300), "color": (230, 30, 30)},
     "B": {"rect": (700, 250, 400, 350), "color": (30, 200, 60)},
+    # scene A plus two small squares in opposite corners: a change whose bounding box is almost the whole screen
+    "D": {"rect": (100, 100, 400, 300), "color": (230, 30, 30), "dots": ((40, 620, 24, 24), (1200, 40, 24, 24))},
 }
+DOT_COLOR = (250, 220, 40)
 CHECKER = (560, 40, 160, 80, 8)  # x, y, w, h, cell: fine detail (text-like high-frequency content)
 NOISE_RECT = (300, 150, 480, 320)  # "noise <seed>": smooth moving colours + grain here (forces lossy DCT tiles)
 
@@ -61,6 +64,8 @@ def shapes(name: str, w: int, h: int):
     yield BACKGROUND, 0, 0, w, h
     x, y, rw, rh = SCENES[name]["rect"]
     yield SCENES[name]["color"], round(x * sx), round(y * sy), round(rw * sx), round(rh * sy)
+    for dx, dy, dw, dh in SCENES[name].get("dots", ()):
+        yield DOT_COLOR, round(dx * sx), round(dy * sy), round(dw * sx), round(dh * sy)
     cx, cy, cw, ch, cell = CHECKER
     for yy in range(cy, cy + ch, cell):
         for xx in range(cx, cx + cw, cell):
