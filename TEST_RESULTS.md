@@ -198,4 +198,4 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
 - **Finding**: E2E-21's byte bound (½ × 15 lossless keyframes) was inside the run-to-run spread — 262–386 kB for the
   same ~32,400 copied tiles, because refinement during the 0.12 s pauses depends on machine load. One full-suite run
   failed at 385.5 kB vs 377.6 kB; bound set to ⅔ (docs/testing/E2E.md); the copy-share criterion is unchanged.
-
+- **CI** at `bc9ea90`: **5 / 5 green** (ruff now runs in both Python jobs).
