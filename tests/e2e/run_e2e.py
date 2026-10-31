@@ -408,6 +408,42 @@ class Harness:
             service.close()
             shutil.copy(os.path.join(ctl, "emulator.log"), os.path.join(self.out, "emulator-pacing.log"))
 
+    def scenario_viewers(self) -> None:
+        """ViewerUserIds allowlist: only listed players receive pixels."""
+        ctl = tempfile.mkdtemp(prefix="rlps-e2e-viewers-", dir=self.out)
+        token = secrets.token_urlsafe(32)
+        store = server.FrameStore()
+        service = server.FrameService(store, token, port=0)
+        service.start()
+        controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["low"])
+        self.scene("A")
+        controller.start()
+        # the emulator hands out UserIds 1001, 1002, … in join order: Erin = 1001 (allowed), Mallory = 1002 (not)
+        emu = self.start_emulator(f"http://127.0.0.1:{service.address[1]}", token, ctl, {"ViewerUserIds": "1001"})
+        try:
+            open(os.path.join(ctl, "join-Erin"), "w").close()
+            self.wait_match(ctl, store, ["Erin"], 40, "allowed viewer Erin shows the frame")
+            open(os.path.join(ctl, "join-Mallory"), "w").close()
+            _, st = self.wait_for(ctl, lambda s: "not authorized" in (s.get("clients", {}).get("Mallory", {})
+                                                                      .get("status_text") or ""), 30,
+                                  "Mallory sees the not-authorized message")
+            self.scene("B")
+            self.wait_match(ctl, store, ["Erin"], 30, "Erin follows a change", after_seq=0)
+            time.sleep(1.0)
+            m = self.read_state(ctl)["clients"]["Mallory"]
+            self.check("E2E-17", "ViewerUserIds: a non-listed player gets 'not authorized', no image and no pixel data",
+                       not m["picture_visible"] and m["images_created"] == 0 and m["pixel_writes"] == 0,
+                       text=m["status_text"], mallory_received_bytes=m["recv_bytes"])
+        finally:
+            open(os.path.join(ctl, "quit"), "w").close()
+            try:
+                emu.wait(10)
+            except subprocess.TimeoutExpired:
+                emu.kill()
+            controller.stop()
+            service.close()
+            shutil.copy(os.path.join(ctl, "emulator.log"), os.path.join(self.out, "emulator-viewers.log"))
+
     def scenario_badtoken(self) -> None:
         ctl = tempfile.mkdtemp(prefix="rlps-e2e-badtoken-", dir=self.out)
         store = server.FrameStore()
@@ -441,7 +477,7 @@ def main() -> int:
     ap.add_argument("--out", default=os.path.join(REPO, "build", "e2e"))
     ap.add_argument("--lune", default=shutil.which("lune") or "lune")
     ap.add_argument("--profile", choices=sorted(app.PROFILES), default="balanced")
-    ap.add_argument("--scenario", choices=["live", "pacing", "badtoken", "all"], default="all")
+    ap.add_argument("--scenario", choices=["live", "pacing", "viewers", "badtoken", "all"], default="all")
     ap.add_argument("--xvfb", action="store_true", help="start Xvfb even if DISPLAY is set")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -455,6 +491,8 @@ def main() -> int:
             h.scenario_live()
         if args.scenario in ("pacing", "all"):
             h.scenario_pacing()
+        if args.scenario in ("viewers", "all"):
+            h.scenario_viewers()
         if args.scenario in ("badtoken", "all"):
             h.scenario_badtoken()
     except Failure as exc:

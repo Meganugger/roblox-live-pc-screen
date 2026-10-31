@@ -64,6 +64,11 @@ class AuthAndRoutingTests(ServiceTestCase):
         self.assertEqual(self.c.get("/v1/frames/../x")[0], 404)
         self.assertEqual(self.c.get(method="POST")[0], 405)
         self.assertEqual(self.c.get(method="DELETE")[0], 405)
+        req = urllib.request.Request(self.c.base + "/v1/frames?wait=0", data=b"hello", method="GET",
+                                     headers={"Authorization": f"Bearer {TOKEN}"})
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(cm.exception.code, 400)  # request bodies are never accepted
         for q in ("after=-1", "after=abc", "after=4294967296", "key=2", "wait=999999", "foo=1", "after=1&after=2"):
             with self.subTest(q=q):
                 self.assertEqual(self.c.get("/v1/frames?" + q)[0], 400)
