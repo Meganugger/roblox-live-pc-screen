@@ -247,3 +247,5 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   hidden message → `pollOnce` discards any answer once `Hidden` is set.
 - **Not verified here**: real Roblox (whether `game.CreatorId` is the owner in Team Create test servers, the buttons
   on phones, `ResamplerMode.Pixelated` look); the official policy pages themselves (help center 403, T-0016).
+- **CI** at `5a96cc4` (PR #4): **5 / 5 green** — ruff + pytest on Linux and Windows, Luau specs + Rojo + luau-lsp, the
+  live pipeline test on Linux (Xvfb) and on a real Windows desktop (mss capture), E2E-28…E2E-30 included.
