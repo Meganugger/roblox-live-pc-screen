@@ -66,6 +66,9 @@ jobs:
   e2e-linux:
     name: Live pipeline test (Xvfb capture -> frame service -> Roblox scripts under emulation)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -77,7 +80,17 @@ jobs:
         run: |
           curl -fsSL -o /tmp/lune.zip "https://github.com/lune-org/lune/releases/download/v$LUNE_VERSION/lune-$LUNE_VERSION-linux-x86_64.zip"
           sudo unzip -oq /tmp/lune.zip -d /usr/local/bin && sudo chmod +x /usr/local/bin/lune
-      - run: python tests/e2e/run_e2e.py --out build/e2e
+      - name: run_e2e.py
+        shell: bash
+        run: set -o pipefail; python tests/e2e/run_e2e.py --out build/e2e 2>&1 | tee e2e.log
+      - name: Report failure on the pull request
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "### CI failure: live pipeline test on Linux"; echo '```'; grep -E "^(PASS|FAIL|E2E)" e2e.log | tail -n 40 | cut -c1-400; tail -n 15 e2e.log | cut -c1-600; echo '```';
+            for f in build/e2e/emulator-*.log; do [ -f "$f" ] && { echo "$f"; echo '```'; tail -n 15 "$f"; echo '```'; }; done; } > comment.md
+          gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body-file comment.md
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -116,7 +129,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { echo "### CI failure: live pipeline test on Windows"; echo '```'; tail -n 60 e2e.log; echo '```';
+          { echo "### CI failure: live pipeline test on Windows"; echo '```'; grep -E "^(PASS|FAIL|E2E)" e2e.log | tail -n 40 | cut -c1-400; tail -n 15 e2e.log | cut -c1-600; echo '```';
             for f in build/e2e/emulator-*.log; do [ -f "$f" ] && { echo "$f"; echo '```'; tail -n 25 "$f"; echo '```'; }; done; } > comment.md
           gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body-file comment.md
       - uses: actions/upload-artifact@v4

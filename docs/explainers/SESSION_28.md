@@ -239,3 +239,96 @@ concern, and the token never leaves the server anyway.
 worked, and E2E-01…16 passed on the real Windows desktop. C is also false: Lune ran there, and the other Windows
 failure (a `state.json` race) was in the test harness, not a Lune limitation.
 </details>
+
+---
+
+# Part 2 (29th session): maximum quality, and what other projects taught us
+
+## Context
+
+The owner asked for the best possible stream, with no 50 KB/s budget, since the game will have PC requirements. They
+also asked whether the other public projects had been checked. Until then only ScreenBlox had been read. Ten more were
+studied this time, all at source level (`docs/research/EXISTING_PROJECTS.md`). Three ideas came from them:
+
+- **Several frames per HTTP response.** From Icy-Monster's `FrameGroups` and MahanBig's `since=SEQ`. Roblox allows
+  about 8 requests per second, so one frame per request caps the frame rate at about 8 fps.
+- **Lossy DCT coding for moving content.** From MahanBig/roblox-screen-stream, published three days before the survey.
+  For video-like content it is about 30× smaller than lossless tiles.
+- **Time-budgeted `--!native` decoding.** From MahanBig, and luavid measured a 3.4× speed-up.
+
+## Intuition
+
+Each 16×16 tile picks the cheapest way to show what changed:
+
+```
+still and exact          -> nothing (0 bytes)
+scrolled                 -> COPY dx,dy  (5 bytes: "take the block 9 rows lower in what you already show")
+moved, budget allows     -> RAW lossless (1 KiB before zstd)
+moved, budget tight      -> DCT at the best quality that fits (770 bytes before zstd, mostly zeros)
+stopped moving but lossy -> RAW again with leftover budget  => a still screen ends pixel-exact
+```
+
+Two signals set the budget, and they measure different things. A client that falls behind on **bytes** has a slow
+network, so the byte rate drops. A client that falls behind on **decode time** has a slow CPU, so the frame rate is
+capped. The live test showed why both are needed: lowering only the byte rate never helped a CPU-bound client. DCT
+decode cost grows with the number of frames, not with the number of bytes.
+
+> **Why "bit-exact" matters.** The encoder predicts every later frame from *its copy of what the client shows*. If the
+> client's DCT decoder differed by a single pixel value, errors would pile up frame after frame. Both decoders
+> (`dct.py`, `RlpsDct.luau`) therefore use integer arithmetic, and the tests compare their pixels exactly.
+
+## Code (map)
+
+- `desktop/rlps/dct.py`: the DCT tile codec, with the exact integer specification computed through float64 BLAS (exact
+  below 2^53).
+- `desktop/rlps/hybrid.py`: tile decisions, quality search on a sample of tiles, FFT scroll detection measured against
+  the client's picture (so it cannot drift), and refinement.
+- `desktop/rlps/server.py`: encode-once chain ring, bundles, batch window, rate and fps budgets, `/v1/probe`.
+- `roblox/src/shared/RlpsDct.luau`, `RlpsDecoder.luau`, `RlpsClientCore.luau`: the Luau decoders.
+- `RlpsServer.server.luau`: playout, acks, AIMD rate control, fps cap, lagging viewers, binary-body probe.
+- `RlpsClient.client.luau`: decode queue, acks, diagnostics.
+
+## Verification
+
+| Test | Result |
+| --- | --- |
+| Python | 84 passed |
+| Luau specs (pixels identical to Python, including DCT and COPY tiles) | 5,984 passed |
+| Live pipeline | 25 / 25 |
+
+New live checks:
+
+- **E2E-18 / E2E-19:** the client showed 48 distinct lossy pictures bit-exactly, then refined to the exact desktop,
+  with both raw and base64 bodies.
+- **E2E-20:** the rate grew from 0.3 to about 1 MB/s; a 40 KB/s viewer was paused while the other kept going.
+- **E2E-21:** scrolling through a non-integer downscale cost less than one keyframe per 15 steps.
+
+## Alternatives
+
+| Alternative | Pros | Cons |
+| --- | --- | --- |
+| Whole-frame DCT (as in MahanBig) | Simpler encoder; one code path | Text is always blurry; no pixel-exact still picture |
+| Closed-loop residual coding on DCT tiles | Fewer bytes for slowly changing video | More Luau work per frame, on the client CPU that already limits the frame rate |
+
+## Quiz (part 2)
+
+<details><summary>6. Why is scrolling detected against the client's picture rather than against the previous capture?</summary>
+
+- A. It is faster.
+- B. A sub-pixel scroll (non-integer downscale) gets rounded every frame. Against the previous capture these rounding
+  errors add up into visible drift; against what the client shows, each frame corrects the error.
+- C. The previous capture is not kept.
+
+**Answer: B.** The first version used the previous capture. With 12 px steps at 0.8× scale, the true shift is 9.6 px
+per frame, so rounding to 10 px every frame would drift by several pixels.
+</details>
+
+<details><summary>7. A viewer's PC decodes slowly, but its network is fast. Which control reacts?</summary>
+
+- A. The byte rate (AIMD).
+- B. The fps cap, computed from the decode time the client reports with its acks.
+- C. Nothing: the viewer is paused immediately.
+
+**Answer: B.** Lowering the byte rate barely reduces DCT decode work per frame; only fewer frames do. If the viewer
+still falls more than `LagDropSeconds` behind, C happens as a last resort.
+</details>

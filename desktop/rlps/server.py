@@ -117,7 +117,7 @@ class FrameStore:
         self._requested_at = -1e9
         self._requested_fps: float | None = None
         self._last_record_t = -1e9
-        self._tokens = 0.0
+        self._tokens: float | None = None  # None = full bucket at the next capture (start of a session)
         self._tokens_at = clock()
         self.latest: np.ndarray | None = None  # newest *captured* frame (quantized)
 
@@ -138,6 +138,7 @@ class FrameStore:
             self._reset_chain()
             self.session_id = secrets.randbelow(0xFFFFFFFF) + 1
             self.live = True
+            self._tokens = None
             self._cond.notify_all()
             return self.session_id
 
@@ -192,7 +193,9 @@ class FrameStore:
                 return False
             rate = self.current_rate()
             now = self._clock()
-            self._tokens = min(max(rate * 0.5, 4096), self._tokens + (now - self._tokens_at) * rate)
+            cap = max(rate * 0.5, 4096)
+            # (a full bucket at the start: Windows' monotonic clock ticks every ~16 ms, so dt can be 0)
+            self._tokens = cap if self._tokens is None else min(cap, self._tokens + (now - self._tokens_at) * rate)
             self._tokens_at = now
             budget = self._tokens
         t0 = time.perf_counter()
