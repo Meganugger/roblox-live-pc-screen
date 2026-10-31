@@ -40,6 +40,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set +e
           { echo "### CI failure: Python tests on ${{ matrix.os }}"; echo '```'; tail -n 80 pytest.log; echo '```'; } > comment.md
           gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body-file comment.md
 
@@ -88,7 +89,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { echo "### CI failure: live pipeline test on Linux"; echo '```'; grep -E "^(PASS|FAIL|E2E)" e2e.log | tail -n 40 | cut -c1-400; grep -A 25 "Traceback" e2e.log | head -n 60; echo '```';
+          set +e  # a missing log or a grep without matches must not stop the report
+          { echo "### CI failure: live pipeline test on Linux"; echo '```'; grep -E "^(PASS|FAIL|E2E)" e2e.log | tail -n 40 | cut -c1-400; grep -A 25 "Traceback" e2e.log | head -n 60; echo '--- end of log:'; tail -n 12 e2e.log | cut -c1-600; echo '```';
             for f in build/e2e/emulator-*.log; do [ -f "$f" ] && { echo "$f"; echo '```'; tail -n 15 "$f"; echo '```'; }; done; } > comment.md
           gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body-file comment.md
       - uses: actions/upload-artifact@v4
@@ -129,7 +131,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { echo "### CI failure: live pipeline test on Windows"; echo '```'; grep -E "^(PASS|FAIL|E2E)" e2e.log | tail -n 40 | cut -c1-400; grep -A 25 "Traceback" e2e.log | head -n 60; echo '```';
+          set +e  # a missing log or a grep without matches must not stop the report (shell: bash runs with -eo pipefail)
+          { echo "### CI failure: live pipeline test on Windows"; echo '```'; grep -E "^(PASS|FAIL|E2E)" e2e.log | tail -n 40 | cut -c1-400; grep -A 25 "Traceback" e2e.log | head -n 60; echo '--- end of log:'; tail -n 12 e2e.log | cut -c1-600; echo '```';
             for f in build/e2e/emulator-*.log; do [ -f "$f" ] && { echo "$f"; echo '```'; tail -n 25 "$f"; echo '```'; }; done; } > comment.md
           gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body-file comment.md
       - uses: actions/upload-artifact@v4
