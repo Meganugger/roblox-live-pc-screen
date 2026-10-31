@@ -81,6 +81,10 @@ class XlibBackend:
                                              background_pixel=self.pixel(BACKGROUND))
         self.win.map()
         self.gc = self.win.create_gc()
+        # images are uploaded into an off-screen pixmap first and then copied in one request, so a capture never
+        # sees a half-drawn picture (a screen grab between two upload chunks would show a torn frame)
+        self.pixmap = self.win.create_pixmap(self.w, self.h, screen.root_depth)
+        self.pgc = self.pixmap.create_gc()
 
     def pixel(self, rgb):
         r, g, b = rgb
@@ -92,30 +96,26 @@ class XlibBackend:
             self.win.fill_rectangle(self.gc, x, y, w, h)
         self.d.sync()
 
-    def noise(self, seed: int) -> None:
+    def _blit(self, img, x: int, y: int) -> None:
+        """Upload an (h, w, 3) RGB image to the pixmap in chunks, then copy it to the window atomically."""
         from Xlib import X
-        self.draw("A")
-        x, y, w, h = noise_geometry(self.w, self.h)
-        img = noise_image(seed, w, h)
+        h, w = img.shape[:2]
         bgrx = bytearray(w * h * 4)
         bgrx[0::4], bgrx[1::4], bgrx[2::4] = img[..., 2].tobytes(), img[..., 1].tobytes(), img[..., 0].tobytes()
         rows = max(1, 60000 // (w * 4))  # stay below the X request size limit
         for r0 in range(0, h, rows):
             r1 = min(h, r0 + rows)
-            self.win.put_image(self.gc, x, y + r0, w, r1 - r0, X.ZPixmap, 24, 0, bytes(bgrx[r0 * w * 4:r1 * w * 4]))
+            self.pixmap.put_image(self.pgc, 0, r0, w, r1 - r0, X.ZPixmap, 24, 0, bytes(bgrx[r0 * w * 4:r1 * w * 4]))
+        self.win.copy_area(self.gc, self.pixmap, 0, 0, w, h, x, y)
         self.d.sync()
 
+    def noise(self, seed: int) -> None:
+        self.draw("A")
+        x, y, w, h = noise_geometry(self.w, self.h)
+        self._blit(noise_image(seed, w, h), x, y)
+
     def page(self, offset: int) -> None:
-        from Xlib import X
-        img = page_image(offset, self.w, self.h)
-        bgrx = bytearray(self.w * self.h * 4)
-        bgrx[0::4], bgrx[1::4], bgrx[2::4] = img[..., 2].tobytes(), img[..., 1].tobytes(), img[..., 0].tobytes()
-        rows = max(1, 60000 // (self.w * 4))
-        for r0 in range(0, self.h, rows):
-            r1 = min(self.h, r0 + rows)
-            self.win.put_image(self.gc, 0, r0, self.w, r1 - r0, X.ZPixmap, 24, 0,
-                               bytes(bgrx[r0 * self.w * 4:r1 * self.w * 4]))
-        self.d.sync()
+        self._blit(page_image(offset, self.w, self.h), 0, 0)
 
     def close(self) -> None:
         self.win.destroy()

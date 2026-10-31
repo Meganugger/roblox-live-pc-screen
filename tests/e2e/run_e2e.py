@@ -559,7 +559,7 @@ class Harness:
         self.scene("A")
         controller.start()
         start_rate = 300_000
-        os.environ["RLPS_EMU_THROTTLE_Slow"] = "40000"
+        os.environ["RLPS_EMU_THROTTLE_Slow"] = "10000"
         try:
             emu = self.start_emulator(f"http://127.0.0.1:{service.address[1]}", token, ctl,
                                       {"StartBytesPerSecond": start_rate, "MaxBytesPerSecond": 4_000_000,
@@ -596,7 +596,7 @@ class Harness:
             self.metrics["congestion"] = {"start_rate": start_rate, "rate_after_growth": grown,
                                           "min_rate_with_slow_viewer": min_rate, "max_lagging_viewers": max_lagging,
                                           "fast_distinct_pictures_meanwhile": len(fast_shas)}
-            self.check("E2E-20", "adaptive rate: grows above the start rate with one fast viewer; a 40 KB/s viewer "
+            self.check("E2E-20", "adaptive rate: grows above the start rate with one fast viewer; a 10 KB/s viewer "
                        "makes it back off or gets paused while the fast viewer keeps getting frames; both end exact",
                        grown > start_rate * 1.3 and (min_rate < grown * 0.6 or max_lagging >= 1)
                        and len(fast_shas) >= 5, **self.metrics["congestion"])

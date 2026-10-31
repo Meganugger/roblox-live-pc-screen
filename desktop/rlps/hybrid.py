@@ -68,6 +68,7 @@ class HybridEncoder:
         return self.packer.pack(entries, P.FMT_HYBRID, self.w, self.h, session_id=session_id, seq=seq,
                                 base_seq=base_seq, keyframe=keyframe, ref=ref)
 
+    COPY_RELATIVE_ERR = 0.8  # a copy must predict a tile at least this much better than the unshifted picture
     COPY_MAX_MEAN_ERR = 40.0  # a copy never predicts a tile worse than this (mean abs difference per channel)
 
     def _scroll_copies(self, src: np.ndarray, moving: np.ndarray) -> dict[int, tuple[int, int]]:
@@ -80,47 +81,79 @@ class HybridEncoder:
         if self.recon is None or moving.sum() < max(8, self.count // 20):  # only worth it when a sizeable area moved
             return {}
         h, w = self.h, self.w
-        # green channel ~ luminance; row profiles of 16 column bands
-        prof_a = src[..., 1].reshape(h, 16, w // 16).sum(axis=2, dtype=np.int32).astype(np.float64) / (w // 16)
-        prof_b = self.recon[..., 1].reshape(h, 16, w // 16).sum(axis=2, dtype=np.int32).astype(np.float64) / (w // 16)
+        # green channel ~ luminance; row profiles of one band per tile column (narrow enough to keep words apart)
+        bands = w // T
+        prof_a = src[..., 1].reshape(h, bands, T).sum(axis=2, dtype=np.int32).astype(np.float64) / T
+        prof_b = self.recon[..., 1].reshape(h, bands, T).sum(axis=2, dtype=np.int32).astype(np.float64) / T
         if prof_a.std() < 1.0:
             return {}
-        # mean squared difference between src rows r and recon rows r + dy for every dy at once (FFT correlation)
+        # mean squared difference between src rows r and recon rows r + dy for every dy at once (FFT correlation;
+        # summed over the bands below)
         n = 2 * h
         corr = np.fft.irfft(np.conj(np.fft.rfft(prof_a, n, axis=0)) * np.fft.rfft(prof_b, n, axis=0), n, axis=0)
         corr = corr.sum(axis=1)
         ca = np.concatenate([[0.0], np.cumsum((prof_a ** 2).sum(axis=1))])
         cb = np.concatenate([[0.0], np.cumsum((prof_b ** 2).sum(axis=1))])
-        dys = np.arange(-(h // 2), h // 2 + 1)
+        dys = np.arange(-(h // 3), h // 3 + 1)  # per-frame scroll distance; beyond a third it is not scrolling
         lo, hi = np.maximum(0, -dys), np.minimum(h, h - dys)
         length = hi - lo
         sse = (ca[hi] - ca[lo]) + (cb[hi + dys] - cb[lo + dys]) - 2 * corr[dys % n]
         valid = (dys != 0) & (length >= h // 4)
         if not valid.any():
             return {}
-        mse = np.where(valid, sse / np.maximum(length, 1) / 16, np.inf)
-        k = int(np.argmin(mse))
-        dy = int(dys[k])
-        if not mse[k] < 0.25 * float(np.median(mse[valid])):  # no clear vertical motion (0.5 x in RMS terms)
+        mse = np.where(valid, sse / np.maximum(length, 1) / bands, np.inf)
+        best = float(mse.min())
+        if not best < 0.25 * float(np.median(mse[valid])):  # no clear vertical motion (0.5 x in RMS terms)
             return {}
-        idx = np.flatnonzero(moving)
-        ty, tx = idx // self.tx, idx % self.tx
-        ok = (ty * T + dy >= 0) & (ty * T + dy <= h - T)
-        idx, ty, tx = idx[ok], ty[ok], tx[ok]
-        if not idx.size:
-            return {}
-        # prediction errors on the green channel, every second pixel (cheap; the decision does not need more)
-        sub = np.arange(0, T, 2)
-        y_cur = (ty * T)[:, None] + sub[None, :]
-        y_src = (ty * T + dy)[:, None] + sub[None, :]
-        x = (tx * T)[:, None] + sub[None, :]
+        # Periodic content (lines of text) gives several near-equal minima of the row-profile error, so the profile
+        # only proposes candidates (the deepest local minima); each is judged by how many tiles it predicts well.
+        order = np.argsort(mse)
+        candidates: list[int] = []
+        for k in order[:128].tolist():
+            if not np.isfinite(mse[k]):
+                break
+            if all(abs(int(dys[k]) - c) > 2 for c in candidates):
+                candidates.append(int(dys[k]))
+            if len(candidates) == 8:
+                break
+        all_idx = np.flatnonzero(moving)
         g_src, g_rec = src[..., 1], self.recon[..., 1]
-        cur = g_src[y_cur[:, :, None], x[:, None, :]].astype(np.int16)
-        stay = g_rec[y_cur[:, :, None], x[:, None, :]].astype(np.int16)
-        shifted = g_rec[y_src[:, :, None], x[:, None, :]].astype(np.int16)
-        err_copy = np.abs(cur - shifted).reshape(idx.size, -1).mean(axis=1)
-        err_stay = np.abs(cur - stay).reshape(idx.size, -1).mean(axis=1)
-        good = (err_copy == 0) | ((err_copy <= 0.5 * err_stay) & (err_copy <= self.COPY_MAX_MEAN_ERR))
+        sub = np.arange(0, T, 2)
+
+        def judge(dy: int, idx: np.ndarray):
+            ty, tx = idx // self.tx, idx % self.tx
+            ok = (ty * T + dy >= 0) & (ty * T + dy <= h - T)
+            idx, ty, tx = idx[ok], ty[ok], tx[ok]
+            if not idx.size:
+                return idx, np.zeros(0, bool), np.zeros(0)
+            y_cur = (ty * T)[:, None] + sub[None, :]
+            y_src = (ty * T + dy)[:, None] + sub[None, :]
+            x = (tx * T)[:, None] + sub[None, :]
+            cur = g_src[y_cur[:, :, None], x[:, None, :]].astype(np.int16)
+            stay = g_rec[y_cur[:, :, None], x[:, None, :]].astype(np.int16)
+            shifted = g_rec[y_src[:, :, None], x[:, None, :]].astype(np.int16)
+            err_copy = np.abs(cur - shifted).reshape(idx.size, -1).mean(axis=1)
+            err_stay = np.abs(cur - stay).reshape(idx.size, -1).mean(axis=1)
+            # accept when the shifted picture predicts the tile clearly better than leaving it: a sub-pixel
+            # misaligned copy of sharp text keeps some error but looks right while moving, and is refined once still
+            good = (err_copy == 0) | ((err_copy <= self.COPY_RELATIVE_ERR * err_stay)
+                                      & (err_copy <= self.COPY_MAX_MEAN_ERR))
+            return idx, good, err_copy
+
+        # the true shift is the candidate with the smallest typical prediction error (another line of text one
+        # line-period away has the same layout but different words: a much larger error)
+        probe = all_idx[:: max(1, all_idx.size // 256)]
+        scores = []
+        for c in candidates:
+            pidx, pgood, perr = judge(c, probe)
+            if pidx.size:
+                scores.append((float(np.median(perr)), abs(c), c, int(pgood.sum()), pidx.size))
+        if not scores:
+            return {}
+        _, _, dy, n_good, n_probe = min(scores)
+        if n_good < max(4, n_probe // 10):
+            return {}
+        idx, good, _ = judge(dy, all_idx)
         return {int(i): (0, int(dy)) for i in idx[good]}
 
     def encode(self, src: np.ndarray, *, session_id: int, seq: int, base_seq: int, budget: float | None = None,

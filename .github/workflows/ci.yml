@@ -88,7 +88,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { echo "### CI failure: live pipeline test on Linux"; echo '```'; grep -E "^(PASS|FAIL|E2E)" e2e.log | tail -n 40 | cut -c1-400; tail -n 15 e2e.log | cut -c1-600; echo '```';
+          { echo "### CI failure: live pipeline test on Linux"; echo '```'; grep -E "^(PASS|FAIL|E2E)" e2e.log | tail -n 40 | cut -c1-400; grep -A 25 "Traceback" e2e.log | head -n 60; echo '```';
             for f in build/e2e/emulator-*.log; do [ -f "$f" ] && { echo "$f"; echo '```'; tail -n 15 "$f"; echo '```'; }; done; } > comment.md
           gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body-file comment.md
       - uses: actions/upload-artifact@v4
@@ -129,7 +129,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { echo "### CI failure: live pipeline test on Windows"; echo '```'; grep -E "^(PASS|FAIL|E2E)" e2e.log | tail -n 40 | cut -c1-400; tail -n 15 e2e.log | cut -c1-600; echo '```';
+          { echo "### CI failure: live pipeline test on Windows"; echo '```'; grep -E "^(PASS|FAIL|E2E)" e2e.log | tail -n 40 | cut -c1-400; grep -A 25 "Traceback" e2e.log | head -n 60; echo '```';
             for f in build/e2e/emulator-*.log; do [ -f "$f" ] && { echo "$f"; echo '```'; tail -n 25 "$f"; echo '```'; }; done; } > comment.md
           gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body-file comment.md
       - uses: actions/upload-artifact@v4
