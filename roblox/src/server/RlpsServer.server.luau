@@ -149,9 +149,10 @@ local function fire(target: Player?, ...: any)
 	end
 end
 
-type LogEntry = { session: number, seq: number, t: number }
+type LogEntry = { session: number, seq: number, t: number, cum: number }
 local forwardLog: { LogEntry } = {}
 local forwardedFrames = 0
+local broadcastBytes = 0 -- cumulative bytes fanned out to every viewer (for per-viewer bytes in flight)
 
 local function noteForwarded(target: Player?, sessionId: number, seq: number)
 	if target then
@@ -162,7 +163,7 @@ local function noteForwarded(target: Player?, sessionId: number, seq: number)
 		return
 	end
 	local now = os.clock()
-	table.insert(forwardLog, { session = sessionId, seq = seq, t = now })
+	table.insert(forwardLog, { session = sessionId, seq = seq, t = now, cum = broadcastBytes })
 	while #forwardLog > 0 and now - forwardLog[1].t > FORWARD_LOG_SECONDS do
 		table.remove(forwardLog, 1)
 	end
@@ -178,6 +179,9 @@ local function send(target: Player?, m: RelayCore.Message)
 	if m.kind == "records" then
 		for _, record in m.records :: { buffer } do
 			fire(target, "part", record)
+		end
+		if target == nil then
+			broadcastBytes += m.bytes or 0
 		end
 		noteForwarded(target, m.sessionId :: number, m.toSeq :: number)
 	elseif m.kind == "advance" then
@@ -269,7 +273,12 @@ local function syncPlayer(player: Player, force: boolean?)
 	end
 	pendingSync[player] = nil
 	local v = viewerOf(player)
-	v.syncedAt, v.lagging = now, false
+	if v.lagging or v.ackSeq == 0 then
+		-- measure lag from here on (a desync-triggered re-sync keeps the window: a viewer that keeps re-syncing
+		-- must still be found to be behind)
+		v.syncedAt = now
+	end
+	v.lagging = false
 	frames:FireClient(player, "reset")
 	local messages = relay:syncMessages()
 	for _, m in messages do
@@ -317,6 +326,21 @@ local rate = num("StartBytesPerSecond", 1000000, 10000, 1e9)
 local fpsCap = 10 -- frames/s every viewer can decode (from the decode cost reported with acks); ramps up from 10
 local controlBytes, controlAt = 0, os.clock()
 
+-- Bytes sent to a viewer that it has not acknowledged yet (reliable messages cannot be recalled: this is its backlog).
+local function viewerInflight(v: Viewer): number
+	for i = #forwardLog, 1, -1 do
+		local e = forwardLog[i]
+		if e.session == v.ackSession and e.seq <= v.ackSeq then
+			return broadcastBytes - e.cum
+		end
+	end
+	local first = forwardLog[1]
+	if first and first.t >= v.syncedAt then
+		return broadcastBytes - first.cum -- nothing of the logged stream acknowledged yet (lower bound)
+	end
+	return 0
+end
+
 local function viewerLag(v: Viewer, now: number): number
 	for _, e in forwardLog do
 		if e.t >= v.syncedAt and not (e.session == v.ackSession and e.seq <= v.ackSeq) then
@@ -348,11 +372,14 @@ local function control()
 				lagging += 1
 			elseif now - v.syncedAt > 2 then
 				local lag = viewerLag(v, now)
+				local inflight = viewerInflight(v)
+				local maxInflight = math.clamp(rate * 0.6, 128 * 1024, 8 * 1024 * 1024)
 				measured += 1
-				if lag > dropLag then
+				if lag > dropLag or inflight > maxInflight then
 					v.lagging = true -- stop feeding it; it rejoins once it acknowledged what it was sent
 					lagging += 1
-					warn(string.format("[RLPS] %s is %.1f s behind: paused until it catches up", p.Name, lag))
+					warn(string.format("[RLPS] %s is %.1f s / %d KB behind: paused until it catches up", p.Name, lag,
+						inflight // 1024))
 				else
 					maxLag = math.max(maxLag, lag)
 					if v.costMs > 0 then -- a client decodes for budgetMs per Heartbeat (~60 Hz); keep 30 % headroom
