@@ -1,9 +1,11 @@
 --!strict
+--!native
 -- RLPS v1 decoder: container validation (server relay) and part decoding into an RGBA8 frame buffer (client).
 -- Check-for-check mirror of desktop/rlps/codec.py (parse_container, parse_part_header, decompress_part,
 -- apply_part). Functions return `nil, reason` instead of throwing so callers can recover without pcall.
 
 local Protocol = require(script.Parent.RlpsProtocol)
+local Dct = require(script.Parent.RlpsDct)
 
 local VERSION = Protocol.VERSION
 local BPP = Protocol.BYTES_PER_PIXEL
@@ -94,7 +96,7 @@ function Decoder.parsePartHeader(data: buffer, off: number): (PartHeader?, strin
 	if tileCount < 1 or tileCount > tilesX * tilesY then
 		return nil, "invalid tile count"
 	end
-	local maxRaw = math.min(tileCount * (2 + ts * ts * bpp), MAX_RAW)
+	local maxRaw = math.min(tileCount * Protocol.maxRawPerTile(fmt, ts), MAX_RAW)
 	if not (2 * tileCount < rawLength and rawLength <= maxRaw) then
 		return nil, "invalid raw length"
 	end
@@ -188,6 +190,9 @@ function Decoder.parseContainer(data: buffer): (Container?, string?)
 	end
 	if partCount < 1 or partCount > MAX_PARTS then
 		return nil, "invalid part count"
+	end
+	if fmt == Protocol.FMT_HYBRID and (ts ~= Protocol.HYBRID_TILE or width % ts ~= 0 or height % ts ~= 0) then
+		return nil, "hybrid frames need tile size 16 and dimensions divisible by 16"
 	end
 	if seq == 0 or (not keyframe and (baseSeq == 0 or baseSeq == seq)) then
 		return nil, "invalid sequence numbers"
@@ -326,8 +331,6 @@ function Decoder.applyRecord(
 	local n, ts, w, hgt = h.tileCount, h.tileSize, h.width, h.height
 	local tilesX, tilesY = Protocol.tilesPerAxis(w, hgt, ts)
 	local total = tilesX * tilesY
-	local bpp = BPP[h.format]
-	local expected = 2 * n
 	local last = -1
 	for i = 0, n - 1 do
 		local idx = readu16(raw, 2 * i)
@@ -335,14 +338,66 @@ function Decoder.applyRecord(
 			return nil, "tile indices must be strictly increasing and in range"
 		end
 		last = idx
-		local _, _, tw, th = Protocol.tileRect(idx, w, hgt, ts)
+	end
+	local rawLen = buffer.len(raw)
+	local stride = w * 4
+	if h.format == Protocol.FMT_HYBRID then
+		if ts ~= Protocol.HYBRID_TILE or w % ts ~= 0 or hgt % ts ~= 0 then
+			return nil, "hybrid frames need tile size 16 and dimensions divisible by 16"
+		end
+		local nq = #Dct.QUALITIES
+		local off = 2 * n
+		for _ = 1, n do -- validate every entry before writing a single pixel
+			if off >= rawLen then
+				return nil, "tile data length mismatch"
+			end
+			local mode = readu8(raw, off)
+			local size = if mode == Protocol.TILE_MODE_RAW
+				then Protocol.HYBRID_RAW_ENTRY
+				elseif mode == Protocol.TILE_MODE_DCT then Protocol.HYBRID_DCT_ENTRY
+				else 0
+			if size == 0 then
+				return nil, "unknown tile mode"
+			end
+			if off + size > rawLen then
+				return nil, "tile data length mismatch"
+			end
+			if mode == Protocol.TILE_MODE_DCT and readu8(raw, off + 1) >= nq then
+				return nil, "invalid DCT quality"
+			end
+			off += size
+		end
+		if off ~= rawLen then
+			return nil, "tile data length mismatch"
+		end
+		off = 2 * n
+		for i = 0, n - 1 do
+			local x0, y0 = Protocol.tileRect(readu16(raw, 2 * i), w, hgt, ts)
+			grow(bounds, x0, y0, 16, 16)
+			if readu8(raw, off) == Protocol.TILE_MODE_RAW then
+				local src = off + 1
+				for row = 0, 15 do
+					buffer.copy(frame, (y0 + row) * stride + x0 * 4, raw, src, 64)
+					src += 64
+				end
+				off += Protocol.HYBRID_RAW_ENTRY
+			else
+				Dct.decodeTile(raw, off, frame, stride, x0, y0)
+				off += Protocol.HYBRID_DCT_ENTRY
+			end
+		end
+		return n, nil
+	end
+	local bpp = BPP[h.format]
+	local expected = 2 * n
+	for i = 0, n - 1 do
+		local _, _, tw, th = Protocol.tileRect(readu16(raw, 2 * i), w, hgt, ts)
 		expected += tw * th * bpp
 	end
-	if expected ~= buffer.len(raw) then
+	if expected ~= rawLen then
 		return nil, "tile data length mismatch"
 	end
 	local src = 2 * n
-	local stride = w * 4
 	if h.format == Protocol.FMT_RGB565 then
 		local lut = getLut565()
 		for i = 0, n - 1 do
@@ -355,6 +410,16 @@ function Decoder.applyRecord(
 					src += 2
 					dst += 4
 				end
+			end
+		end
+	elseif h.format == Protocol.FMT_RGBA8 then
+		for i = 0, n - 1 do
+			local x0, y0, tw, th = Protocol.tileRect(readu16(raw, 2 * i), w, hgt, ts)
+			grow(bounds, x0, y0, tw, th)
+			local rowBytes = tw * 4
+			for row = 0, th - 1 do
+				buffer.copy(frame, (y0 + row) * stride + x0 * 4, raw, src, rowBytes)
+				src += rowBytes
 			end
 		end
 	else
@@ -372,6 +437,57 @@ function Decoder.applyRecord(
 		end
 	end
 	return n, nil
+end
+
+export type BundleEntry = { tOffsetMs: number, offset: number, length: number }
+
+-- Validate an RLPB bundle (the frame service's response) and locate its containers (oldest first).
+function Decoder.parseBundle(data: buffer): ({ BundleEntry }?, string?)
+	local n = buffer.len(data)
+	if n > Protocol.MAX_BUNDLE_BYTES then
+		return nil, "bundle too large"
+	end
+	if n < Protocol.BUNDLE_HEADER_SIZE then
+		return nil, "truncated bundle header"
+	end
+	if buffer.readstring(data, 0, 4) ~= Protocol.BUNDLE_MAGIC then
+		return nil, "bad bundle magic"
+	end
+	if readu8(data, 4) ~= VERSION then
+		return nil, "unsupported bundle version"
+	end
+	local count, bodyLength = readu16(data, 6), readu32(data, 8)
+	if bodyLength ~= n - Protocol.BUNDLE_HEADER_SIZE then
+		return nil, "bundle length mismatch"
+	end
+	if count < 1 or count > Protocol.MAX_BUNDLE_ENTRIES then
+		return nil, "invalid bundle entry count"
+	end
+	local out: { BundleEntry } = {}
+	local off = Protocol.BUNDLE_HEADER_SIZE
+	for _ = 1, count do
+		if off + Protocol.BUNDLE_ENTRY_SIZE > n then
+			return nil, "truncated bundle entry"
+		end
+		local t, len = readu32(data, off), readu32(data, off + 4)
+		off += Protocol.BUNDLE_ENTRY_SIZE
+		if off + len > n then
+			return nil, "truncated bundle entry"
+		end
+		table.insert(out, { tOffsetMs = t, offset = off, length = len })
+		off += len
+	end
+	if off ~= n then
+		return nil, "trailing bytes after bundle"
+	end
+	return out, nil
+end
+
+-- Copy one bundle entry (a container) into its own buffer.
+function Decoder.extractEntry(data: buffer, e: BundleEntry): buffer
+	local out = buffer.create(e.length)
+	buffer.copy(out, 0, data, e.offset, e.length)
+	return out
 end
 
 return Decoder

@@ -116,8 +116,7 @@ class FrameEncoder:
             raise RuntimeError("the 'zstandard' package is required for zstd compression (pip install zstandard)")
         if tile_size not in P.ALLOWED_TILE_SIZES:
             raise ValueError(f"tile size {tile_size} not in {P.ALLOWED_TILE_SIZES}")
-        bpp_max = max(P.BYTES_PER_PIXEL.values())
-        if not (2 + tile_size * tile_size * bpp_max <= max_part_raw_bytes <= P.MAX_PART_RAW_BYTES):
+        if not (2 + tile_size * tile_size * 2 <= max_part_raw_bytes <= P.MAX_PART_RAW_BYTES):
             raise ValueError("max_part_raw_bytes must hold at least one tile and stay within MAX_PART_RAW_BYTES")
         self.compression = compression
         self.max_part_raw_bytes = max_part_raw_bytes
@@ -163,6 +162,8 @@ class FrameEncoder:
         size = 0
         for entry in entries:
             cost = 2 + len(entry[1])
+            if cost > self.max_part_raw_bytes:
+                raise ValueError("max_part_raw_bytes is smaller than one tile of this pixel format")
             if current and size + cost > self.max_part_raw_bytes:
                 groups.append(current)
                 current, size = [], 0

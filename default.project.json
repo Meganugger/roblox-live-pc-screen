@@ -3,14 +3,25 @@
   "tree": {
     "$className": "DataModel",
     "HttpService": {
-      "$properties": { "HttpEnabled": true }
+      "$properties": {
+        "HttpEnabled": true
+      }
     },
     "ReplicatedStorage": {
       "Rlps": {
         "$className": "Folder",
-        "RlpsProtocol": { "$path": "roblox/src/shared/RlpsProtocol.luau" },
-        "RlpsDecoder": { "$path": "roblox/src/shared/RlpsDecoder.luau" },
-        "RlpsClientCore": { "$path": "roblox/src/shared/RlpsClientCore.luau" }
+        "RlpsProtocol": {
+          "$path": "roblox/src/shared/RlpsProtocol.luau"
+        },
+        "RlpsDecoder": {
+          "$path": "roblox/src/shared/RlpsDecoder.luau"
+        },
+        "RlpsClientCore": {
+          "$path": "roblox/src/shared/RlpsClientCore.luau"
+        },
+        "RlpsDct": {
+          "$path": "roblox/src/shared/RlpsDct.luau"
+        }
       }
     },
     "ServerScriptService": {
@@ -28,15 +39,28 @@
             "ViewerUserIds": ""
           }
         },
-        "RlpsRelayCore": { "$path": "roblox/src/server/RlpsRelayCore.luau" },
-        "RlpsProtocol": { "$path": "roblox/src/shared/RlpsProtocol.luau" },
-        "RlpsDecoder": { "$path": "roblox/src/shared/RlpsDecoder.luau" },
-        "RlpsBase64": { "$path": "roblox/src/shared/RlpsBase64.luau" }
+        "RlpsRelayCore": {
+          "$path": "roblox/src/server/RlpsRelayCore.luau"
+        },
+        "RlpsProtocol": {
+          "$path": "roblox/src/shared/RlpsProtocol.luau"
+        },
+        "RlpsDecoder": {
+          "$path": "roblox/src/shared/RlpsDecoder.luau"
+        },
+        "RlpsBase64": {
+          "$path": "roblox/src/shared/RlpsBase64.luau"
+        },
+        "RlpsDct": {
+          "$path": "roblox/src/shared/RlpsDct.luau"
+        }
       }
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
-        "RlpsClient": { "$path": "roblox/src/client/RlpsClient.client.luau" }
+        "RlpsClient": {
+          "$path": "roblox/src/client/RlpsClient.client.luau"
+        }
       }
     },
     "Workspace": {
@@ -45,9 +69,30 @@
         "$properties": {
           "Anchored": true,
           "Locked": true,
-          "Size": [256, 2, 256],
-          "CFrame": [0, -1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
-          "Color": [0.39, 0.37, 0.38],
+          "Size": [
+            256,
+            2,
+            256
+          ],
+          "CFrame": [
+            0,
+            -1,
+            0,
+            1,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            1
+          ],
+          "Color": [
+            0.39,
+            0.37,
+            0.38
+          ],
           "Material": "Concrete",
           "TopSurface": "Smooth",
           "BottomSurface": "Smooth"
@@ -57,15 +102,34 @@
         "$className": "SpawnLocation",
         "$properties": {
           "Anchored": true,
-          "Size": [6, 1, 6],
-          "CFrame": [0, 0.5, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+          "Size": [
+            6,
+            1,
+            6
+          ],
+          "CFrame": [
+            0,
+            0.5,
+            0,
+            1,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            1
+          ],
           "Duration": 0,
           "Neutral": true,
           "TopSurface": "Smooth",
           "BottomSurface": "Smooth"
         }
       },
-      "RlpsTV": { "$path": "roblox/models/RlpsTV.model.json" }
+      "RlpsTV": {
+        "$path": "roblox/models/RlpsTV.model.json"
+      }
     }
   }
 }
