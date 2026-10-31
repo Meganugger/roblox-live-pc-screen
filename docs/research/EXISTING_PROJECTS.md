@@ -39,3 +39,84 @@ Status: **done** (T-0004) — Python side (S-0029 @ `b873f78`), Roblox side (`v4
 - ~~Roblox side (`v4.7.rbxl`)~~ — answered by F-0027/F-0028 (server polls; per-pixel replicated Frames; no auth).
 - ~~DevForum thread (S-0028)~~ — answered by F-0029…F-0033 (no fps data; tunnels; ToS remark; repo backup history).
 - Remaining (T-0007): forks of `Reb0rnEnder/ScreenBlox`; SuperWoahGuy64's modification (screenshot only, no code).
+
+---
+
+# Survey of the other public projects (T-0005, T-0006, T-0007 — 29th session, 2026-10-31)
+
+Method: `search_repositories` (queries "Screen-Sharing-in-Roblox", "RSSP roblox screen", "roblox screen share",
+"roblox editableimage video", "roblox screen stream …"), `git clone` of every hit, full read of the Python and Luau
+sources, Roblox places parsed with `scripts/agent/rbxl_dump_scripts.py`, RSSP release archives extracted with `bsdtar`
+(**read only — nothing from these projects was executed**; RSSP v2.2.2 ships "RAT functionality"). No code is copied
+into this repository; ideas are credited below and in `DECISIONS.md` D-0007.
+
+## 2. Icy-Monster/Screen-Sharing-in-Roblox (T-0005) — MIT © 2023 icyCYBERwhynot, **archived**, 13★, last commit 2024-05-21
+
+| Aspect | What the code does | Evidence |
+| --- | --- | --- |
+| Capture | `PIL.ImageGrab.grab()` inside the Flask request handler, bilinear resize to 400×225, `time.sleep` pacing per frame | `ScreenNew.py`, `ScreenOld.py` |
+| Encoding (old) | hex strings per pixel; "unchanged since last frame" runs as `N.0` and "same colour" runs as `N.1` floats, optional 12-bit colour (`RGBToCompHex`) | `ScreenOld.py` |
+| Encoding (new) | JSON array of **floats** (r/255, g/255, b/255, 1) per pixel for the 2023 EditableImage beta `WritePixels` — ~20 bytes of JSON per pixel | `ScreenNew.py` |
+| **Batching** | `FrameGroups`: N frames per HTTP response; README: "Max FPS is FrameGroups × 8, due to max Roblox HTTP limit" | `ScreenNew.py` settings |
+| Transport | server `Script` `PostAsync` → `JSONDecode` → `RemoteEvent:FireAllClients(table)`; a new coroutine per `1/FPS` without awaiting the previous one (overlapping requests); `HTTPAdress = "http://127.0.0.1:1241"`; port forwarding / playit.gg for live servers; no auth | `RequestManager.Script` |
+| Reconstruction | (a) one MeshPart per pixel coloured from the client; (b) `Instance.new("EditableImage")` + `:Resize` + `:WritePixels(float table)` — the **pre-2024 beta API, removed since** (current: `AssetService:CreateEditableImage`, `WritePixelsBuffer`) | `ScreenSharingTable`, `EditableImageTest` LocalScripts |
+| **Client playout** | plays a received group frame by frame with `task.wait(1/F − decodeTime)` | `ScreenSharingTable` |
+| Defects | delta state `LastFrame` is one global for all Roblox servers (two servers corrupt each other's deltas); no frame ids → any lost/duplicated response desyncs until a full refresh | static review |
+
+Forks: `jojogamezHub/RobloxScreenShare` (MIT, 2023-10, same design, adds "host anywhere" notes).
+`camymarii/ScreenStreamerForRoblox` (2025-11, Replit-generated Tk GUI around the same `ScreenNew.py`, no auth).
+
+## 3. ssavnayt/RSSP (T-0006) — MIT © 2025 "Alex", **archived**, code only in release archives
+
+| Aspect | What the code does | Evidence |
+| --- | --- | --- |
+| Capture | `dxcam` (DXGI Desktop Duplication) with `mss` fallback; `cv2.resize(INTER_AREA)` by an integer divisor `SS1` (default 8) | `shared/screen_service.py` (v2.2) |
+| Transport v1/v2 | `GET /getscreenimg/{dxcam,mss}?login=…&password=…` returns **raw RGB bytes** (`application/octet-stream`); the Roblox server reads them with `GetAsync` and `string.byte`, checking `#rgbData == w*h*3` — community evidence that binary response bodies reach Roblox intact (not verified by us) | `ServerScriptService.Main` in `ScreenClient_screenimgdeprecated.rbxl`; `modules/getscreenimg/*` |
+| Transport v2.2 | SSE via `HttpService:CreateWebStreamClient` ("slow", and Studio-only per official docs, F-0010); frames as hex in JSON | `modules/sse/execute.py`, release notes |
+| Reconstruction | one `Part` **with a ClickDetector per pixel**, coloured **on the server** (replicates every pixel change to every client), `RunService.Heartbeat` fetch loop | `ServerScriptService.Main` |
+| Security | login/password in the query string; any player's click moves the owner's mouse and clicks (`/movemouse`, `/click`); remote key presses, app launch, shell command execution, clipboard, shutdown; v2.2.2 "auto RAT" (registry autostart) | `Main`, `Script`, release notes |
+| Experiments | v1 `dct.py`: JPEG-in-hex test (never wired to Roblox) | `RSSPv1.rar` |
+
+## 4. MahanBig/roblox-screen-stream — MIT, created **2026-10-28** (3 days before this survey), 3 commits
+
+The most advanced public implementation found. Same topology as ours (sender → tunnel → server poll → RemoteEvent →
+client EditableImage).
+
+| Aspect | What the code does | Evidence |
+| --- | --- | --- |
+| Codec | **lossy DCT video codec**: YCbCr 4:2:0, 8×8 integer IDCT (bit-exact Python ↔ Luau), JPEG quantization tables scaled by 40 levels, **closed-loop inter frames** (residual vs. the decoder's own reconstruction), dead-zone rounding, coefficients planar by zigzag index, sign-folded, zstd (decoded natively with `EncodingService`) | `sender/codec.py`, `roblox/StreamDecoder.luau` |
+| Rate control | token bucket at ¾ of the budget; per frame a galloping/bisection search for the finest quantizer that fits; frame skipped when nothing fits; a still screen "keeps refining towards near-lossless" | `sender/stream_server.py`, `codec.py` |
+| Batching | `GET /frames?t=TOKEN&since=SEQ` returns every record newer than SEQ (base64) — several frames per request | `stream_server.py`, `StreamServer.server.luau` |
+| Client | `--!native --!optimize 2` decoder; decode **time-sliced in a coroutine** (6 ms per game frame); playout queue at the stream fps, skips ahead when > 1 s behind; one EditableImage shared by every screen | `StreamClient.client.luau` |
+| Claims | 640×352 @ 15 fps in Studio (320 KB/s per player); 320×176 @ 15 fps at 40 KB/s "safe for live servers"; **live servers not tested** by the author | README |
+| Weak points | token in the URL query (logged by proxies); `TOKEN` hard-coded in a server script (no secrets store); no stop/indicator semantics; whole-frame DCT also for text (blurry until refined); `(Enum.NormalId :: any)[face]` (raises for unknown names) | static review |
+
+## 5. OddSuvius/luavid — MIT **with attribution requirement**, 2026-10-17
+
+Offline video codec with a pure-Luau decoder (pre-encoded video stored as base64 in ModuleScripts — not streaming).
+Measured by the author: 160×120 decoded in 0.7 ms/frame with `--!native` vs 2.3 ms interpreted (**3.4×**), 60 Hz
+playback; "bytes, not cycles, are the real wall"; YCbCr with half-resolution colour; crossfade between decoded frames
+and a 4×4 Bayer dither to hide banding. Useful as performance evidence for `--!native` in client decoders. No code used
+(the licence would require visible credit).
+
+## 6. Other hits (inspected, not useful beyond the note)
+
+| Repo | What it is |
+| --- | --- |
+| `Harmonyasha/Roblox-ScreenShare` (2023–2026) | Flask + ngrok; text "r,g,b;" per pixel; runs via `require(15681840577)` "in a server-side executor" (a backdoor-style remote module) |
+| `LoneHEX/robloxstream` (2022) | requires an exploit client (`syn.websocket`, `Drawing.new`), not usable in a legitimate game |
+| `robotgamesrbx-glitch/Roblox-screen-share-controllable-account` (2025) | Flask JSON colour list 192×108 + remote key presses |
+| `DeepXx86/video-to-roblox` (2025) | pre-recorded 1-bit packed video frames in ModuleScripts (not live) |
+
+## 7. What this changes for our project (D-0007)
+
+1. **Batch several frames per HTTP response** (Icy-Monster `FrameGroups`, MahanBig `since=SEQ`): 500 requests/min no
+   longer caps the frame rate at ~8 fps.
+2. **Play batched frames out at their capture spacing** (both) instead of in bursts.
+3. **Lossy DCT for moving content** (MahanBig): ~30× fewer bytes than lossless tiles for video-like content. We keep
+   lossless tiles for still content (crisp text) and **refine moving tiles to lossless once they stop changing**.
+4. **Time-sliced, `--!native` client decoding** (MahanBig, luavid measurements).
+5. **Faster capture**: `cv2.resize(INTER_AREA)` and optional DXGI Desktop Duplication (`dxcam`) as RSSP does.
+6. **Binary response bodies** may work (RSSP) → probe once and fall back to base64 automatically.
+7. Confirmed anti-patterns to keep avoiding: per-pixel Instances, server-side colouring, JSON per pixel, credentials in
+   URLs or scripts, any remote input/command surface.

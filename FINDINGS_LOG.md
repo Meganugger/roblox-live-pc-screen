@@ -562,3 +562,29 @@ R2 findings come from inspected public source code (**[CODE]**, static review un
 - **Impact / idea (not implemented, T-0017)**: storing the tunnel base URL as a secret would let the owner change a
   quick-tunnel URL in the dashboard without republishing; requires verifying that `RequestAsync` accepts a `Secret` as
   `Url`. Until then the URL is the `FrameServiceUrl` attribute.
+
+### F-0037 — Icy-Monster (and forks) batch several frames per HTTP response to exceed the ~8 requests/s ceiling [CODE]
+- **Source**: S-0034, S-0038. `FrameGroups` frames per response, client replays them with `task.wait(1/F)`; README
+  "Max FPS is FrameGroups × 8, due to max Roblox HTTP limit". Delta state is a single global shared by all servers (bug).
+- **Impact**: adopted (batching + playout, D-0007); our per-poller chain avoids the shared-state bug.
+
+### F-0038 — RSSP reads raw binary HTTP bodies in Roblox (`GetAsync` + `string.byte`, size check `w*h*3`) [CODE][COMMUNITY]
+- **Source**: S-0035 (`ServerScriptService.Main`). Evidence that binary bodies arrive intact, not proof (no test by us;
+  the official docs are silent, F-0007). Also: dxcam + `cv2.INTER_AREA`; per-pixel Parts coloured on the server;
+  credentials in URLs; remote input/commands; "RAT" in v2.2.2.
+- **Impact**: frame service gains a binary body mode, used only after a startup probe proves bytes arrive unchanged
+  (fallback base64). Capture gains INTER_AREA resize and an optional dxcam backend.
+
+### F-0039 — MahanBig/roblox-screen-stream: lossy DCT (YCbCr 4:2:0) + rate control + batching + time-sliced native decode [CODE]
+- **Source**: S-0036. Bit-exact integer IDCT in Python and Luau; closed-loop inter frames; per-frame quantizer search
+  to fit a token bucket; `since=SEQ` batches; 6 ms decode slices per game frame. Author's figures (Studio only):
+  640×352 @ 15 fps at ~320 KB/s.
+- **Impact**: our lossless tiles cost ~86 KB per 480×270 video frame (PERFORMANCE.md) — a DCT mode is the single
+  biggest quality lever for moving content. Adopted as a per-tile hybrid (DCT while moving, lossless refinement when
+  still), own implementation (D-0007).
+
+### F-0040 — `--!native` speeds up a Luau pixel decoder ~3.4× (luavid, measured by its author); official docs describe it for server scripts [COMMUNITY][OFFICIAL]
+- **Source**: S-0037, S-0039. Docs: "server-side scripts in your game can be compiled directly into machine code";
+  client availability not stated. Luavid and MahanBig use it in client decoders; the directive is a no-op where
+  unsupported, so adding it is safe.
+- **Impact**: `--!native` on the decoder modules and the client script; real client gain = owner test.
