@@ -58,6 +58,34 @@ class DctTests(unittest.TestCase):
         self.assertTrue(errs[0] > errs[1] > errs[2])
         self.assertLess(errs[2], 3.0)
 
+    def test_float_blas_idct_equals_integer_specification(self):
+        """dct.reconstruct uses float64 matmul for speed; it must equal the pure-integer formula of the Luau decoder."""
+        rng = np.random.default_rng(0)
+        qz = np.concatenate([rng.integers(-32768, 32768, (3, 6, 64)), rng.normal(0, 40, (5, 6, 64))]).astype(np.int16)
+        qis = np.array([15, 0, 7, 3, 9, 15, 0, 12])
+        fast = dct.reconstruct(qz, qis)
+        mi = dct.M.tolist()
+        for n in range(qz.shape[0]):
+            luma, chroma = dct.tables(int(qis[n]))
+            samples = []
+            for b in range(6):
+                nat = [0] * 64
+                for k in range(64):
+                    nat[int(dct.ZIGZAG[k])] = int(qz[n, b, k])
+                tab = (luma if b < 4 else chroma).tolist()
+                d = [[nat[r * 8 + c] * tab[r * 8 + c] for c in range(8)] for r in range(8)]
+                samples.append([[min(255, max(0, ((sum(mi[k][i] * d[k][l] * mi[l][j] for k in range(8) for l in range(8))
+                                                  + (1 << 23)) >> 24) + 128)) for j in range(8)] for i in range(8)])
+            y = lambda py, px: samples[(py // 8) * 2 + px // 8][py % 8][px % 8]  # noqa: E731
+            for py in range(0, 16, 5):
+                for px in range(0, 16, 3):
+                    cb, cr = samples[4][py // 2][px // 2] - 128, samples[5][py // 2][px // 2] - 128
+                    yy = y(py, px)
+                    want = (min(255, max(0, yy + ((91881 * cr + 32768) >> 16))),
+                            min(255, max(0, yy - ((22554 * cb + 46802 * cr + 32768) >> 16))),
+                            min(255, max(0, yy + ((116130 * cb + 32768) >> 16))))
+                    self.assertEqual(tuple(int(v) for v in fast[n, py, px, :3]), want, (n, py, px))
+
     def test_entry_round_trip_and_rejection(self):
         tiles = noise(1, 16, 16)[None]
         qz = dct.quantize(dct.forward_coefficients(tiles), 9)

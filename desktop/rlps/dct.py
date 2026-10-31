@@ -56,7 +56,12 @@ def _dct_matrix() -> np.ndarray:
 
 
 C = _dct_matrix()
-M = np.round(C * 4096).astype(np.int64)  # integer basis shared with the Luau decoder (RlpsDecoder.IDCT_M)
+M = np.round(C * 4096).astype(np.int64)  # integer basis shared with the Luau decoder (RlpsDct.M)
+# Row-major vec(Mt @ D @ M) = kron(Mt, Mt) @ vec(D): one (blocks x 64) @ (64 x 64) BLAS product for all blocks.
+# Entries <= 2009^2 and |D| <= 32767 * 255, so each sum of 64 products stays an exact integer below 2^53.
+_K_IDCT = np.kron(M.T, M.T).astype(np.float64).T
+_K_FDCT = np.kron(C, C).T  # forward (float, encoder only): vec(C @ X @ C.T) = kron(C, C) @ vec(X)
+_K_IDCT_ZZ = _K_IDCT[ZIGZAG]  # input rows permuted to zigzag order
 
 
 def quant_table(base: np.ndarray, quality_index: int) -> np.ndarray:
@@ -67,6 +72,9 @@ def quant_table(base: np.ndarray, quality_index: int) -> np.ndarray:
 
 
 _TABLES = [(quant_table(BASE_LUMA, i), quant_table(BASE_CHROMA, i)) for i in range(len(QUALITIES))]
+# dequantization multipliers per quality index, in zigzag order (decoder side)
+_TAB_ZZ_LUMA = np.stack([t[0][ZIGZAG] for t in _TABLES]).astype(np.float64)
+_TAB_ZZ_CHROMA = np.stack([t[1][ZIGZAG] for t in _TABLES]).astype(np.float64)
 
 
 def tables(quality_index: int) -> tuple[np.ndarray, np.ndarray]:
@@ -98,9 +106,8 @@ def _to_blocks(tiles_rgb: np.ndarray) -> np.ndarray:
 
 def forward_coefficients(tiles_rgb: np.ndarray) -> np.ndarray:
     """(T, 16, 16, 3) RGB -> (T, 6, 64) float DCT coefficients in row-major (not zigzag) order."""
-    blocks = _to_blocks(tiles_rgb).astype(np.float64)
-    d = np.matmul(np.matmul(C, blocks), C.T)
-    return d.reshape(tiles_rgb.shape[0], 6, 64)
+    blocks = _to_blocks(tiles_rgb).astype(np.float64).reshape(-1, 64)
+    return (blocks @ _K_FDCT).reshape(tiles_rgb.shape[0], 6, 64)
 
 
 def quantize(coefs: np.ndarray, quality_index: int) -> np.ndarray:
@@ -126,33 +133,32 @@ def pack_entries(qz: np.ndarray, quality_index: int) -> list[bytes]:
 def reconstruct(qz: np.ndarray, quality_indices: np.ndarray | int) -> np.ndarray:
     """Integer decode of (T, 6, 64) zigzag int16 coefficients -> (T, 16, 16, 4) uint8 RGBA (alpha 255).
 
-    Bit-exact specification of the Luau decoder."""
+    Bit-exact specification of the Luau decoder (RlpsDct.decodeTile): dequantize, ``(M^T D M + 2^23) >> 24``,
+    +128 and clamp, then fixed-point YCbCr -> RGB with nearest chroma upsampling. Computed with float64 BLAS, which is
+    exact here (all intermediates are integers below 2^53; see _K_IDCT)."""
     t = qz.shape[0]
     qi = np.broadcast_to(np.asarray(quality_indices), (t,))
-    natural = np.empty((t, 6, 64), np.int64)
-    natural[:, :, ZIGZAG] = qz.astype(np.int64)
-    luma = np.stack([tables(int(i))[0] for i in range(len(QUALITIES))])
-    chroma = np.stack([tables(int(i))[1] for i in range(len(QUALITIES))])
-    deq = np.empty_like(natural)
-    deq[:, :4] = natural[:, :4] * luma[qi][:, None, :]
-    deq[:, 4:] = natural[:, 4:] * chroma[qi][:, None, :]
-    blocks = deq.reshape(t, 6, 8, 8)
-    out = np.matmul(np.matmul(M.T, blocks), M)  # exact int64
-    samples = np.clip(((out + IDCT_ROUND) >> IDCT_SHIFT) + 128, 0, 255)
-    y = np.empty((t, 16, 16), np.int64)
+    deq = qz.astype(np.float64)
+    deq[:, :4] *= _TAB_ZZ_LUMA[qi][:, None, :]
+    deq[:, 4:] *= _TAB_ZZ_CHROMA[qi][:, None, :]
+    out = deq.reshape(-1, 64) @ _K_IDCT_ZZ  # rows indexed by zigzag position: no scatter needed
+    out += IDCT_ROUND
+    out *= 1.0 / (1 << IDCT_SHIFT)  # exact: power of two
+    np.floor(out, out=out)
+    out += 128
+    np.clip(out, 0, 255, out=out)
+    samples = out.astype(np.int32).reshape(t, 6, 8, 8)
+    y = np.empty((t, 16, 16), np.int32)
     y[:, :8, :8] = samples[:, 0]
     y[:, :8, 8:] = samples[:, 1]
     y[:, 8:, :8] = samples[:, 2]
     y[:, 8:, 8:] = samples[:, 3]
-    cb = np.repeat(np.repeat(samples[:, 4], 2, axis=1), 2, axis=2) - 128
-    cr = np.repeat(np.repeat(samples[:, 5], 2, axis=1), 2, axis=2) - 128
-    r = y + ((91881 * cr + 32768) >> 16)
-    g = y - ((22554 * cb + 46802 * cr + 32768) >> 16)
-    b = y + ((116130 * cb + 32768) >> 16)
+    cb = np.repeat(np.repeat(samples[:, 4] - 128, 2, axis=1), 2, axis=2)
+    cr = np.repeat(np.repeat(samples[:, 5] - 128, 2, axis=1), 2, axis=2)
     rgba = np.empty((t, 16, 16, 4), np.uint8)
-    rgba[..., 0] = np.clip(r, 0, 255)
-    rgba[..., 1] = np.clip(g, 0, 255)
-    rgba[..., 2] = np.clip(b, 0, 255)
+    rgba[..., 0] = np.clip(y + ((91881 * cr + 32768) >> 16), 0, 255)
+    rgba[..., 1] = np.clip(y - ((22554 * cb + 46802 * cr + 32768) >> 16), 0, 255)
+    rgba[..., 2] = np.clip(y + ((116130 * cb + 32768) >> 16), 0, 255)
     rgba[..., 3] = 255
     return rgba
 

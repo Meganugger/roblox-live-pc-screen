@@ -51,6 +51,7 @@ class HybridEncoder:
         self.still = np.zeros(self.count, np.int64)  # captures since the tile's source last changed
         self.stale = np.ones(self.count, bool)  # source changed since the tile was last sent
         self.q_index = len(dct.QUALITIES) - 1
+        self.lossless_tile_bytes = 400.0  # running estimate of one compressed lossless tile (skips hopeless attempts)
 
     def reset(self) -> None:
         """Forget the decoder state: the next frame is a keyframe."""
@@ -102,20 +103,28 @@ class HybridEncoder:
         dct_q: int | None = None
         dct_recon = None
         if moving_idx.size:
-            lossless = self._pack(list(raw_entries.items()), **args)
-            if budget is None or len(lossless) <= budget:
+            hopeless = budget is not None and moving_idx.size * self.lossless_tile_bytes > budget * 2
+            lossless = None if hopeless else self._pack(list(raw_entries.items()), **args)
+            if lossless is not None:
+                self.lossless_tile_bytes = 0.7 * self.lossless_tile_bytes + 0.3 * len(lossless) / moving_idx.size
+            if lossless is not None and (budget is None or len(lossless) <= budget):
                 chosen = list(raw_entries.items())
                 size = len(lossless)
             else:
                 coefs = dct.forward_coefficients(st[moving_idx][..., :3])
-                cache: dict[int, tuple[list, int, np.ndarray]] = {}
+                # Search the quality on a sample of the tiles (sizes scale with the tile count), then encode once.
+                n = moving_idx.size
+                stride = max(1, n // 192)
+                sample = np.arange(0, n, stride)
+                scale = n / sample.size
+                cache: dict[int, int] = {}
 
-                def attempt(qi: int):
+                def attempt(qi: int) -> bool:
                     if qi not in cache:
-                        qz = dct.quantize(coefs, qi)
-                        ent = list(zip(moving_idx.tolist(), dct.pack_entries(qz, qi)))
-                        cache[qi] = (ent, len(self._pack(list(ent), **args)), qz)
-                    return cache[qi][1] <= budget
+                        qz = dct.quantize(coefs[sample], qi)
+                        ent = list(zip(moving_idx[sample].tolist(), dct.pack_entries(qz, qi)))
+                        cache[qi] = int(len(self._pack(ent, **args)) * scale)
+                    return cache[qi] <= budget
 
                 top = len(dct.QUALITIES) - 1
                 guess = min(max(self.q_index, 0), top)
@@ -141,15 +150,21 @@ class HybridEncoder:
                         lo = mid
                     else:
                         hi = mid
-                if lo < 0:
-                    if not keyframe:
-                        info.skipped = True
-                        return None, info
-                    lo = 0
-                    attempt(0)
+                if lo < 0 and not keyframe:
+                    info.skipped = True
+                    return None, info
+                lo = max(lo, 0)
+                while True:  # the real encode; step down if the sample estimate was optimistic
+                    qz = dct.quantize(coefs, lo)
+                    chosen = list(zip(moving_idx.tolist(), dct.pack_entries(qz, lo)))
+                    size = len(self._pack(list(chosen), **args))
+                    if size <= budget or lo == 0 or stride == 1:
+                        break
+                    lo -= 1
+                if size > budget and not keyframe:
+                    info.skipped = True
+                    return None, info
                 self.q_index = lo
-                chosen, size, qz = cache[lo]
-                chosen = list(chosen)
                 dct_q, dct_recon = lo, dct.reconstruct(qz, lo)
             info.moving_tiles = int(moving_idx.size)
         else:
