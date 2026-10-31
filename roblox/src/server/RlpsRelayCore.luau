@@ -1,8 +1,8 @@
 --!strict
 -- RLPS server relay core (T-0012). Turns frame-service containers into the ordered message stream that the server
--- script fans out to every client, tracks the poll cursor (after/session/key) and keeps the late-joiner history
--- (last keyframe + later deltas/advances). Pure Luau (no Roblox APIs) so the standalone harness can test it;
--- RlpsServer.server.luau owns HttpService, the RemoteEvent and the single poll loop of the experience server.
+-- script plays out to viewers (RlpsFanout keeps the history late joiners replay) and tracks the poll cursor
+-- (after/session/key). Pure Luau (no Roblox APIs) so the standalone harness can test it; RlpsServer.server.luau owns
+-- HttpService, the RemoteEvent and the single poll loop of the experience server.
 --
 -- Invariant: the forwarded stream is always a valid chain for RlpsClientCore — a keyframe, then deltas whose baseSeq
 -- is the previous seq, or advances; anything that does not extend the chain is dropped and a keyframe is requested.
@@ -15,12 +15,13 @@ RelayCore.__index = RelayCore
 
 export type Status = "connecting" | "live" | "stopped" | "error"
 
--- "records": part records of one container (forward in order); "advance": frame toSeq looks like fromSeq;
--- "status": sharing/connection state changed.
+-- "records": part records of one container (forward in order; keyframe = it starts a new chain); "advance": frame
+-- toSeq looks like fromSeq; "status": sharing/connection state changed.
 export type Message = {
 	kind: "records" | "advance" | "status",
 	records: { buffer }?,
 	bytes: number?,
+	keyframe: boolean?,
 	sessionId: number?,
 	fromSeq: number?,
 	toSeq: number?,
@@ -29,7 +30,6 @@ export type Message = {
 }
 
 export type Config = {
-	historyLimitBytes: number?, -- ask for a fresh keyframe when the late-joiner history grows beyond this
 	errorThreshold: number?, -- consecutive poll failures before status becomes "error"
 }
 
@@ -41,10 +41,8 @@ export type Relay = typeof(setmetatable(
 		seq: number,
 		width: number,
 		height: number,
-		wantKeyframe: boolean,
-		history: { Message },
-		historyBytes: number,
-		historyLimit: number,
+		wantKeyframe: boolean, -- the chain is unknown or broken: the next poll asks for the chain from a keyframe
+		wantFresh: boolean, -- viewers need a new keyframe: the chain continues, the next captured frame is one
 		errorThreshold: number,
 		consecutiveErrors: number,
 		containers: number,
@@ -65,9 +63,7 @@ function RelayCore.new(config: Config?): Relay
 		width = 0,
 		height = 0,
 		wantKeyframe = true,
-		history = {} :: { Message },
-		historyBytes = 0,
-		historyLimit = cfg.historyLimitBytes or 1536 * 1024,
+		wantFresh = false,
 		errorThreshold = cfg.errorThreshold or 3,
 		consecutiveErrors = 0,
 		containers = 0,
@@ -78,9 +74,11 @@ function RelayCore.new(config: Config?): Relay
 end
 
 -- Query parameters for the next GET /v1/frames poll: after, session, key, idle (idle = the relay already reports
--- "stopped", so the frame service may hold the poll until sharing starts).
-function RelayCore.pollParams(self: Relay): (number, number, boolean, boolean)
-	return self.seq, self.sessionId, self.wantKeyframe or self.seq == 0, self.status == "stopped"
+-- "stopped", so the frame service may hold the poll until sharing starts), fresh (continue the chain, but make the
+-- next captured frame a keyframe).
+function RelayCore.pollParams(self: Relay): (number, number, boolean, boolean, boolean)
+	local key = self.wantKeyframe or self.seq == 0
+	return self.seq, self.sessionId, key, self.status == "stopped", self.wantFresh and not key
 end
 
 local function setStatus(self: Relay, out: { Message }, status: Status, detail: string?)
@@ -93,9 +91,7 @@ end
 
 local function clearChain(self: Relay)
 	self.sessionId, self.seq, self.width, self.height = 0, 0, 0, 0
-	table.clear(self.history)
-	self.historyBytes = 0
-	self.wantKeyframe = true
+	self.wantKeyframe, self.wantFresh = true, false
 end
 
 local function drop(self: Relay, reason: string, needKeyframe: boolean)
@@ -127,7 +123,6 @@ function RelayCore.ingest(self: Relay, data: buffer): ({ Message }?, string?)
 			if c.seq > self.seq then
 				local m: Message = { kind = "advance", sessionId = c.sessionId, fromSeq = self.seq, toSeq = c.seq }
 				self.seq = c.seq
-				table.insert(self.history, m)
 				table.insert(out, m)
 			end
 			setStatus(self, out, "live", nil)
@@ -164,16 +159,10 @@ function RelayCore.ingest(self: Relay, data: buffer): ({ Message }?, string?)
 		records[i] = Decoder.extractRecord(data, ref)
 		bytes += ref.length
 	end
-	local m: Message = { kind = "records", records = records, bytes = bytes, sessionId = c.sessionId, toSeq = c.seq }
+	local m: Message = { kind = "records", records = records, bytes = bytes, keyframe = c.keyframe,
+		sessionId = c.sessionId, toSeq = c.seq }
 	if c.keyframe then
-		table.clear(self.history)
-		self.historyBytes = 0
-		self.wantKeyframe = false
-	end
-	table.insert(self.history, m)
-	self.historyBytes += bytes
-	if self.historyBytes > self.historyLimit then
-		self.wantKeyframe = true -- next poll asks for a keyframe, which also resets the history
+		self.wantKeyframe, self.wantFresh = false, false
 	end
 	self.sessionId, self.seq, self.width, self.height = c.sessionId, c.seq, c.width, c.height
 	self.forwardedBytes += bytes
@@ -193,19 +182,14 @@ function RelayCore.fail(self: Relay, reason: string): { Message }
 	return out
 end
 
--- A client lost the chain (desync): ask the frame service for a keyframe on the next poll.
-function RelayCore.requestKeyframe(self: Relay)
-	self.wantKeyframe = true
-end
-
--- Everything a late joiner needs, in order: current status, then the last keyframe and every later delta/advance.
-function RelayCore.syncMessages(self: Relay): { Message }
-	local first: Message = { kind = "status", status = self.status, detail = self.detail }
-	local out: { Message } = { first }
-	for _, m in self.history do
-		table.insert(out, m)
+-- Viewers need a new keyframe (late joiners, slow viewers, a long history): polls ask for one until it arrives. The
+-- chain continues meanwhile (`key` would make the frame service replay its newest keyframe chain: old frames).
+function RelayCore.requestFreshKeyframe(self: Relay)
+	if self.seq == 0 then
+		self.wantKeyframe = true
+	else
+		self.wantFresh = true
 	end
-	return out
 end
 
 return RelayCore

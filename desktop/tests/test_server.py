@@ -235,6 +235,27 @@ class FrameFlowTests(ServiceTestCase):
             self.assertTrue(got[0].keyframe)
         self.assertEqual([c.seq for c in self.c.poll(after=2, session=sid, wait=0)], [3])
 
+    def test_fresh_continues_the_chain_and_forces_one_new_keyframe(self):
+        sid = self.store.start()
+        for v in range(1, 4):
+            self.store.publish(frame(value=v), P.FMT_RGB565)
+        got = self.c.poll(after=2, session=sid, wait=0, extra="&fresh=1")
+        self.assertEqual([c.seq for c in got], [3])  # no rewind to the old keyframe (key=1 would replay 1, 2, 3)
+        self.store.publish(frame(value=4), P.FMT_RGB565)
+        [k] = self.c.poll(after=3, session=sid, wait=0, extra="&fresh=1")
+        self.assertTrue(k.keyframe)
+        self.assertEqual(k.seq, 4)
+        # the chain already holds a keyframe newer than `after`: another fresh=1 must not force a second one
+        self.c.poll(after=3, session=sid, wait=0, extra="&fresh=1")
+        self.store.publish(frame(value=5), P.FMT_RGB565)
+        [d] = self.c.poll(after=4, session=sid, wait=0)
+        self.assertFalse(d.keyframe)
+        self.assertEqual((d.seq, d.base_seq), (5, 4))
+        # a poller of another session gets nothing forced (its chain is unknown: key semantics apply)
+        self.c.poll(after=5, session=sid + 1, wait=0, extra="&fresh=1")
+        self.store.publish(frame(value=6), P.FMT_RGB565)
+        self.assertFalse(self.c.poll(after=5, session=sid, wait=0)[-1].keyframe)
+
     def test_keyframe_forced_when_the_ring_lost_it(self):
         store = server.FrameStore(ring_records=2)
         svc = server.FrameService(store, TOKEN, port=0, rate=1000, burst=1000)
@@ -339,10 +360,10 @@ class BundleTests(unittest.TestCase):
 class QueryParserTests(unittest.TestCase):
     def test_defaults_and_values(self):
         self.assertEqual(server.parse_query(""), server.Query())
-        q = server.parse_query("after=5&session=7&key=1&wait=0&idle=1&rate=500000&batch=150&max=65536&enc=1")
-        self.assertEqual((q.after, q.session, q.key, q.wait_ms, q.idle, q.rate, q.batch_ms, q.max_bytes, q.raw),
-                         (5, 7, True, 0, True, 500000, 150, 65536, True))
-        for bad in ("idle=2", "batch=1001", "max=10", "enc=2", "rate=-1", "foo=1", "after=1&after=2"):
+        q = server.parse_query("after=5&session=7&key=1&wait=0&idle=1&rate=500000&batch=150&max=65536&enc=1&fresh=1")
+        self.assertEqual((q.after, q.session, q.key, q.wait_ms, q.idle, q.rate, q.batch_ms, q.max_bytes, q.raw,
+                          q.fresh), (5, 7, True, 0, True, 500000, 150, 65536, True, True))
+        for bad in ("idle=2", "batch=1001", "max=10", "enc=2", "rate=-1", "foo=1", "after=1&after=2", "fresh=2"):
             with self.assertRaises(ValueError, msg=bad):
                 server.parse_query(bad)
 

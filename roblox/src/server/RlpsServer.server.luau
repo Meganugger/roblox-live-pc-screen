@@ -1,6 +1,6 @@
 --!strict
--- RLPS server script: the single frame-service poll loop of this experience server, playout and fan-out to viewers,
--- and congestion control from client acknowledgements.
+-- RLPS server script: the single frame-service poll loop of this experience server, playout, per-viewer delivery
+-- (RlpsFanout) and congestion control from client acknowledgements.
 --
 -- Polls GET <FrameServiceUrl>/v1/frames (desktop/rlps/server.py) with the Bearer token stored as an experience secret.
 -- Each response is a bundle of containers (several frames per request — HttpService allows 500 requests/min); every
@@ -8,15 +8,17 @@
 -- one reliable RemoteEvent:
 --   server -> client: ("status", status, detail?) | ("part", record: buffer) | ("advance", sessionId, fromSeq, toSeq)
 --                     | ("reset")  [start of a sync: drop local state, a status + keyframe chain follows]
---   client -> server: ("sync")                         [late joiner / desynced client: send me the relay history]
---                     ("ack", sessionId, seq, costMs)  [frame seq is on my screen; decoding a frame costs costMs]
+--   client -> server: ("sync", processed)                        [join / lost the chain: send me the stream]
+--                     ("ack", sessionId, seq, costMs, processed) [frame seq is on my screen; decoding a frame costs
+--                                                                 costMs; I processed `processed` bytes of parts]
 -- EditableImage changes never replicate, so every client rebuilds the picture itself (RlpsClient.client.luau).
 --
--- Congestion control: the stream byte rate starts at StartBytesPerSecond and adapts (AIMD) to what every viewer keeps
--- up with, measured as the age of the oldest frame a viewer has not acknowledged. The rate is sent with every poll;
--- the desktop app encodes at that budget (quality and frame rate follow). Clients also report their decode time per
--- frame, which caps the frame rate (FpsCap) so that the slowest viewer's CPU keeps up. A viewer that falls more than LagDropSeconds
--- behind stops receiving frames until it caught up, then it is re-synced — one slow player does not stall everyone.
+-- Congestion control: each viewer's backlog (bytes sent, not yet processed) stays within about one second of its own
+-- measured delivery rate (RlpsFanout: a slow viewer is held, then catches up or waits for a keyframe — it never slows
+-- the others down or piles up minutes of stream). The stream byte rate starts at StartBytesPerSecond and adapts
+-- (AIMD) to how far behind the median viewer is (age of the oldest frame it has not processed). The rate is sent with
+-- every poll; the desktop app encodes at that budget (quality and frame rate follow). Clients also report their
+-- decode time per frame, which caps the frame rate (FpsCap) so that the median viewer's CPU keeps up.
 --
 -- Configuration = attributes on this script (Studio: select the script, edit Attributes):
 --   FrameServiceUrl      string  public HTTPS base URL of the frame service (tunnel), e.g. https://xyz.trycloudflare.com
@@ -28,12 +30,12 @@
 --   MaxBytesPerSecond    number  upper bound of the stream rate (default 8000000)
 --   StartBytesPerSecond  number  initial stream rate (default 1000000)
 --   MinBytesPerSecond    number  lower bound (default 100000)
---   TargetLagSeconds     number  acceptable age of the oldest unacknowledged frame (default 0.35)
---   LagDropSeconds       number  a viewer further behind is paused and re-synced (default 4)
+--   TargetLagSeconds     number  acceptable delay of the median viewer (default 0.35)
 --   ClientDecodeBudgetMs number  decode time per client Heartbeat (default 10 ms; replicated to clients)
 --   ViewerUserIds        string  optional comma-separated UserIds allowed to see the screen (empty = everyone)
--- Read-only status attributes: Status, StatusDetail, Containers, ForwardedBytes, Dropped, LastError, RateBps,
--- MaxLagMs, FpsCap, Viewers, LaggingViewers, BodyMode, ForwardFps.
+-- Read-only status attributes: Status, StatusDetail, Containers, ForwardedBytes, Dropped, LastError, RateBps, LagMs
+-- (median viewer delay), MaxLagMs, FpsCap, Viewers, LaggingViewers (held or waiting for a keyframe), BodyMode,
+-- ForwardFps.
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -41,18 +43,15 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local RelayCore = require(script.Parent.RlpsRelayCore)
+local Fanout = require(script.Parent.RlpsFanout)
 local Decoder = require(script.Parent.RlpsDecoder)
 local Base64 = require(script.Parent.RlpsBase64)
 
 local REMOTE_NAME = "RlpsFrames"
-local SYNC_COOLDOWN = 2 -- seconds between history syncs for one player
-local KEYFRAME_COOLDOWN = 2 -- seconds between keyframe requests caused by clients
-local HISTORY_HARD_LIMIT = 48 * 1024 * 1024 -- relay history cap: beyond it the next poll asks for a keyframe
-local SYNC_HISTORY_LIMIT = 8 * 1024 * 1024 -- larger histories are not replayed: a fresh keyframe is requested first
-local SYNC_HISTORY_FRAMES = 24 -- nor histories with more frames than a client should decode at once
+local KEYFRAME_COOLDOWN = 2 -- seconds between keyframe requests made for viewers
 local CONTROL_INTERVAL = 0.5
 local MAX_PLAYOUT_BACKLOG = 1.0 -- seconds; beyond it queued frames are forwarded at once (catch up)
-local FORWARD_LOG_SECONDS = 15
+local NOT_AUTHORIZED = "not authorized to view this screen"
 
 local function attr(name: string, default: any): any
 	local v = script:GetAttribute(name)
@@ -76,23 +75,21 @@ if remote == nil then
 end
 local frames = remote :: RemoteEvent
 
-local relay = RelayCore.new({ historyLimitBytes = HISTORY_HARD_LIMIT, errorThreshold = 3 })
+local relay = RelayCore.new({ errorThreshold = 3 })
 
 -- --------------------------------------------------------------------------------------------- viewers / fan-out
 
-type Viewer = {
-	joined: number,
-	syncedAt: number,
-	ackSession: number,
-	ackSeq: number,
-	lagging: boolean,
-	lastSentSession: number,
-	lastSentSeq: number,
-	costMs: number, -- client's moving-average decode time per frame
-}
-local viewers: { [Player]: Viewer } = {}
+local fan = Fanout.new(function(player: Player, kind: string, ...: any)
+	frames:FireClient(player, kind, ...)
+end)
+local forwardedFrames = 0
 
 local allowed: { [number]: boolean }? = nil
+local function canView(player: Player): boolean
+	local set = allowed
+	return set == nil or set[player.UserId] == true
+end
+
 local function readViewers()
 	local raw = tostring(attr("ViewerUserIds", ""))
 	local set: { [number]: boolean } = {}
@@ -104,91 +101,22 @@ local function readViewers()
 	allowed = if any then set else nil
 end
 readViewers()
-script:GetAttributeChangedSignal("ViewerUserIds"):Connect(readViewers)
-
-local function canView(player: Player): boolean
-	local set = allowed
-	return set == nil or set[player.UserId] == true
-end
-
-local function viewerOf(player: Player): Viewer
-	local v = viewers[player]
-	if v == nil then
-		local now = os.clock()
-		v = { joined = now, syncedAt = now, ackSession = 0, ackSeq = 0, lagging = false, lastSentSession = 0, lastSentSeq = 0,
-			costMs = 0 }
-		viewers[player] = v
-	end
-	return v :: Viewer
-end
-
-local function anyLagging(): boolean
-	for _, v in viewers do
-		if v.lagging then
-			return true
+script:GetAttributeChangedSignal("ViewerUserIds"):Connect(function()
+	readViewers()
+	for _, p in Players:GetPlayers() do
+		if fan:viewer(p) and not canView(p) then
+			fan:remove(p) -- no further pixel; its client hides the picture on the error status
+			frames:FireClient(p, "status", "error", NOT_AUTHORIZED)
+		elseif canView(p) and fan:viewer(p) == nil then
+			frames:FireClient(p, "status", "connecting", nil) -- newly allowed: its client asks for the stream
 		end
 	end
-	return false
-end
+end)
 
--- target nil = every eligible viewer (allowed and not lagging)
-local function fire(target: Player?, ...: any)
-	if target then
-		if canView(target) then
-			frames:FireClient(target, ...)
-		end
-	elseif allowed == nil and not anyLagging() then
-		frames:FireAllClients(...)
-	else
-		for _, p in Players:GetPlayers() do
-			local v = viewers[p]
-			if canView(p) and not (v and v.lagging) then
-				frames:FireClient(p, ...)
-			end
-		end
-	end
-end
-
-type LogEntry = { session: number, seq: number, t: number, cum: number }
-local forwardLog: { LogEntry } = {}
-local forwardedFrames = 0
-local broadcastBytes = 0 -- cumulative bytes fanned out to every viewer (for per-viewer bytes in flight)
-
-local function noteForwarded(target: Player?, sessionId: number, seq: number)
-	if target then
-		local v = viewers[target]
-		if v then
-			v.lastSentSession, v.lastSentSeq = sessionId, seq
-		end
-		return
-	end
-	local now = os.clock()
-	table.insert(forwardLog, { session = sessionId, seq = seq, t = now, cum = broadcastBytes })
-	while #forwardLog > 0 and now - forwardLog[1].t > FORWARD_LOG_SECONDS do
-		table.remove(forwardLog, 1)
-	end
-	forwardedFrames += 1
-	for p, v in viewers do
-		if not v.lagging and canView(p) then
-			v.lastSentSession, v.lastSentSeq = sessionId, seq
-		end
-	end
-end
-
-local function send(target: Player?, m: RelayCore.Message)
-	if m.kind == "records" then
-		for _, record in m.records :: { buffer } do
-			fire(target, "part", record)
-		end
-		if target == nil then
-			broadcastBytes += m.bytes or 0
-		end
-		noteForwarded(target, m.sessionId :: number, m.toSeq :: number)
-	elseif m.kind == "advance" then
-		fire(target, "advance", m.sessionId, m.fromSeq, m.toSeq)
-		noteForwarded(target, m.sessionId :: number, m.toSeq :: number)
-	else
-		fire(target, "status", m.status, m.detail)
+local function broadcast(m: RelayCore.Message)
+	fan:broadcast(m, os.clock())
+	if m.kind ~= "status" then
+		forwardedFrames += 1
 	end
 end
 
@@ -222,7 +150,7 @@ local function flushPlayout(now: number)
 	while #playout > 0 and playout[1].due <= now do
 		local item = table.remove(playout, 1) :: Due
 		for _, m in item.messages do
-			send(nil, m)
+			broadcast(m)
 		end
 	end
 	publishStatus()
@@ -232,7 +160,7 @@ end
 local function setServerStatus(status: RelayCore.Status, detail: string?)
 	if relay.status ~= status or relay.detail ~= detail then
 		relay.status, relay.detail = status, detail
-		send(nil, { kind = "status", status = status, detail = detail } :: RelayCore.Message)
+		broadcast({ kind = "status", status = status, detail = detail } :: RelayCore.Message)
 		publishStatus()
 	end
 end
@@ -240,115 +168,46 @@ end
 local function broadcastNow(messages: { RelayCore.Message }?)
 	if messages then
 		for _, m in messages do
-			send(nil, m)
+			broadcast(m)
 		end
 	end
 	publishStatus()
 end
 
--- -------------------------------------------------------------------------------------------------- client sync
+-- ------------------------------------------------------------------------------------------------ client messages
 
-local lastSync: { [Player]: number } = {}
-local pendingSync: { [Player]: boolean } = {}
-local lastKeyframeRequest = 0
-
-local function syncPlayer(player: Player, force: boolean?)
-	if not canView(player) then
-		frames:FireClient(player, "status", "error", "not authorized to view this screen")
-		return
+local function count(x: unknown, hi: number): number?
+	if typeof(x) == "number" and x == x and x >= 0 and x < hi then
+		return x :: number
 	end
-	local now = os.clock()
-	if not force and now - (lastSync[player] or -math.huge) < SYNC_COOLDOWN then
-		return
-	end
-	lastSync[player] = now
-	if relay.historyBytes > SYNC_HISTORY_LIMIT or #relay.history > SYNC_HISTORY_FRAMES then
-		pendingSync[player] = true -- replaying that much would take longer than a fresh keyframe
-		if now - lastKeyframeRequest >= KEYFRAME_COOLDOWN then
-			lastKeyframeRequest = now
-			relay:requestKeyframe()
-		end
-		frames:FireClient(player, "status", "connecting", "catching up with the stream")
-		return
-	end
-	pendingSync[player] = nil
-	local v = viewerOf(player)
-	if v.lagging or v.ackSeq == 0 then
-		-- measure lag from here on (a desync-triggered re-sync keeps the window: a viewer that keeps re-syncing
-		-- must still be found to be behind)
-		v.syncedAt = now
-	end
-	v.lagging = false
-	frames:FireClient(player, "reset")
-	local messages = relay:syncMessages()
-	for _, m in messages do
-		send(player, m)
-	end
-	if relay.seq > 0 then
-		v.lastSentSession, v.lastSentSeq = relay.sessionId, relay.seq
-	end
-	if #messages <= 1 and relay.status == "live" and now - lastKeyframeRequest >= KEYFRAME_COOLDOWN then
-		lastKeyframeRequest = now
-		relay:requestKeyframe() -- no keyframe in the history yet: the next poll asks for one (broadcast to all)
-	end
+	return nil
 end
 
-frames.OnServerEvent:Connect(function(player: Player, kind: unknown, a: unknown, b: unknown, c: unknown)
+frames.OnServerEvent:Connect(function(player: Player, kind: unknown, a: unknown, _b: unknown, c: unknown, d: unknown)
 	if kind == "sync" then
-		syncPlayer(player)
-	elseif kind == "ack" and typeof(a) == "number" and typeof(b) == "number" then
-		local v = viewerOf(player)
-		local session, seq = a :: number, b :: number
-		if typeof(c) == "number" and c == c and c >= 0 and c < 10000 then
-			v.costMs = c :: number
+		if not canView(player) then
+			frames:FireClient(player, "status", "error", NOT_AUTHORIZED)
+			return
 		end
-		if session ~= v.ackSession then
-			v.ackSession, v.ackSeq = session, seq
-		elseif seq > v.ackSeq then
-			v.ackSeq = seq
-		end
-		if v.lagging and v.ackSession == v.lastSentSession and v.ackSeq >= v.lastSentSeq then
-			v.lagging = false -- caught up with everything it was sent: rejoin the live stream with a fresh sync
-			syncPlayer(player, true)
+		fan:sync(player, count(a, 1e15), os.clock())
+	elseif kind == "ack" then
+		local processed = count(d, 1e15)
+		if processed then
+			fan:ack(player, processed, os.clock(), count(c, 10000))
 		end
 	end
 end)
 
 Players.PlayerRemoving:Connect(function(player: Player)
-	lastSync[player] = nil
-	pendingSync[player] = nil
-	viewers[player] = nil
+	fan:remove(player)
 end)
 
 -- ---------------------------------------------------------------------------------------------- rate control
 
 local rate = num("StartBytesPerSecond", 1000000, 10000, 1e9)
-local fpsCap = 10 -- frames/s every viewer can decode (from the decode cost reported with acks); ramps up from 10
+local fpsCap = 10 -- frames/s the median viewer can decode (from the decode cost reported with acks); ramps up from 10
 local controlBytes, controlAt = 0, os.clock()
-
--- Bytes sent to a viewer that it has not acknowledged yet (reliable messages cannot be recalled: this is its backlog).
-local function viewerInflight(v: Viewer): number
-	for i = #forwardLog, 1, -1 do
-		local e = forwardLog[i]
-		if e.session == v.ackSession and e.seq <= v.ackSeq then
-			return broadcastBytes - e.cum
-		end
-	end
-	local first = forwardLog[1]
-	if first and first.t >= v.syncedAt then
-		return broadcastBytes - first.cum -- nothing of the logged stream acknowledged yet (lower bound)
-	end
-	return 0
-end
-
-local function viewerLag(v: Viewer, now: number): number
-	for _, e in forwardLog do
-		if e.t >= v.syncedAt and not (e.session == v.ackSession and e.seq <= v.ackSeq) then
-			return now - e.t
-		end
-	end
-	return 0
-end
+local lastKeyframeRequest = -math.huge
 
 local function control()
 	local now = os.clock()
@@ -359,58 +218,37 @@ local function control()
 	local maxRate = num("MaxBytesPerSecond", 8000000, 10000, 1e9)
 	local minRate = math.min(num("MinBytesPerSecond", 100000, 10000, 1e9), maxRate)
 	local target = num("TargetLagSeconds", 0.35, 0.05, 10)
-	local dropLag = num("LagDropSeconds", 4, 0.5, 60)
 	local demand = (relay.forwardedBytes - controlBytes) / dt
 	controlBytes, controlAt = relay.forwardedBytes, now
 	local budgetMs = num("ClientDecodeBudgetMs", 10, 2, 50)
-	local decodeFps = 60
-	local maxLag, measured, lagging, count = 0, 0, 0, 0
-	for p, v in viewers do
-		if canView(p) then
-			count += 1
-			if v.lagging then
-				lagging += 1
-			elseif now - v.syncedAt > 2 then
-				local lag = viewerLag(v, now)
-				local inflight = viewerInflight(v)
-				local maxInflight = math.clamp(rate * 0.6, 128 * 1024, 8 * 1024 * 1024)
-				measured += 1
-				if lag > dropLag or inflight > maxInflight then
-					v.lagging = true -- stop feeding it; it rejoins once it acknowledged what it was sent
-					lagging += 1
-					warn(string.format("[RLPS] %s is %.1f s / %d KB behind: paused until it catches up", p.Name, lag,
-						inflight // 1024))
-				else
-					maxLag = math.max(maxLag, lag)
-					if v.costMs > 0 then -- a client decodes for budgetMs per Heartbeat (~60 Hz); keep 30 % headroom
-						decodeFps = math.min(decodeFps, budgetMs * 60 * 0.7 / v.costMs)
-					end
-				end
-			end
-		end
-	end
-	if measured > 0 then
-		if maxLag > target * 2 then
+	local st = fan:stats(now)
+	if st.measured > 0 then
+		if st.lag > target * 2 then
 			rate = math.max(minRate, rate * 0.7)
-		elseif maxLag > target then
+		elseif st.lag > target then
 			rate = math.max(minRate, rate * 0.9)
 		elseif demand >= rate * 0.6 then
-			rate = math.min(maxRate, rate * 1.12 + 20000) -- the stream uses the budget and everyone keeps up: grow
+			rate = math.min(maxRate, rate * 1.12 + 20000) -- the stream uses the budget and viewers keep up: grow
 		end
-	end
-	rate = math.clamp(rate, minRate, maxRate)
-	if measured > 0 then
+		-- a client decodes for budgetMs per Heartbeat (~60 Hz); keep 30 % headroom
+		local decodeFps = if st.costMs > 0 then budgetMs * 60 * 0.7 / st.costMs else 60
 		local fpsTarget = math.clamp(decodeFps, 2, 60)
 		fpsCap = if fpsTarget < fpsCap then fpsTarget else math.min(fpsTarget, fpsCap + 2) -- drop at once, recover slowly
-		if maxLag > num("TargetLagSeconds", 0.35, 0.05, 10) * 2 then
+		if st.lag > target * 2 then
 			fpsCap = math.max(2, fpsCap * 0.8)
 		end
 	end
+	rate = math.clamp(rate, minRate, maxRate)
+	if fan:wantsKeyframe() and now - lastKeyframeRequest >= KEYFRAME_COOLDOWN then
+		lastKeyframeRequest = now
+		relay:requestFreshKeyframe() -- late joiners / slow viewers wait for it; the next polls ask for one
+	end
 	script:SetAttribute("FpsCap", math.floor(fpsCap * 10 + 0.5) / 10)
 	script:SetAttribute("RateBps", math.floor(rate))
-	script:SetAttribute("MaxLagMs", math.floor(maxLag * 1000))
-	script:SetAttribute("Viewers", count)
-	script:SetAttribute("LaggingViewers", lagging)
+	script:SetAttribute("LagMs", math.floor(math.min(st.lag, 999) * 1000))
+	script:SetAttribute("MaxLagMs", math.floor(math.min(st.maxLag, 999) * 1000))
+	script:SetAttribute("Viewers", st.viewers)
+	script:SetAttribute("LaggingViewers", st.lagging)
 	script:SetAttribute("ForwardFps", math.floor(forwardedFrames / dt * 10 + 0.5) / 10)
 	forwardedFrames = 0
 	frames:SetAttribute("DecodeBudgetMs", num("ClientDecodeBudgetMs", 10, 2, 50))
@@ -517,11 +355,6 @@ local function schedule(data: buffer): (boolean, string?)
 		else
 			enqueue(messages, arrival + e.tOffsetMs / 1000)
 		end
-		if next(pendingSync) and #relay.history <= 2 and relay.history[1] and relay.history[1].records then
-			for p in pendingSync do -- a keyframe just restarted the history: replay it to the waiting players
-				task.defer(syncPlayer, p, true)
-			end
-		end
 	end
 	return true, nil
 end
@@ -542,15 +375,15 @@ local function pollOnce(): number
 	if bodyMode == nil or probedUrl ~= base then
 		probe(base, auth)
 	end
-	local after, session, key, idle = relay:pollParams()
+	local after, session, key, idle, fresh = relay:pollParams()
 	local configuredMs = math.floor(num("PollWaitMs", 15000, 0, 25000))
 	local waitMs = math.min(configuredMs, effectiveWaitMs or configuredMs)
 	local batchMs = math.floor(num("BatchMs", 150, 0, 1000))
 	local maxBytes = math.floor(math.clamp(rate * 1.5, 256 * 1024, 8 * 1024 * 1024))
 	local url = string.format(
-		"%s/v1/frames?after=%d&session=%d&key=%d&wait=%d&idle=%d&rate=%d&batch=%d&max=%d&enc=%d&fps=%d",
-		base, after, session, if key then 1 else 0, waitMs, if idle then 1 else 0, math.floor(rate), batchMs, maxBytes,
-		if bodyMode == "raw" then 1 else 0, math.max(1, math.floor(fpsCap)))
+		"%s/v1/frames?after=%d&session=%d&key=%d&fresh=%d&wait=%d&idle=%d&rate=%d&batch=%d&max=%d&enc=%d&fps=%d",
+		base, after, session, if key then 1 else 0, if fresh then 1 else 0, waitMs, if idle then 1 else 0,
+		math.floor(rate), batchMs, maxBytes, if bodyMode == "raw" then 1 else 0, math.max(1, math.floor(fpsCap)))
 	local ok, res = pcall(function(): any
 		return HttpService:RequestAsync({ Url = url, Method = "GET", Headers = { Authorization = auth } })
 	end)

@@ -274,12 +274,16 @@ end
 
 -- ------------------------------------------------------------------------------------------------------ networking
 
+-- Bytes of part records processed (or dropped) so far. The server keeps what it sent but this client has not
+-- processed yet — its backlog — within about a second of this client's speed (RlpsFanout); acks report it.
+local processed = 0
+
 local lastSync = -math.huge
 local function requestSync()
 	local now = os.clock()
 	if now - lastSync >= SYNC_COOLDOWN then
 		lastSync = now
-		frames:FireServer("sync")
+		frames:FireServer("sync", processed)
 	end
 end
 
@@ -289,13 +293,31 @@ type Msg = { kind: string, a: unknown, b: unknown, c: unknown }
 local queue: { Msg } = {}
 local qHead, qTail = 1, 0 -- explicit bounds: processed slots are set to nil, so `#queue` would be meaningless
 local lastAckAt = 0
-local ackedSession, ackedSeq = 0, 0
+local ackedSession, ackedSeq, ackedBytes = 0, 0, 0
 local decodeSpent = 0 -- seconds of decoding spent on the frame being assembled
 local costMs = 0 -- moving average decode cost of one complete frame (sent with acks: the server derives a fps cap)
+
+local function countPart(a: unknown)
+	if typeof(a) == "buffer" then
+		processed += buffer.len(a :: buffer)
+	end
+end
+
+local function dropQueue()
+	for i = qHead, qTail do
+		local m = queue[i]
+		if m and m.kind == "part" then
+			countPart(m.a) -- dropped parts count as processed: the server must not wait for them
+		end
+	end
+	table.clear(queue)
+	qHead, qTail = 1, 0
+end
 
 local function handle(m: Msg)
 	local kind, a, b, c = m.kind, m.a, m.b, m.c
 	if kind == "part" then
+		countPart(a)
 		if typeof(a) ~= "buffer" then
 			return
 		end
@@ -332,12 +354,13 @@ frames.OnClientEvent:Connect(function(kind: unknown, a: unknown, b: unknown, c: 
 	end
 	if kind == "status" and a == "stopped" then
 		-- sharing stopped: drop everything still queued at once (no further pixel of the owner's screen is shown)
-		table.clear(queue)
-		qHead, qTail = 1, 0
+		dropQueue()
 	end
 	if qTail - qHead + 1 >= MAX_QUEUE then
-		table.clear(queue)
-		qHead, qTail = 1, 0
+		dropQueue()
+		if kind == "part" then
+			countPart(a)
+		end
 		core:reset()
 		requestSync()
 		return
@@ -377,13 +400,13 @@ end
 
 local function sendAck()
 	local now = os.clock()
-	if core.framesCompleted == 0 or now - lastAckAt < ACK_INTERVAL then
+	if now - lastAckAt < ACK_INTERVAL then
 		return
 	end
-	if core.sessionId ~= ackedSession or core.seq ~= ackedSeq then
+	if core.sessionId ~= ackedSession or core.seq ~= ackedSeq or processed ~= ackedBytes then
 		lastAckAt = now
-		ackedSession, ackedSeq = core.sessionId, core.seq
-		frames:FireServer("ack", core.sessionId, core.seq, costMs)
+		ackedSession, ackedSeq, ackedBytes = core.sessionId, core.seq, processed
+		frames:FireServer("ack", core.sessionId, core.seq, costMs, processed)
 	end
 end
 

@@ -40,13 +40,15 @@
             "StartBytesPerSecond": 1000000,
             "MinBytesPerSecond": 100000,
             "TargetLagSeconds": 0.35,
-            "LagDropSeconds": 4,
             "ClientDecodeBudgetMs": 10,
             "ViewerUserIds": ""
           }
         },
         "RlpsRelayCore": {
           "$path": "roblox/src/server/RlpsRelayCore.luau"
+        },
+        "RlpsFanout": {
+          "$path": "roblox/src/server/RlpsFanout.luau"
         },
         "RlpsProtocol": {
           "$path": "roblox/src/shared/RlpsProtocol.luau"

@@ -575,7 +575,7 @@ class Harness:
         try:
             emu = self.start_emulator(f"http://127.0.0.1:{service.address[1]}", token, ctl,
                                       {"StartBytesPerSecond": start_rate, "MaxBytesPerSecond": 4_000_000,
-                                       "MinBytesPerSecond": 50_000, "LagDropSeconds": 3})
+                                       "MinBytesPerSecond": 50_000})
         finally:
             os.environ.pop("RLPS_EMU_THROTTLE_Slow", None)
         try:

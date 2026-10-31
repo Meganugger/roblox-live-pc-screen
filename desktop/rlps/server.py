@@ -1,6 +1,6 @@
 """RLPS frame service: one authenticated long-poll endpoint serving bundles of encoded frames from one chain.
 
-``GET /v1/frames?after=<seq>&session=<id>&key=<0|1>&wait=<ms>&idle=<0|1>&rate=<B/s>&batch=<ms>&max=<bytes>&enc=<0|1>``
+``GET /v1/frames?after=<seq>&session=<id>&key=<0|1>&fresh=<0|1>&wait=<ms>&idle=<0|1>&rate=<B/s>&batch=<ms>&max=<bytes>&enc=<0|1>``
 with ``Authorization: Bearer <token>``. The body is one **bundle** (``protocol.BUNDLE_*``) of containers, oldest
 first, as standard base64 text (``enc=0``) or raw bytes (``enc=1``, only after ``GET /v1/probe`` proved that the
 poller receives bytes unchanged). See docs/PROTOCOL.md.
@@ -8,7 +8,9 @@ poller receives bytes unchanged). See docs/PROTOCOL.md.
 Frames are encoded **once, at capture time**, into a chain (keyframe, then deltas against the decoder-side picture)
 under a byte-rate budget (``rate`` reported by the Roblox server's congestion control, capped by the app's
 ``max_rate``). A poll gets every record newer than ``after`` (several frames per request: ``batch`` ms are collected
-after the first new frame), or the chain from its latest keyframe when ``after`` is unknown, or STOPPED / UNCHANGED.
+after the first new frame), or the chain from its latest keyframe when ``after`` is unknown (or ``key=1``), or
+STOPPED / UNCHANGED. ``fresh=1`` continues the chain but makes the next captured frame a keyframe (viewers of the
+poller need one), unless the chain already has a keyframe newer than ``after``.
 
 The service binds to 127.0.0.1 by default; publish it over HTTPS with a tunnel or reverse proxy. It has no other
 routes, accepts no request bodies and never exposes files, commands, input control or anything but the shared frames.
@@ -279,7 +281,7 @@ class FrameStore:
 
     def respond(self, after: int, session: int, key: bool, wait_s: float, idle: bool = False, *,
                 rate: float | None = None, batch_s: float = 0.0, max_bytes: int = DEFAULT_MAX_BYTES,
-                fps: float | None = None) -> bytes:
+                fps: float | None = None, fresh: bool = False) -> bytes:
         """Return the bundle for one poll (see module docstring)."""
         deadline = self._clock() + max(0.0, wait_s)
         with self._cond:
@@ -288,6 +290,9 @@ class FrameStore:
             if rate is not None and rate > 0:
                 self._requested_rate, self._requested_at = float(rate), now
                 self._requested_fps = float(fps) if fps else None
+            if fresh and self.live and session == self.session_id and not any(
+                    r.keyframe and r.seq > after for r in self._ring):
+                self._force_key = True  # the poller's viewers need a new keyframe; its chain continues until then
             hold_while_stopped = idle and not self.live  # never delays news of a stop: only already-idle pollers
             asked_key = False
             while True:
@@ -474,7 +479,7 @@ class FrameService:
         try:
             data = self.store.respond(q.after, q.session, q.key, q.wait_ms / 1000.0, q.idle,
                                       rate=q.rate or None, batch_s=q.batch_ms / 1000.0, max_bytes=q.max_bytes,
-                                      fps=q.fps or None)
+                                      fps=q.fps or None, fresh=q.fresh)
         finally:
             self._slots.release()
         if q.raw:
@@ -494,6 +499,7 @@ class Query:
     after: int = 0
     session: int = 0
     key: bool = False
+    fresh: bool = False  # continue the chain, next captured frame = keyframe
     wait_ms: int = DEFAULT_WAIT_MS
     idle: bool = False
     rate: int = 0  # bytes/s the poller can forward (0 = not reported)
@@ -505,7 +511,7 @@ class Query:
 
 def parse_query(query: str) -> Query:
     """Strictly parse the poll parameters. Raises ValueError on anything unexpected."""
-    allowed = {"after", "session", "key", "wait", "idle", "rate", "batch", "max", "enc", "fps"}
+    allowed = {"after", "session", "key", "fresh", "wait", "idle", "rate", "batch", "max", "enc", "fps"}
     values: dict[str, str] = {}
     for name, value in parse_qsl(query, keep_blank_values=True, strict_parsing=bool(query), max_num_fields=12):
         if name not in allowed or name in values:
@@ -527,6 +533,7 @@ def parse_query(query: str) -> Query:
         after=uint("after", 0, 0xFFFFFFFF),
         session=uint("session", 0, 0xFFFFFFFF),
         key=uint("key", 0, 1) == 1,
+        fresh=uint("fresh", 0, 1) == 1,
         wait_ms=uint("wait", DEFAULT_WAIT_MS, MAX_WAIT_MS),
         idle=uint("idle", 0, 1) == 1,
         rate=uint("rate", 0, 1_000_000_000),
