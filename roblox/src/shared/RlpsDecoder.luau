@@ -41,8 +41,10 @@ export type PartHeader = {
 
 export type PartRef = { header: PartHeader, offset: number, length: number } -- record = header + payload
 
--- Union of the pixel rectangles written by applyRecord (x1/y1 exclusive); start from Decoder.emptyBounds().
-export type Bounds = { x0: number, y0: number, x1: number, y1: number }
+-- Union of the pixel rectangles written by applyRecord (x1/y1 exclusive); start from Decoder.emptyBounds(). With
+-- `cells` (one byte per DIRTY_CELL x DIRTY_CELL pixel cell, row-major, `cellsX` per row) every written cell is also
+-- marked, so a client can redraw several small rectangles instead of their bounding box.
+export type Bounds = { x0: number, y0: number, x1: number, y1: number, cells: buffer?, cellsX: number? }
 
 export type Container = {
 	state: number,
@@ -63,6 +65,8 @@ export type Container = {
 export type Decompress = (buffer, number) -> (buffer?, string?)
 
 local Decoder = {}
+
+Decoder.DIRTY_CELL = 16 -- pixels per dirty-cell side (Bounds.cells)
 
 function Decoder.parsePartHeader(data: buffer, off: number): (PartHeader?, string?)
 	if off < 0 or off + PH > buffer.len(data) then
@@ -313,6 +317,15 @@ local function grow(bounds: Bounds?, x0: number, y0: number, tw: number, th: num
 		bounds.y0 = math.min(bounds.y0, y0)
 		bounds.x1 = math.max(bounds.x1, x0 + tw)
 		bounds.y1 = math.max(bounds.y1, y0 + th)
+		local cells = bounds.cells
+		if cells then
+			local cx = bounds.cellsX :: number
+			for cy = y0 // 16, (y0 + th - 1) // 16 do
+				for c = x0 // 16, (x0 + tw - 1) // 16 do
+					buffer.writeu8(cells, cy * cx + c, 1)
+				end
+			end
+		end
 	end
 end
 

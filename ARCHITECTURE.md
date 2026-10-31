@@ -16,12 +16,12 @@ Windows desktop ─mss/DXGI─► desktop app (Python)                        Ro
 | Component | Path | Responsibility |
 | --- | --- | --- |
 | Codec + protocol (Python) | `desktop/rlps/protocol.py`, `codec.py`, `dct.py`, `hybrid.py` | tiles, bit-exact DCT, hybrid encoder with rate control and scroll copies, parts / containers / bundles, reference decoder |
-| Capture | `desktop/rlps/capture.py` | `mss` (GDI) or DXGI (`dxcam`) monitor / region capture, resize with integer factors + letterbox |
+| Capture | `desktop/rlps/capture.py`, `windows.py` | `mss` (GDI) or DXGI (`dxcam`) monitor / region capture; one window or one browser tab's page via `PrintWindow` (Windows); resize with integer factors + letterbox |
 | Frame service | `desktop/rlps/server.py` | bearer auth, rate limits, long-poll, encode-once chain ring, bundles, `/v1/probe` |
 | App | `desktop/rlps/app.py` | CLI / Tk window, explicit Start / Stop, sharing indicator, profiles, token config |
-| Roblox shared | `roblox/src/shared/` | protocol constants, container / part / bundle decoder, `RlpsDct`, frame assembler (`RlpsClientCore`), base64 fallback |
+| Roblox shared | `roblox/src/shared/` | protocol constants, container / part / bundle decoder, `RlpsDct`, frame assembler with dirty rectangles (`RlpsClientCore`), view math (`RlpsView`), base64 fallback |
 | Roblox server | `roblox/src/server/` | `RlpsServer` (poll loop, playout, rate control, diagnostics), `RlpsRelayCore` (chain validation, poll cursor, status), `RlpsFanout` (played history, per-viewer delivery) |
-| Roblox client | `roblox/src/client/` | decode queue, EditableImage + SurfaceGui per tagged screen, status screens, acks |
+| Roblox client | `roblox/src/client/` | decode queue, dirty-rectangle redraws with visibility culling, EditableImage shown on every tagged screen + full screen + mini player, cinema camera, viewer controls, status screens, acks |
 | TV model | `roblox/models/RlpsTV.model.json` → `Workspace.RlpsTV` (Rojo) | screen part tagged `RlpsScreen` (16×9 studs), bezel, neck, base |
 | Windows scripts | `scripts/windows/*.bat` | setup, show token, start app, start quick tunnel, emergency stop |
 | Tests | `desktop/tests/`, `roblox/tests/`, `tests/e2e/` | unit tests, cross-language Luau specs, live pipeline test under a Lune engine emulation (`docs/testing/E2E.md`) |
@@ -45,9 +45,13 @@ Windows desktop ─mss/DXGI─► desktop app (Python)                        Ro
    max(128 KiB, 1 s × its measured delivery rate). A viewer whose window is full is *held*; once drained it receives
    exactly the frames it missed, or waits for the next keyframe when that is cheaper (requested with `fresh=1`: the
    chain continues, the next capture is a keyframe). Status messages, Stop included, reach every viewer at once.
-5. **Decode and show** (`RlpsClient`, `RlpsClientCore`). Clients decode within a per-Heartbeat time budget, draw each
-   completed frame into one EditableImage shown on every tagged screen, and acknowledge processed bytes and decode time
-   (≤ 10/s).
+5. **Decode and show** (`RlpsClient`, `RlpsClientCore`, D-0011). Clients decode within a per-Heartbeat time budget and
+   redraw once per game frame — only the **dirty rectangles** (runs of changed 16 px cells, at most 12, else their
+   bounding box) are copied (pooled buffers) and written to the one EditableImage that every view shows: each tagged
+   TV screen, the **full-screen** overlay, the **mini player**; **cinema** frames a TV with the camera. Redraws are
+   skipped while no picture is visible (screens out of range, behind the camera or seen from behind, no overlay
+   open) and far screens are redrawn at ≤ 10 Hz; frames are still decoded so the picture is exact when it comes back.
+   Clients acknowledge processed bytes and decode time (≤ 10/s).
 6. **Adapt** (`RlpsServer`, D-0008/D-0009). Every 0.5 s the byte rate follows the **median** viewer's delay (AIMD) and
    the fps cap its decode time; both go to the PC with every poll. A minority of slow viewers is held and caught up
    instead of degrading the stream for everyone.

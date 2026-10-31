@@ -33,6 +33,8 @@
 --   TargetLagSeconds     number  acceptable delay of the median viewer (default 0.35)
 --   ClientDecodeBudgetMs number  decode time per client Heartbeat (default 10 ms; replicated to clients)
 --   ViewerUserIds        string  optional comma-separated UserIds allowed to see the screen (empty = everyone)
+--   ViewerModes          string  viewer modes offered to players: any of "fullscreen,cinema,mini" (default all;
+--                                empty = no viewer controls); replicated to clients
 -- Read-only status attributes: Status, StatusDetail, Containers, ForwardedBytes, Dropped, LastError, RateBps, LagMs
 -- (median viewer delay), MaxLagMs, FpsCap, Viewers, LaggingViewers (held or waiting for a keyframe), BodyMode,
 -- ForwardFps.
@@ -252,6 +254,7 @@ local function control()
 	script:SetAttribute("ForwardFps", math.floor(forwardedFrames / dt * 10 + 0.5) / 10)
 	forwardedFrames = 0
 	frames:SetAttribute("DecodeBudgetMs", num("ClientDecodeBudgetMs", 10, 2, 50))
+	frames:SetAttribute("ViewerModes", tostring(attr("ViewerModes", "fullscreen,cinema,mini")))
 end
 
 RunService.Heartbeat:Connect(function()

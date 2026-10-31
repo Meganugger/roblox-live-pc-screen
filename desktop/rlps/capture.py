@@ -277,10 +277,18 @@ class DxgiSource:
         self._last = None
 
 
-def make_source(backend: str = "auto", monitor: int = 1, region: Region | None = None):
-    """``mss`` (GDI/X11/Quartz), ``dxgi`` (dxcam), or ``auto``: DXGI on Windows when available, otherwise mss."""
+def make_source(backend: str = "auto", monitor: int = 1, region: Region | None = None, *, window: str | None = None,
+                tab: str | None = None):
+    """One window (``window``), one browser tab's page (``tab``, see ``rlps.windows``), or a monitor / region with
+    ``mss`` (GDI/X11/Quartz), ``dxgi`` (dxcam), or ``auto``: DXGI on Windows when available, otherwise mss."""
     if backend not in ("auto", "mss", "dxgi"):
         raise ValueError(f"unknown capture backend {backend!r}")
+    if window or tab:
+        from .windows import WindowSource
+
+        if tab:
+            return WindowSource(tab, content_only=True, follow_title=True)
+        return WindowSource(window or "")
     if backend == "dxgi" or (backend == "auto" and sys.platform == "win32" and region is None and monitor >= 1):
         try:
             src = DxgiSource(monitor)

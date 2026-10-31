@@ -212,3 +212,15 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   `trycloudflare.com` → hint on the TV, no pixel; `*.trycloudflare.com` → exact desktop).
 - **Results**: ruff clean; Python 85 passed; Luau 6,588 / 0; Rojo + luau-lsp OK; live pipeline **26 / 26**.
 
+## TR-0015 — Client redraw economy, viewer modes, window / tab sharing (29th session, 2026-10-31)
+
+- **Commands / results** (sandbox): `ruff check .` clean; `cd desktop && python3 -m pytest -q` → **93 passed, 2 skipped**
+  (the two real-Windows tests); `python3 roblox/tests/run_luau_tests.py --analyze` → 8 modules + 7 specs analyzed OK,
+  **6,657 / 0** (new: dirty rectangles on a scattered-change vector sequence, shadow picture CRC-exact; `RlpsView.spec`);
+  `scripts/check_roblox.sh` OK (camera / ContextActionService / DepthOfField code type-checked against the Roblox API);
+  `python3 tests/e2e/run_e2e.py` → **31 / 31** checks.
+- **Measured**: E2E-23 two corner squares → `LastRedrawPixels` 6,144 of 589,824; E2E-24 45 redraws skipped while the
+  camera looked away, picture exact after looking back; E2E-26 cinema camera distance 7.970 (computed 7.970), aim 1.0.
+- **Not verified here**: real Roblox clients (WritePixelsBuffer cost per call, camera feel, DepthOfField look), window
+  capture on the owner's PC; the real-Windows tests run in CI (see PR #3 checks).
+

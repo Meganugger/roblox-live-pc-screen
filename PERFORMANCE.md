@@ -70,6 +70,24 @@ The Lune emulator decodes about 8–15 fps of DCT-heavy 768×432 frames (interpr
 measured decode time. Real Roblox clients run `--!native` code (documented for server scripts; client behaviour is an
 owner test, F-0040); luavid measured 3.4× for a comparable decoder.
 
+## Client redraws (MEASURED under emulation, D-0011)
+
+What a Roblox client does with a decoded frame: write only what changed into its EditableImage, once per game frame,
+and nothing while no TV (or overlay) is in view.
+
+| Situation (1024×576 picture = 589,824 pixels) | Pixels written per redraw | Before D-0011 |
+| --- | ---: | ---: |
+| two small changes in opposite corners (E2E-23) | 6,144 (1 %) | ≈ 589,000 (bounding box) |
+| one changed region (window drag, typing) | its rectangle(s) | its bounding box (same) |
+| several frames completed in one game frame (catch-up) | one redraw of their union | one redraw per frame |
+| TV behind the camera / seen from behind / > 300 studs (E2E-24) | 0 (E2E-24: 45 redraws skipped while looking away) | every frame |
+| TV 120–300 studs away | ≤ 10 redraws/s | every frame |
+
+Each redraw also costs one `WritePixelsBuffer` call per rectangle (at most 12) and a copy into a pooled buffer
+(a full-width band is one contiguous copy; the whole picture is written straight from the frame buffer). Real-client
+timings remain an owner measurement (KI-0007): watch `LastRedrawPixels`, `Redraws` and `SkippedRedraws` on
+`RlpsClient`.
+
 ## What limits quality in a real game (ESTIMATE / owner tests)
 
 1. **Roblox replication bandwidth per client** — unknown; the ack-driven controller finds it.

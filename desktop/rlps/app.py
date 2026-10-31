@@ -3,6 +3,9 @@
     python -m rlps.app                 # small always-visible window with Start/Stop sharing (Tk, stdlib)
     python -m rlps.app --no-gui        # console: start | stop | status | quit
     python -m rlps.app --list-monitors
+    python -m rlps.app --list-windows
+    python -m rlps.app --window "Notepad"        # share one app window (not what covers it)
+    python -m rlps.app --tab "YouTube"           # share one browser tab's page; pauses while another tab is shown
 
 Nothing is captured until sharing is started explicitly (button, ``start`` command or ``--start``). Stopping ends the
 capture thread, drops every stored frame and makes the frame service answer STOPPED immediately. The app never
@@ -120,8 +123,9 @@ class CaptureLoop(threading.Thread):
 class SharingController:
     """Owns the sharing state. ``start``/``stop`` are idempotent and safe to call from any thread."""
 
-    def __init__(self, store: server.FrameStore, source_factory, profile: Profile):
+    def __init__(self, store: server.FrameStore, source_factory, profile: Profile, source_label: str = "screen"):
         self.store, self.source_factory, self.profile = store, source_factory, profile
+        self.source_label = source_label
         self.stats = CaptureStats()
         self._lock = threading.RLock()
         self._thread: CaptureLoop | None = None
@@ -142,7 +146,7 @@ class SharingController:
             self._stop_event = threading.Event()
             self._thread = CaptureLoop(self.source_factory(), self.store, self.profile, self._stop_event, self.stats)
             self._thread.start()
-            log.warning("SHARING STARTED (profile %s, session %d)", self.profile.name, session)
+            log.warning("SHARING STARTED (%s, profile %s, session %d)", self.source_label, self.profile.name, session)
             return session
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -167,9 +171,19 @@ class SharingController:
             if was_active:
                 self.start()
 
+    def set_source(self, source_factory, label: str) -> None:
+        """Share something else (monitor, window, tab); a running share restarts on the new source."""
+        with self._lock:
+            was_active = self._thread is not None
+            self.stop()
+            self.source_factory, self.source_label = source_factory, label
+            if was_active:
+                self.start()
+
     def status_text(self, service: server.FrameService | None = None) -> str:
         s = self.stats.snapshot()
-        lines = [f"sharing: {'ON' if self.active else 'off'} ({s['state']}), profile {self.profile.name}"]
+        lines = [f"sharing: {'ON' if self.active else 'off'} ({s['state']}), profile {self.profile.name}",
+                 f"source: {self.source_label}"]
         if self.active:
             lines.append(f"frames: {s['frames_published']} sent / {s['frames_captured']} captured, "
                          f"{s['frame_size'][0]}x{s['frame_size'][1]} from {s['source_size'][0]}x{s['source_size'][1]}"
@@ -246,7 +260,50 @@ def run_console(controller: SharingController, service: server.FrameService) -> 
         controller.stop()
 
 
-def run_gui(controller: SharingController, service: server.FrameService) -> None:  # pragma: no cover - needs a display
+@dataclass(frozen=True)
+class SourceChoice:
+    label: str  # what the picker and the status line show
+    kind: str  # "monitor" | "window"
+    monitor: int = 1
+    window: str = ""  # window query (hwnd:<n>) for kind == "window"
+    title: str = ""  # the window's title when listed (tab mode derives its query from it)
+
+    def factory(self, backend: str, tab_only: bool = False):
+        """Source factory for SharingController; ``tab_only`` shares the page of the browser tab now shown."""
+        if self.kind == "window":
+            if tab_only:
+                from .windows import tab_query
+
+                q = tab_query(self.title)
+                return (lambda: capture.make_source(tab=q)), f"browser tab {q!r}"
+            return (lambda: capture.make_source(window=self.window)), f"window {self.title!r}"
+        return (lambda: capture.make_source(backend, self.monitor)), self.label
+
+
+def source_choices(monitors=None, windows=None) -> list[SourceChoice]:
+    """Monitors (mss numbering) then, on Windows, every shareable window (topmost first)."""
+    out = []
+    mons = monitors if monitors is not None else capture.list_monitors()
+    for i, m in enumerate(mons):
+        if i == 0 and len(mons) > 2:
+            out.append(SourceChoice(f"All monitors ({m['width']}x{m['height']})", "monitor", 0))
+        elif i > 0:
+            out.append(SourceChoice(f"Monitor {i} ({m['width']}x{m['height']})", "monitor", i))
+    if windows is None and sys.platform == "win32":  # pragma: no cover - Windows only
+        from . import windows as win
+
+        try:
+            windows = win.list_windows()
+        except capture.CaptureError:
+            windows = []
+    for w in windows or []:
+        out.append(SourceChoice(f"Window: {w.title[:70]}" + (f"  ({w.process})" if w.process else ""), "window",
+                                window=f"hwnd:{w.hwnd}", title=w.title))
+    return out
+
+
+def run_gui(controller: SharingController, service: server.FrameService,
+            backend: str = "auto") -> None:  # pragma: no cover - needs a display
     import tkinter as tk
 
     root = tk.Tk()
@@ -262,6 +319,31 @@ def run_gui(controller: SharingController, service: server.FrameService) -> None
     stop_btn.pack(side="left", padx=4)
     profile_var = tk.StringVar(value=controller.profile.name)
     tk.OptionMenu(root, profile_var, *PROFILES, command=lambda n: controller.set_profile(PROFILES[n])).pack()
+
+    def pick_source():
+        choices = source_choices()
+        win = tk.Toplevel(root)
+        win.title("What to share")
+        win.attributes("-topmost", True)
+        lb = tk.Listbox(win, width=90, height=min(18, max(4, len(choices))), font=("Segoe UI", 9))
+        for c in choices:
+            lb.insert("end", c.label)
+        lb.pack(padx=8, pady=6, fill="both", expand=True)
+        tab_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(win, variable=tab_var, text="Browser: share only this tab's page "
+                       "(sharing pauses while another tab is shown)").pack(anchor="w", padx=8)
+
+        def ok():
+            sel = lb.curselection()
+            if sel:
+                factory, label = choices[sel[0]].factory(backend, tab_only=tab_var.get())
+                controller.set_source(factory, label)
+            win.destroy()
+
+        tk.Button(win, text="Share this", width=14, command=ok).pack(pady=6)
+        lb.bind("<Double-Button-1>", lambda _e: ok())
+
+    tk.Button(root, text="Change what is shared…", command=pick_source).pack(pady=2)
     info = tk.Label(root, justify="left", anchor="w", font=("Consolas", 9), padx=6, pady=6)
     info.pack(fill="x")
 
@@ -301,6 +383,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="upper bound of the stream byte rate (default 8 MB/s; Roblox reports what it sustains)")
     ap.add_argument("--monitor", type=int, default=1, help="mss monitor index: 1 = primary (default), 0 = all")
     ap.add_argument("--region", type=capture.Region.parse, help="capture left,top,width,height instead")
+    ap.add_argument("--window", metavar="QUERY",
+                    help="share one window: title text, process name (chrome.exe) or hwnd:<n> (Windows)")
+    ap.add_argument("--tab", metavar="TITLE",
+                    help="share one browser tab's page (its title text); pauses while another tab is shown (Windows)")
+    ap.add_argument("--list-windows", action="store_true", help="list shareable windows (Windows)")
     ap.add_argument("--host", default="127.0.0.1", help="bind address (keep loopback; publish with a tunnel)")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--config", type=Path, default=default_config_path())
@@ -320,6 +407,17 @@ def main(argv: list[str] | None = None) -> int:
         for i, m in enumerate(capture.list_monitors()):
             print(f"{i}: {m['width']}x{m['height']} at ({m['left']},{m['top']})" + ("  (all)" if i == 0 else ""))
         return 0
+    if args.list_windows:
+        from . import windows
+
+        try:
+            for w in windows.list_windows():
+                l, t, r, b = w.rect
+                print(f"hwnd:{w.hwnd:<10} {r - l:>5}x{b - t:<5} {w.process:<20} {w.title}")
+        except capture.CaptureError as exc:
+            print(exc)
+            return 2
+        return 0
     cfg, created = load_or_create_config(args.config, rotate=args.rotate_token)
     if created or args.show_token or args.token_only:
         print(f"token ({'new' if created else 'existing'}, saved in {args.config}):\n  {cfg['token']}\n"
@@ -337,15 +435,18 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     service.start()
     log.info("frame service on http://%s:%d%s", *service.address, server.FRAMES_PATH)
-    controller = SharingController(store, lambda: capture.make_source(args.backend, args.monitor, args.region),
-                                   PROFILES[args.profile])
+    label = (f"browser tab {args.tab!r}" if args.tab else f"window {args.window!r}" if args.window
+             else f"region {args.region}" if args.region else f"monitor {args.monitor}")
+    controller = SharingController(store, lambda: capture.make_source(args.backend, args.monitor, args.region,
+                                                                      window=args.window, tab=args.tab),
+                                   PROFILES[args.profile], label)
     try:
         if args.start:
             controller.start()
         if args.no_gui:
             run_console(controller, service)
         else:
-            run_gui(controller, service)
+            run_gui(controller, service, args.backend)
     finally:
         controller.stop()
         service.close()

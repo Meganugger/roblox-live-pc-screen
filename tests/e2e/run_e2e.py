@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import secrets
 import shutil
@@ -247,7 +248,7 @@ class Harness:
         self.check(cid + "a", f"scene {scene}: rectangle colour visible on the TV at its screen position",
                    self.near(inside, scenes.SCENES[scene]["color"]), pixel=inside, want=scenes.SCENES[scene]["color"])
         for other, spec in scenes.SCENES.items():
-            if other != scene:
+            if other != scene and spec["rect"] != scenes.SCENES[scene]["rect"]:
                 ox, oy, ow, oh = spec["rect"]
                 bg = self.sample(img, ox + ow / 2, oy + oh / 2)
                 self.check(cid + "b", f"scene {scene}: scene {other}'s rectangle is gone (background there)",
@@ -334,6 +335,9 @@ class Harness:
             self.check("E2E-10", "after 9 rapid desktop changes both TVs settle on the exact newest frame (scene A)",
                        self.near(self.sample(rgba_m, 300, 250), scenes.SCENES["A"]["color"]), seq=seq_m,
                        frames_between=seq_m - seq_b, dropped=st["server"]["attributes"].get("Dropped"))
+
+            # L5b: redraw economy and viewer modes (RlpsClient)
+            seq_m = self.view_checks(ctl, store, seq_m)
 
             # L6: frame service outage -> error screen; service back -> picture resumes
             service.close()
@@ -635,7 +639,8 @@ class Harness:
         self.scene("A")
         controller.start()
         # the emulator hands out UserIds 1001, 1002, … in join order: Erin = 1001 (allowed), Mallory = 1002 (not)
-        emu = self.start_emulator(f"http://127.0.0.1:{service.address[1]}", token, ctl, {"ViewerUserIds": "1001"})
+        emu = self.start_emulator(f"http://127.0.0.1:{service.address[1]}", token, ctl,
+                                  {"ViewerUserIds": "1001", "ViewerModes": "cinema"})
         try:
             open(os.path.join(ctl, "join-Erin"), "w").close()
             self.wait_match(ctl, store, ["Erin"], 40, "allowed viewer Erin shows the frame")
@@ -646,7 +651,15 @@ class Harness:
             self.scene("B")
             self.wait_match(ctl, store, ["Erin"], 30, "Erin follows a change", after_seq=0)
             time.sleep(1.0)
-            m = self.read_state(ctl)["clients"]["Mallory"]
+            st = self.read_state(ctl)
+            m = st["clients"]["Mallory"]
+            self.press(ctl, "key-Erin-F")  # full screen is not offered by this owner
+            time.sleep(0.8)
+            ev = self.read_state(ctl)["clients"]["Erin"]["view"]
+            self.check("E2E-27", "ViewerModes = 'cinema': players get only the cinema button, the F key does nothing; "
+                       "a non-authorized player gets no viewer controls",
+                       ev["buttons"] == "CinemaButton" and ev["controls_enabled"] and not ev["fullscreen_enabled"]
+                       and not st["clients"]["Mallory"]["view"]["controls_enabled"], erin=ev["buttons"])
             self.check("E2E-17", "ViewerUserIds: a non-listed player gets 'not authorized', no image and no pixel data",
                        not m["picture_visible"] and m["images_created"] == 0 and m["pixel_writes"] == 0,
                        text=m["status_text"], mallory_received_bytes=m["recv_bytes"])
@@ -686,6 +699,91 @@ class Harness:
             controller.stop()
             service.close()
             shutil.copy(os.path.join(ctl, "emulator.log"), os.path.join(self.out, "emulator-badtoken.log"))
+
+    def press(self, ctl: str, what: str) -> None:
+        """Emulator command: press-<client>-<Button>, key-<client>-<KeyCode> or look-<client>-<away|tv>."""
+        open(os.path.join(ctl, what), "w").close()
+
+    def view_checks(self, ctl: str, store, after_seq: int) -> int:
+        """Dirty-rectangle redraws, redraw culling, full screen, cinema and mini player on Alice (Bob untouched)."""
+        def view(s):
+            return s["clients"]["Alice"].get("view", {})
+
+        def attrs(s):
+            return s["clients"]["Alice"].get("script_attributes") or {}
+
+        # 1. two small squares in opposite corners: only their tiles are rewritten, not the bounding box (≈ the screen)
+        self.scene("D")
+        (seq_d, _, _), st = self.wait_match(ctl, store, ["Alice", "Bob"], 30, "scene D on both", after_seq=after_seq)
+        time.sleep(1.3)  # client diagnostics are published once per second
+        st = self.read_state(ctl)
+        a = st["clients"]["Alice"]
+        px, full = attrs(st).get("LastRedrawPixels", -1), a["image_w"] * a["image_h"]
+        self.check("E2E-23", "a change in two opposite corners redraws only those tiles (dirty rectangles), not "
+                   "their bounding box", 0 < px <= 0.02 * full, last_redraw_pixels=px, frame_pixels=full)
+
+        # 2. Alice looks away: her TV is not redrawn (Bob's is); looking back draws everything that changed meanwhile
+        self.press(ctl, "look-Alice-away")
+        time.sleep(0.4)
+        before = attrs(self.read_state(ctl))
+        self.scene("A")
+        (seq_a, sha_a, _), _ = self.wait_match(ctl, store, ["Bob"], 30, "scene A on Bob", after_seq=seq_d)
+        time.sleep(1.3)
+        st = self.read_state(ctl)
+        after = attrs(st)
+        stale = st["clients"]["Alice"]["image_sha256"] != sha_a
+        self.press(ctl, "look-Alice-tv")
+        (seq_a, _, _), _ = self.wait_match(ctl, store, ["Alice"], 30, "Alice catches up when looking back",
+                                           after_seq=seq_d)
+        self.check("E2E-24", "TV out of view: no redraws while frames are still decoded; looking back shows the exact "
+                   "current picture", stale and after.get("Redraws") == before.get("Redraws")
+                   and after.get("SkippedRedraws", 0) > before.get("SkippedRedraws", 0)
+                   and after.get("FramesCompleted", 0) > before.get("FramesCompleted", 0),
+                   redraws=[before.get("Redraws"), after.get("Redraws")],
+                   skipped=[before.get("SkippedRedraws"), after.get("SkippedRedraws")])
+
+        # 3. full screen (key F), Fill, exit; mini player, expand to full screen, close
+        _, st = self.wait_for(ctl, lambda s: view(s).get("controls_enabled"), 20, "viewer controls near the TV")
+        self.press(ctl, "key-Alice-F")
+        _, st = self.wait_for(ctl, lambda s: view(s).get("fullscreen_enabled") and not view(s).get("controls_enabled"),
+                              20, "full screen open")
+        v = view(st)
+        fs_ok = v.get("fullscreen_same_image") and v.get("fullscreen_picture_visible")
+        self.press(ctl, "press-Alice-FitButton")
+        _, st = self.wait_for(ctl, lambda s: view(s).get("fullscreen_scale") == "Crop", 20, "full screen fill")
+        self.press(ctl, "press-Alice-ExitButton")
+        self.wait_for(ctl, lambda s: not view(s).get("fullscreen_enabled") and view(s).get("controls_enabled"), 20,
+                      "full screen closed")
+        self.press(ctl, "press-Alice-MiniButton")
+        _, st = self.wait_for(ctl, lambda s: view(s).get("mini_enabled"), 20, "mini player open")
+        mini_ok = view(st).get("mini_same_image") and view(st).get("mini_picture_visible")
+        self.press(ctl, "press-Alice-ExpandButton")
+        _, st = self.wait_for(ctl, lambda s: view(s).get("fullscreen_enabled") and not view(s).get("mini_enabled"), 20,
+                              "mini player expanded to full screen")
+        self.press(ctl, "key-Alice-F")
+        self.wait_for(ctl, lambda s: not view(s).get("fullscreen_enabled"), 20, "full screen closed by key")
+        self.check("E2E-25", "full screen (key F) and mini player show the live picture (same EditableImage as the "
+                   "TV); Fill crops; Exit, expand and the key close/switch modes; controls hide while a mode is open",
+                   bool(fs_ok and mini_ok), fullscreen=fs_ok, mini=mini_ok)
+
+        # 4. cinema: camera framing the TV, blur, movement held; exit restores the normal camera
+        self.press(ctl, "press-Alice-CinemaButton")
+        _, st = self.wait_for(ctl, lambda s: view(s).get("cinema_enabled") and view(s).get("camera_type") == "Scriptable",
+                              20, "cinema on")
+        v = view(st)
+        t = math.tan(math.radians(70) / 2)
+        want = max(4.5 / (t * (1 - 2 * 0.08)), 8 / (t * 1280 / 720)) / 0.96
+        cinema_ok = (abs(v["camera_distance"] - want) < 0.05 and v["camera_aim"] > 0.9999 and v["blur"]
+                     and v["movement_held"])
+        self.press(ctl, "key-Alice-C")
+        _, st = self.wait_for(ctl, lambda s: not view(s).get("cinema_enabled") and view(s).get("camera_type") == "Custom",
+                              20, "cinema off")
+        v2 = view(st)
+        self.check("E2E-26", "cinema: camera looks straight at the TV from the distance that frames it between the "
+                   "bars, background blurred, movement held; leaving restores the player's camera",
+                   cinema_ok and not v2["blur"] and not v2["movement_held"],
+                   camera_distance=round(v["camera_distance"], 3), want=round(want, 3), aim=v["camera_aim"])
+        return seq_a
 
     def scenario_secretdomain(self) -> None:
         """The secret's domain must allow the tunnel host (Roblox refuses to attach it otherwise)."""

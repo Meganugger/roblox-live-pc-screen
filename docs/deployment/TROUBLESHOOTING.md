@@ -130,6 +130,24 @@ Every part is validated before anything is drawn and the client only draws compl
 a short freeze, not as garbage. A client that loses the chain asks the server for a re-sync automatically. If it keeps
 happening, update both sides to the same release (the wire format is versioned: `docs/PROTOCOL.md`).
 
+## Sharing a window or tab: "paused", "minimized", black picture
+
+* **"paused: the window no longer shows '…'"** (status line of the sharing window) — tab mode: the browser shows
+  another tab, or the page changed its title. Switch back, or share with a shorter title text (`--tab YouTube`).
+* **"the shared window is minimized"** — restore it; the TV keeps the last picture meanwhile.
+* **"no window matches '…'"** — `python -m rlps.app --list-windows` lists what can be shared (title, process, hwnd).
+* **Black picture / other windows show up in it** — the app renders black for window capture (exclusive full-screen
+  games, DRM video); the app falls back to the window's screen area. Share the monitor instead, or turn off hardware
+  acceleration in that app.
+
+## Viewer modes (full screen / cinema / mini player)
+
+* **No buttons near the TV** — the picture must be live, the player within ~45 studs of a screen, and `ViewerModes`
+  (RlpsServer attribute) not empty. The keys F / C / M do nothing while typing in chat.
+* **Cinema camera stays after leaving** — it returns to the default camera (`CameraType` Custom, subject = the
+  character); a custom camera script of your game may need to re-apply its own settings when `ViewMode` (RlpsClient
+  attribute) goes back to `none`.
+
 ## The capture app stopped / crashed
 
 * Closing the window or Ctrl+C stops sharing first. After a crash nothing is left behind (frames only exist in memory);
