@@ -86,6 +86,20 @@ class AuthAndRoutingTests(ServiceTestCase):
         finally:
             svc.close()
 
+    def test_poller_hanging_up_mid_long_poll_is_not_an_error(self):
+        import socket
+        errors = []
+        self.svc.httpd.handle_error = lambda request, address: errors.append(address)
+        self.store.start()
+        sock = socket.create_connection(self.svc.address)
+        sock.sendall(f"GET /v1/frames?wait=300 HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"
+                     .encode())
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+        sock.close()  # RST: the response write after the long-poll fails with a broken pipe / reset
+        time.sleep(0.6)
+        self.assertEqual(errors, [])
+        self.assertEqual(self.c.get()[0], 200)  # service still healthy
+
     def test_short_token_refused(self):
         with self.assertRaises(ValueError):
             server.FrameService(server.FrameStore(), "short", port=0)

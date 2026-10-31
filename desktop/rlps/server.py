@@ -235,15 +235,19 @@ class FrameService:
 
     @staticmethod
     def _send(h: BaseHTTPRequestHandler, status: int, body: bytes, extra: dict | None = None) -> None:
-        h.send_response(status)
-        h.send_header("Content-Type", "text/plain; charset=us-ascii")
-        h.send_header("Content-Length", str(len(body)))
-        h.send_header("Cache-Control", "no-store")
-        h.send_header("X-Content-Type-Options", "nosniff")
-        for k, v in (extra or {}).items():
-            h.send_header(k, v)
-        h.end_headers()
-        h.wfile.write(body)
+        try:
+            h.send_response(status)
+            h.send_header("Content-Type", "text/plain; charset=us-ascii")
+            h.send_header("Content-Length", str(len(body)))
+            h.send_header("Cache-Control", "no-store")
+            h.send_header("X-Content-Type-Options", "nosniff")
+            for k, v in (extra or {}).items():
+                h.send_header(k, v)
+            h.end_headers()
+            h.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):  # poller/tunnel hung up mid long-poll: normal, not an error
+            h.close_connection = True
+            log.debug("client disconnected before the response was written")
 
     def _authorized(self, h: BaseHTTPRequestHandler) -> bool:
         auth = h.headers.get("Authorization", "")
