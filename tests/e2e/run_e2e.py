@@ -235,8 +235,10 @@ class Harness:
             _, st = self.wait_for(ctl, lambda s: s.get("clients", {}).get("Alice", {}).get("status_text")
                                   == "Screen sharing is off", 20, "STOPPED screen on Alice")
             a = st["clients"]["Alice"]
+            self.metrics["join_to_stopped_screen_s"] = round(st["t"], 3)
             self.check("E2E-01", "not sharing: TV shows 'Screen sharing is off', no picture, server polls the service",
-                       not a["picture_visible"] and a["image_w"] == 0 and store.polls > 0 and store.seq == 0,
+                       not a["picture_visible"] and a["image_w"] == 0 and store.polls > 0 and store.seq == 0
+                       and st["t"] < 10,
                        status=st["server"]["attributes"].get("Status"), polls=store.polls, face=a.get("face"),
                        adornee=a.get("adornee"))
             self.check("E2E-02", "TV SurfaceGui adorned to the tagged screen part, Front face",
@@ -249,7 +251,8 @@ class Harness:
             self.metrics["start_to_picture_s"] = round(time.monotonic() - t0, 3)
             a = st["clients"]["Alice"]
             self.check("E2E-03", "after Start: Alice's EditableImage == newest captured frame (SHA-256), LIVE badge on",
-                       a["badge_visible"] and not a["status_visible"], seq=seq, sha256=sha[:16],
+                       a["badge_visible"] and not a["status_visible"] and self.metrics["start_to_picture_s"] < 5,
+                       seq=seq, sha256=sha[:16],
                        size=[a["image_w"], a["image_h"]], latency_s=self.metrics["start_to_picture_s"])
             self.check("E2E-04", "frame geometry matches the profile and the 16:9 desktop",
                        (a["image_w"], a["image_h"]) == capture.fit_size(SCREEN_W, SCREEN_H, profile.max_w,
@@ -316,7 +319,8 @@ class Harness:
                                   30, "STOPPED on both TVs")
             self.metrics["stop_to_tv_off_s"] = round(time.monotonic() - t4, 3)
             self.check("E2E-13", "after Stop: both TVs show 'Screen sharing is off', EditableImages destroyed, "
-                       "no frames left in the service", store.seq == 0 and not store._frames,
+                       "no frames left in the service, within 5 s",
+                       store.seq == 0 and not store._frames and self.metrics["stop_to_tv_off_s"] < 5,
                        latency_s=self.metrics["stop_to_tv_off_s"], status=st["server"]["attributes"].get("Status"))
 
             # L8: a player leaving is handled; no script errors anywhere
@@ -328,7 +332,7 @@ class Harness:
                        errors=errs)
             self.metrics.update({
                 "profile": profile.name,
-                "frame_service_responses": service.responses,
+                "frame_service_responses_after_outage": service.responses,
                 "http_requests_by_roblox_server": st["server"]["http_requests"],
                 "http_body_bytes": st["server"]["http_body_bytes"],
                 "server_forwarded_part_bytes": st["server"]["attributes"].get("ForwardedBytes"),

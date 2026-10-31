@@ -1,9 +1,12 @@
 """RLPS frame service: one authenticated long-poll endpoint that serves on-demand delta containers.
 
-``GET /v1/frames?after=<seq>&session=<id>&key=<0|1>&wait=<ms>`` with ``Authorization: Bearer <token>``.
+``GET /v1/frames?after=<seq>&session=<id>&key=<0|1>&wait=<ms>[&idle=1]`` with ``Authorization: Bearer <token>``.
 The body is the base64 text of one RLPS container (``codec.to_body``):
 
-* STOPPED (no parts) while the owner is not sharing — no pixel data exists then;
+* STOPPED (no parts) while the owner is not sharing — no pixel data exists then. A poll with ``idle=1`` (the poller
+  already knows sharing is off) that arrives while sharing is off is held for up to ``wait`` ms and answered as soon as
+  sharing starts, so Start shows at once; every other poll learns STOPPED immediately (also when sharing stops while
+  the poll is held);
 * LIVE + UNCHANGED (no parts) when no newer frame appeared within ``wait`` ms, or when the newer frame looks the same;
 * a KEYFRAME when ``key=1``, ``after=0``, ``session`` is not the current session or ``after`` left the ring;
 * otherwise a DELTA with exactly the tiles that differ between frame ``after`` and the latest frame.
@@ -138,15 +141,23 @@ class FrameStore:
     def _snapshot(self) -> _Snapshot:
         return _Snapshot(self.live, self.session_id, self.seq, self.fmt, self.width, self.height)
 
-    def respond(self, after: int, session: int, key: bool, wait_s: float) -> bytes:
-        """Return the container for one poll, waiting up to ``wait_s`` seconds for a frame newer than ``after``."""
+    def respond(self, after: int, session: int, key: bool, wait_s: float, idle: bool = False) -> bytes:
+        """Return the container for one poll, waiting up to ``wait_s`` seconds for a frame newer than ``after``.
+
+        ``idle``: the poller already shows STOPPED; hold the poll while sharing is off instead of answering at once."""
         deadline = time.monotonic() + max(0.0, wait_s)
         with self._cond:
             self.last_poll, self.polls = time.monotonic(), self.polls + 1
+            hold_while_stopped = idle and not self.live  # never delays news of a stop: only already-idle pollers
             while True:
                 s = self._snapshot()
                 if not s.live:
-                    return codec.status_container(P.STATE_STOPPED)
+                    remaining = deadline - time.monotonic()
+                    if not hold_while_stopped or remaining <= 0:
+                        return codec.status_container(P.STATE_STOPPED)
+                    self._cond.wait(remaining)
+                    continue
+                hold_while_stopped = False
                 same_session = session == s.session_id
                 if s.seq > 0 and (key or not same_session or after != s.seq):
                     break
@@ -268,13 +279,13 @@ class FrameService:
         if not self._ok_bucket.take():
             return self._send(h, 429, b"rate limited\n", {"Retry-After": "1"})
         try:
-            after, session, key, wait_ms = parse_query(url.query)
+            after, session, key, wait_ms, idle = parse_query(url.query)
         except ValueError as exc:
             return self._send(h, 400, f"bad request: {exc}\n".encode("ascii", "replace"))
         if not self._slots.acquire(blocking=False):
             return self._send(h, 503, b"too many concurrent polls\n", {"Retry-After": "1"})
         try:
-            container = self.store.respond(after, session, key, wait_ms / 1000.0)
+            container = self.store.respond(after, session, key, wait_ms / 1000.0, idle)
         finally:
             self._slots.release()
         body = codec.to_body(container)
@@ -284,9 +295,9 @@ class FrameService:
             self.bytes_sent += len(body)
 
 
-def parse_query(query: str) -> tuple[int, int, bool, int]:
-    """Strictly parse ``after``, ``session``, ``key``, ``wait``. Raises ValueError on anything unexpected."""
-    allowed = {"after", "session", "key", "wait"}
+def parse_query(query: str) -> tuple[int, int, bool, int, bool]:
+    """Strictly parse ``after``, ``session``, ``key``, ``wait``, ``idle``. Raises ValueError on anything unexpected."""
+    allowed = {"after", "session", "key", "wait", "idle"}
     values: dict[str, str] = {}
     for name, value in parse_qsl(query, keep_blank_values=True, strict_parsing=bool(query), max_num_fields=8):
         if name not in allowed or name in values:
@@ -308,4 +319,5 @@ def parse_query(query: str) -> tuple[int, int, bool, int]:
     session = uint("session", 0, 0xFFFFFFFF)
     key = uint("key", 0, 1) == 1
     wait = uint("wait", DEFAULT_WAIT_MS, MAX_WAIT_MS)
-    return after, session, key, wait
+    idle = uint("idle", 0, 1) == 1
+    return after, session, key, wait, idle

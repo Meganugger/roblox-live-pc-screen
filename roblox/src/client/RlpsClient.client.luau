@@ -93,9 +93,16 @@ local function addScreen(part: Instance)
 	local gui = Instance.new("SurfaceGui")
 	gui.Name = "RlpsScreenGui"
 	gui.Adornee = part
+	-- RlpsFace attribute picks the face; an unknown name falls back to Front (indexing Enum.NormalId with an unknown
+	-- name raises, so look it up among the enum items instead)
 	local faceName = part:GetAttribute("RlpsFace")
-	gui.Face = if typeof(faceName) == "string" and (Enum.NormalId :: any)[faceName] then (Enum.NormalId :: any)[faceName]
-		else Enum.NormalId.Front
+	local face = Enum.NormalId.Front
+	for _, item in Enum.NormalId:GetEnumItems() do
+		if item.Name == faceName then
+			face = item
+		end
+	end
+	gui.Face = face
 	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
 	gui.PixelsPerStud = PIXELS_PER_STUD
 	gui.LightInfluence = 0

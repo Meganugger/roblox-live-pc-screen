@@ -71,11 +71,14 @@ local SID = TEXT.steps[1].fields.sessionId
 -- 1. Fresh relay asks for a keyframe; STOPPED reports the stopped state once.
 do
 	local r = RelayCore.new()
-	local after, session, key = r:pollParams()
+	local after, session, key, idle = r:pollParams()
 	T.check(after == 0 and session == 0 and key == true, "fresh poll params", after .. "/" .. session)
+	T.check(idle == false, "fresh relay is not idle (first poll must learn the state at once)")
 	T.eq(r.status, "connecting", "fresh status")
 	local msgs = r:ingest(status(Protocol.STATE_STOPPED, 0, 0))
 	T.eq(kinds(msgs), "status:stopped", "stopped message")
+	local _, _, _, idle2 = r:pollParams()
+	T.check(idle2 == true, "relay reporting stopped polls with idle=1")
 	T.eq(kinds(r:ingest(status(Protocol.STATE_STOPPED, 0, 0))), "", "stopped again is silent")
 end
 

@@ -23,7 +23,7 @@
             "SecretName": "rlps_token",
             "PollWaitMs": 15000,
             "MinPollInterval": 0.2,
-            "StoppedPollInterval": 3,
+            "StoppedPollInterval": 1,
             "ViewerUserIds": ""
           }
         },

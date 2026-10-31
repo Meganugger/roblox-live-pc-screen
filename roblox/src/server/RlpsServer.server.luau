@@ -17,7 +17,9 @@
 --   PollWaitMs           number  long-poll wait sent to the service (default 15000, service maximum 25000; lowered
 --                                automatically when Roblox times a poll out — its default request timeout is undocumented)
 --   MinPollInterval      number  seconds between poll starts (default 0.2 => <= 300 requests/min; HttpService allows 500)
---   StoppedPollInterval  number  seconds between polls while the owner is not sharing (default 3)
+--   StoppedPollInterval  number  seconds between polls while the owner is not sharing (default 1; the frame service
+--                                holds such an idle=1 poll until sharing starts or PollWaitMs passes: Start shows at
+--                                once, and a stop is still reported immediately to every non-idle poll)
 --   ViewerUserIds        string  optional comma-separated UserIds allowed to see the screen (empty = everyone)
 -- Read-only status attributes written here: Status, StatusDetail, Containers, ForwardedBytes, Dropped, LastError.
 
@@ -228,11 +230,11 @@ local function pollOnce(): number
 		setServerStatus("error", aerr)
 		return 10
 	end
-	local after, session, key = relay:pollParams()
+	local after, session, key, idle = relay:pollParams()
 	local configuredMs = math.clamp(math.floor(tonumber(attr("PollWaitMs", 15000)) or 15000), 0, 25000)
 	local waitMs = math.min(configuredMs, effectiveWaitMs or configuredMs)
-	local url = string.format("%s/v1/frames?after=%d&session=%d&key=%d&wait=%d", base, after, session,
-		if key then 1 else 0, waitMs)
+	local url = string.format("%s/v1/frames?after=%d&session=%d&key=%d&wait=%d&idle=%d", base, after, session,
+		if key then 1 else 0, waitMs, if idle then 1 else 0)
 	local ok, res = pcall(function(): any
 		return HttpService:RequestAsync({ Url = url, Method = "GET", Headers = { Authorization = auth } })
 	end)
@@ -274,7 +276,7 @@ local function pollOnce(): number
 	end
 	broadcast(messages)
 	if relay.status == "stopped" then
-		return math.max(1, tonumber(attr("StoppedPollInterval", 3)) or 3)
+		return math.max(0.5, tonumber(attr("StoppedPollInterval", 1)) or 1)
 	end
 	return 0
 end

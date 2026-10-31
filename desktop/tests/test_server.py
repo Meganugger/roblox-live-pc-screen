@@ -22,7 +22,7 @@ class Client:
     def __init__(self, port):
         self.base = f"http://127.0.0.1:{port}"
 
-    def get(self, path="/v1/frames", token=TOKEN, method="GET", headers=None):
+    def get(self, path="/v1/frames?wait=0", token=TOKEN, method="GET", headers=None):
         req = urllib.request.Request(self.base + path, method=method)
         if token is not None:
             req.add_header("Authorization", f"Bearer {token}")
@@ -34,8 +34,8 @@ class Client:
         except urllib.error.HTTPError as e:
             return e.code, e.read()
 
-    def poll(self, after=0, session=0, key=0, wait=0):
-        status, body = self.get(f"/v1/frames?after={after}&session={session}&key={key}&wait={wait}")
+    def poll(self, after=0, session=0, key=0, wait=0, idle=0):
+        status, body = self.get(f"/v1/frames?after={after}&session={session}&key={key}&wait={wait}&idle={idle}")
         assert status == 200, (status, body)
         return codec.parse_container(codec.from_body(body))
 
@@ -110,6 +110,30 @@ class FrameFlowTests(ServiceTestCase):
         c = self.c.poll()
         self.assertEqual(c.state, P.STATE_STOPPED)
         self.assertEqual(c.parts, [])
+        t0 = time.monotonic()
+        self.assertEqual(self.c.poll(wait=3000).state, P.STATE_STOPPED)  # not idle: STOPPED at once
+        self.assertLess(time.monotonic() - t0, 1.0)
+        t0 = time.monotonic()
+        self.assertEqual(self.c.poll(wait=300, idle=1).state, P.STATE_STOPPED)  # idle: held for the wait
+        self.assertGreaterEqual(time.monotonic() - t0, 0.25)
+
+    def test_poll_while_stopped_is_answered_when_sharing_starts(self):
+        result = {}
+
+        def poll():
+            result["c"] = self.c.poll(wait=5000, idle=1)
+            result["t"] = time.monotonic()
+
+        t = threading.Thread(target=poll)
+        t.start()
+        time.sleep(0.2)
+        self.store.start()
+        t_start = time.monotonic()
+        self.store.publish(frame(), P.FMT_RGB565)
+        t.join(5)
+        c = result["c"]
+        self.assertEqual((c.state, c.keyframe, c.seq), (P.STATE_LIVE, True, 1))
+        self.assertLess(result["t"] - t_start, 1.0)  # answered right away, not after the 5 s wait
 
     def test_keyframe_delta_unchanged_cycle(self):
         sid = self.store.start()
@@ -210,8 +234,11 @@ class FrameFlowTests(ServiceTestCase):
 
 class QueryParserTests(unittest.TestCase):
     def test_defaults_and_values(self):
-        self.assertEqual(server.parse_query(""), (0, 0, False, server.DEFAULT_WAIT_MS))
-        self.assertEqual(server.parse_query("after=5&session=7&key=1&wait=0"), (5, 7, True, 0))
+        self.assertEqual(server.parse_query(""), (0, 0, False, server.DEFAULT_WAIT_MS, False))
+        self.assertEqual(server.parse_query("after=5&session=7&key=1&wait=0"), (5, 7, True, 0, False))
+        self.assertEqual(server.parse_query("wait=10&idle=1"), (0, 0, False, 10, True))
+        with self.assertRaises(ValueError):
+            server.parse_query("idle=2")
 
 
 if __name__ == "__main__":

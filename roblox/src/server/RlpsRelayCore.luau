@@ -77,9 +77,10 @@ function RelayCore.new(config: Config?): Relay
 	}, RelayCore)
 end
 
--- Query parameters for the next GET /v1/frames poll.
-function RelayCore.pollParams(self: Relay): (number, number, boolean)
-	return self.seq, self.sessionId, self.wantKeyframe or self.seq == 0
+-- Query parameters for the next GET /v1/frames poll: after, session, key, idle (idle = the relay already reports
+-- "stopped", so the frame service may hold the poll until sharing starts).
+function RelayCore.pollParams(self: Relay): (number, number, boolean, boolean)
+	return self.seq, self.sessionId, self.wantKeyframe or self.seq == 0, self.status == "stopped"
 end
 
 local function setStatus(self: Relay, out: { Message }, status: Status, detail: string?)
