@@ -132,6 +132,7 @@ local Vector2 = {}
 function Vector2.new(x, y)
 	return table.freeze({ X = x or 0, Y = y or 0 })
 end
+Vector2.zero = Vector2.new(0, 0)
 
 local UDim2 = {}
 function UDim2.fromScale(x, y)
@@ -166,7 +167,9 @@ local ENUMS = {
 	ContextActionPriority = { { "Low", 1000 }, { "Medium", 2000 }, { "Default", 2000 }, { "High", 3000 } },
 	ContextActionResult = { "Sink", "Pass" },
 	PlayerActions = { "CharacterForward", "CharacterBackward", "CharacterLeft", "CharacterRight", "CharacterJump" },
-	KeyCode = { { "C", 99 }, { "F", 102 }, { "M", 109 }, { "X", 120 } },
+	KeyCode = { { "C", 99 }, { "F", 102 }, { "H", 104 }, { "M", 109 }, { "X", 120 } },
+	ResamplerMode = { "Default", "Pixelated" },
+	CreatorType = { "User", "Group" },
 	UserInputType = { "MouseButton1", "MouseButton2", "MouseButton3", "MouseWheel", "MouseMovement", "Touch",
 		"Keyboard" },
 }
@@ -320,6 +323,9 @@ function methods.GetAttribute(inst, name)
 end
 function methods.SetAttribute(inst, name, value)
 	local s = I(inst)
+	if s.mirror then -- server-side Player: attributes replicate to that client's Player
+		methods.SetAttribute(s.mirror, name, value)
+	end
 	if s.attrs[name] ~= value then
 		s.attrs[name] = value
 		local sig = s.attrSignals[name]
@@ -719,6 +725,10 @@ end
 classMethods.EditableImage = {
 	WritePixelsBuffer = function(img, position, size, buf)
 		local s = I(img)
+		if ENV.RLPS_EMU_IMAGE_API_DISABLED == "1" then
+			-- what a published game without "Allow Mesh / Image APIs" does: creation works, writing fails
+			error("EditableImage is not enabled for this experience", 2)
+		end
 		if s.destroyed then
 			error("EditableImage was destroyed", 2)
 		end
@@ -880,6 +890,8 @@ local function newPeer(name, isClient)
 		return out
 	end
 	I(game.RunService).props.Heartbeat = newSignal()
+	I(game).props.CreatorId = 0 -- an unpublished place: no owner UserId
+	I(game).props.CreatorType = Enum.CreatorType.User
 	I(game).props.GetService = function(g, svcName)
 		local s = methods.FindFirstChild(g, svcName)
 		if s == nil or not SERVICES[svcName] then
@@ -1043,7 +1055,9 @@ local function join(name)
 	nextUserId += 1
 	server.peerOfPlayer[sp] = peer
 	peer.serverPlayer = sp
+	I(sp).mirror = player
 	sp.Parent = server.game.Players
+	I(server.game.Players).props.PlayerAdded:Fire(sp)
 	-- replicate existing remotes, then start the client scripts (StarterPlayerScripts are copied to PlayerScripts)
 	for _, c in I(server.game.ReplicatedStorage).children do
 		if I(c).ClassName == "RemoteEvent" then
@@ -1167,6 +1181,12 @@ local function viewState(peer, tvImage)
 	end
 	table.sort(shown)
 	v.buttons = table.concat(shown, ",")
+	local hide = controls and methods.FindFirstChild(controls, "HideButton")
+	v.hide_text = hide and I(hide).props.Text
+	local mod = findGui(peer, "RlpsModerator")
+	v.moderator_enabled = mod ~= nil and I(mod).props.Enabled == true
+	local modButton = mod and methods.FindFirstChild(mod, "ModHideButton")
+	v.moderator_text = modButton and I(modButton).props.Text
 	for key, name, holder in
 		string.gmatch("fullscreen=RlpsFullscreen/Background mini=RlpsMiniPlayer/Window cinema=RlpsCinema/", "(%a+)=(%a+)/(%a*)")
 	do
@@ -1178,6 +1198,7 @@ local function viewState(peer, tvImage)
 			v[key .. "_same_image"] = pic ~= nil and tvImage ~= nil and contentOf(pic) == tvImage
 			v[key .. "_picture_visible"] = pic ~= nil and I(pic).props.Visible == true
 			v[key .. "_scale"] = pic and I(pic).props.ScaleType and I(pic).props.ScaleType.Name
+			v[key .. "_resample"] = pic and I(pic).props.ResampleMode and I(pic).props.ResampleMode.Name
 		end
 	end
 	local cam = peer.workspace.CurrentCamera
@@ -1256,7 +1277,7 @@ local ok, err = pcall(function()
 			-- press-<client>-<ButtonName> | key-<client>-<KeyCode> | look-<client>-<away|tv>
 			local cmd, who, what = string.match(entry, "^(%a+)%-(%w+)%-(%w+)$")
 			local peer = who and clients[who]
-			if peer and (cmd == "press" or cmd == "key" or cmd == "look") then
+			if peer and (cmd == "press" or cmd == "key" or cmd == "look" or cmd == "fire") then
 				fs.removeFile(OUT .. "/" .. entry)
 				if cmd == "press" then
 					local found = false
@@ -1268,6 +1289,13 @@ local ok, err = pcall(function()
 					end
 					if not found then
 						log("press: no button", what)
+					end
+				elseif cmd == "fire" then -- a (possibly malicious) client sends a raw message: modhide / modshow / leave
+					local remote = methods.FindFirstChild(peer.game.ReplicatedStorage, "RlpsFrames")
+					local args = ({ modhide = { "moderate", "hide" }, modshow = { "moderate", "show" },
+						leave = { "leave" } })[what]
+					if remote and args then
+						classMethods.RemoteEvent.FireServer(remote, table.unpack(args))
 					end
 				elseif cmd == "key" then
 					local input = { KeyCode = Enum.KeyCode[what], UserInputType = Enum.UserInputType.Keyboard }

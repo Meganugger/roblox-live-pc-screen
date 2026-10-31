@@ -50,6 +50,9 @@ Lighting as far as the scripts use them.
 | E2E-25 | full screen (key F) and mini player show the same live EditableImage as the TV; Fill crops; Exit, expand and the key switch modes; the controls hide while a mode is open |
 | E2E-26 | cinema: the camera looks straight at the TV from the computed framing distance, background blur and held movement; leaving restores the default camera |
 | E2E-27 | `ViewerModes = cinema`: only the cinema button is offered, F does nothing; a non-authorized player gets no viewer controls |
+| E2E-28 | a player hides the screen for herself: picture and pixels dropped, 0 bytes received while hidden (the others keep updating); showing it again resyncs exactly |
+| E2E-29 | moderator kill switch: only `ModeratorUserIds` get the button; a non-moderator's forged `moderate` request is ignored; hiding drops every viewer's pixels and stops polling the PC; showing it again restores the exact picture; showing it while sharing is off says "Screen sharing is off" at once (< 5 s), and after Start the exact picture returns |
+| E2E-30 | image API disabled (creation succeeds, writes fail — as in a published game without Allow Mesh / Image APIs): the TV explains the owner setting and the ID-verification requirement; no per-frame retry |
 
 ## Run it
 

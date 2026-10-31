@@ -9,6 +9,8 @@
 --   server -> client: ("status", status, detail?) | ("part", record: buffer) | ("advance", sessionId, fromSeq, toSeq)
 --                     | ("reset")  [start of a sync: drop local state, a status + keyframe chain follows]
 --   client -> server: ("sync", processed)                        [join / lost the chain: send me the stream]
+--                     ("leave")                                  [this player hid the screen: send nothing more]
+--                     ("moderate", "hide" | "show")              [moderators only: withhold the screen for everyone]
 --                     ("ack", sessionId, seq, costMs, processed) [frame seq is on my screen; decoding a frame costs
 --                                                                 costMs; I processed `processed` bytes of parts]
 -- EditableImage changes never replicate, so every client rebuilds the picture itself (RlpsClient.client.luau).
@@ -35,6 +37,10 @@
 --   ViewerUserIds        string  optional comma-separated UserIds allowed to see the screen (empty = everyone)
 --   ViewerModes          string  viewer modes offered to players: any of "fullscreen,cinema,mini" (default all;
 --                                empty = no viewer controls); replicated to clients
+--   ModeratorUserIds     string  comma-separated UserIds who may hide the screen for everyone from inside the game
+--                                (the experience's owner always may, when the experience is owned by a user)
+--   Hidden               bool    withhold the screen in this server (set by moderators in game, or by the owner from
+--                                the server console); no frame is pulled from the PC while it is set
 -- Read-only status attributes: Status, StatusDetail, Containers, ForwardedBytes, Dropped, LastError, RateBps, LagMs
 -- (median viewer delay), MaxLagMs, FpsCap, Viewers, LaggingViewers (held or waiting for a keyframe), BodyMode,
 -- ForwardFps.
@@ -54,6 +60,7 @@ local KEYFRAME_COOLDOWN = 2 -- seconds between keyframe requests made for viewer
 local CONTROL_INTERVAL = 0.5
 local MAX_PLAYOUT_BACKLOG = 1.0 -- seconds; beyond it queued frames are forwarded at once (catch up)
 local NOT_AUTHORIZED = "not authorized to view this screen"
+local HIDDEN_DETAIL = "hidden by a moderator"
 
 local function attr(name: string, default: any): any
 	local v = script:GetAttribute(name)
@@ -176,6 +183,55 @@ local function broadcastNow(messages: { RelayCore.Message }?)
 	publishStatus()
 end
 
+-- --------------------------------------------------------------------------------------------- moderation
+
+-- Players allowed to hide the screen for everyone: ModeratorUserIds plus the experience's owner (user-owned games).
+local function isModerator(player: Player): boolean
+	if game.CreatorType == Enum.CreatorType.User and game.CreatorId > 0 and player.UserId == game.CreatorId then
+		return true
+	end
+	for id in string.gmatch(tostring(attr("ModeratorUserIds", "")), "%d+") do
+		if tonumber(id) == player.UserId then
+			return true
+		end
+	end
+	return false
+end
+
+local function markModerator(player: Player)
+	player:SetAttribute("RlpsModerator", isModerator(player)) -- replicated: that client shows the moderator buttons
+end
+Players.PlayerAdded:Connect(markModerator)
+for _, p in Players:GetPlayers() do
+	markModerator(p)
+end
+script:GetAttributeChangedSignal("ModeratorUserIds"):Connect(function()
+	for _, p in Players:GetPlayers() do
+		markModerator(p)
+	end
+end)
+
+local function isHidden(): boolean
+	return attr("Hidden", false) == true
+end
+
+-- Hiding drops every queued frame, forgets the chain and tells every viewer "stopped (hidden by a moderator)": clients
+-- drop their pixels. Showing again: "connecting" at once (not an idle poll that would keep the hidden message while
+-- sharing is off), then the next poll restarts the chain from a keyframe.
+local function applyHidden()
+	local hidden = isHidden()
+	frames:SetAttribute("Hidden", hidden)
+	if hidden then
+		table.clear(playout)
+		lastDue = 0
+		broadcastNow(relay:suspend(HIDDEN_DETAIL))
+	elseif relay.status == "stopped" and relay.detail == HIDDEN_DETAIL then
+		setServerStatus("connecting", nil)
+	end
+end
+script:GetAttributeChangedSignal("Hidden"):Connect(applyHidden)
+applyHidden()
+
 -- ------------------------------------------------------------------------------------------------ client messages
 
 local function count(x: unknown, hi: number): number?
@@ -196,6 +252,14 @@ frames.OnServerEvent:Connect(function(player: Player, kind: unknown, a: unknown,
 		local processed = count(d, 1e15)
 		if processed then
 			fan:ack(player, processed, os.clock(), count(c, 10000))
+		end
+	elseif kind == "leave" then
+		fan:remove(player) -- the player hid the screen: no more bytes for it until it asks again ("sync")
+	elseif kind == "moderate" and (a == "hide" or a == "show") then
+		if isModerator(player) and isHidden() ~= (a == "hide") then
+			warn(string.format("[RLPS] screen %s for everyone by moderator %s (%d)", if a == "hide" then "hidden" else "shown",
+				player.Name, player.UserId))
+			script:SetAttribute("Hidden", a == "hide")
 		end
 	end
 end)
@@ -401,6 +465,9 @@ local function pollOnce(): number
 	local ok, res = pcall(function(): any
 		return HttpService:RequestAsync({ Url = url, Method = "GET", Headers = { Authorization = auth } })
 	end)
+	if isHidden() then
+		return 0 -- hidden while this poll was in flight: its frames (or its error) must not reach a screen
+	end
 	if not ok then
 		local reason = friendly(tostring(res), base)
 		if isTimeout(reason) and waitMs > MIN_WAIT_MS then
@@ -468,8 +535,8 @@ end
 task.spawn(function()
 	publishStatus()
 	while true do
-		if not anyViewer() then
-			task.wait(1) -- nobody can see the screen: do not pull frames from the owner's PC
+		if not anyViewer() or isHidden() then
+			task.wait(if isHidden() then 0.5 else 1) -- nobody may see the screen: pull nothing from the owner's PC
 			continue
 		end
 		local started = os.clock()

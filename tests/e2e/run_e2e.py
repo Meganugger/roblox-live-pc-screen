@@ -269,7 +269,7 @@ class Harness:
         port = service.address[1]
         controller = app.SharingController(store, lambda: capture.MssSource(1, None), profile)
         self.scene("A")
-        emu = self.start_emulator(f"http://127.0.0.1:{port}", token, ctl)
+        emu = self.start_emulator(f"http://127.0.0.1:{port}", token, ctl, {"ModeratorUserIds": "1001"})  # Alice
         try:
             open(os.path.join(ctl, "join-Alice"), "w").close()
 
@@ -337,7 +337,7 @@ class Harness:
                        frames_between=seq_m - seq_b, dropped=st["server"]["attributes"].get("Dropped"))
 
             # L5b: redraw economy and viewer modes (RlpsClient)
-            seq_m = self.view_checks(ctl, store, seq_m)
+            seq_m = self.view_checks(ctl, store, controller, seq_m)
 
             # L6: frame service outage -> error screen; service back -> picture resumes
             service.close()
@@ -704,7 +704,7 @@ class Harness:
         """Emulator command: press-<client>-<Button>, key-<client>-<KeyCode> or look-<client>-<away|tv>."""
         open(os.path.join(ctl, what), "w").close()
 
-    def view_checks(self, ctl: str, store, after_seq: int) -> int:
+    def view_checks(self, ctl: str, store, controller, after_seq: int) -> int:
         """Dirty-rectangle redraws, redraw culling, full screen, cinema and mini player on Alice (Bob untouched)."""
         def view(s):
             return s["clients"]["Alice"].get("view", {})
@@ -751,6 +751,8 @@ class Harness:
         fs_ok = v.get("fullscreen_same_image") and v.get("fullscreen_picture_visible")
         self.press(ctl, "press-Alice-FitButton")
         _, st = self.wait_for(ctl, lambda s: view(s).get("fullscreen_scale") == "Crop", 20, "full screen fill")
+        self.press(ctl, "press-Alice-SharpButton")
+        _, st = self.wait_for(ctl, lambda s: view(s).get("fullscreen_resample") == "Pixelated", 20, "sharp pixels")
         self.press(ctl, "press-Alice-ExitButton")
         self.wait_for(ctl, lambda s: not view(s).get("fullscreen_enabled") and view(s).get("controls_enabled"), 20,
                       "full screen closed")
@@ -783,7 +785,104 @@ class Harness:
                    "bars, background blurred, movement held; leaving restores the player's camera",
                    cinema_ok and not v2["blur"] and not v2["movement_held"],
                    camera_distance=round(v["camera_distance"], 3), want=round(want, 3), aim=v["camera_aim"])
-        return seq_a
+        # 5. Alice hides the screen for herself: no pixel kept, the server sends her nothing; showing again is exact
+        self.press(ctl, "press-Alice-HideButton")
+        _, st = self.wait_for(ctl, lambda s: "You hid" in (s["clients"]["Alice"].get("status_text") or ""), 20,
+                              "Alice hid the screen")
+        a = st["clients"]["Alice"]
+        hid_ok = not a["picture_visible"] and a["image_w"] == 0 and "Show" in (view(st).get("hide_text") or "")
+        time.sleep(0.5)
+        recv0 = self.read_state(ctl)["clients"]["Alice"]["recv_bytes"]
+        self.scene("B")
+        (seq_b, _, _), _ = self.wait_match(ctl, store, ["Bob"], 30, "Bob follows while Alice hid it", after_seq=seq_a)
+        time.sleep(1.0)
+        got = self.read_state(ctl)["clients"]["Alice"]["recv_bytes"] - recv0
+        self.press(ctl, "press-Alice-HideButton")
+        (seq_b, _, _), _ = self.wait_match(ctl, store, ["Alice", "Bob"], 30, "Alice shows the screen again",
+                                           after_seq=seq_a)
+        self.check("E2E-28", "a player hides the screen for herself: picture and pixels dropped, the server stops sending "
+                   "to her while the others update; showing it again resyncs to the exact current picture",
+                   hid_ok and got < 1024, bytes_received_while_hidden=got)
+
+        # 6. moderators: Bob (not one) cannot hide it; Alice (ModeratorUserIds) hides it for everyone and shows it again
+        st = self.read_state(ctl)
+        roles = (view(st).get("moderator_enabled"), st["clients"]["Bob"]["view"].get("moderator_enabled"))
+        self.press(ctl, "fire-Bob-modhide")
+        time.sleep(1.5)
+        st = self.read_state(ctl)
+        bob_denied = st["server"]["attributes"].get("Hidden") is not True and st["clients"]["Bob"]["picture_visible"]
+        self.press(ctl, "press-Alice-ModHideButton")
+        _, st = self.wait_for(ctl, lambda s: all("hidden by a moderator" in (s["clients"][n].get("status_text") or "")
+                                                 for n in ("Alice", "Bob")), 20, "screen hidden for everyone")
+        dropped = all(st["clients"][n]["image_w"] == 0 and not st["clients"][n]["picture_visible"] for n in ("Alice", "Bob"))
+        polls0 = st["server"]["http_requests"]
+        time.sleep(2.0)
+        st = self.read_state(ctl)
+        no_polls = st["server"]["http_requests"] == polls0
+        show_text = view(st).get("moderator_text") or ""
+        polls_hidden = st["server"]["http_requests"] - polls0
+        self.press(ctl, "press-Alice-ModHideButton")
+        (seq_c, _, _), _ = self.wait_match(ctl, store, ["Alice", "Bob"], 40, "screen shown again for everyone")
+        # hidden again, and the owner stops sharing meanwhile: showing it must say "sharing is off" at once (not keep
+        # the moderator message through an idle long-poll), and the next Start brings the exact picture back
+        self.press(ctl, "press-Alice-ModHideButton")
+        self.wait_for(ctl, lambda s: all("hidden by a moderator" in (s["clients"][n].get("status_text") or "")
+                                         for n in ("Alice", "Bob")), 20, "screen hidden again")
+        controller.stop()
+        time.sleep(0.5)
+        self.press(ctl, "press-Alice-ModHideButton")
+        t_show = time.monotonic()
+        self.wait_for(ctl, lambda s: all(s["clients"][n].get("status_text") == "Screen sharing is off"
+                                         for n in ("Alice", "Bob")), 10, "'sharing is off' right after showing")
+        show_to_off_s = round(time.monotonic() - t_show, 3)
+        controller.start()
+        (seq_c, _, _), _ = self.wait_match(ctl, store, ["Alice", "Bob"], 40, "screen shown again for everyone")
+        self.check("E2E-29", "moderator kill switch: only listed moderators get the button and can use it (a forged "
+                   "request is ignored); hiding drops every viewer's pixels and stops polling the PC; showing it again "
+                   "restores the exact picture; showing it while sharing is off says so at once, and after Start the "
+                   "exact picture returns",
+                   roles == (True, False) and bob_denied and dropped and no_polls and "Show" in show_text
+                   and show_to_off_s < 5, roles=list(roles), bob_denied=bob_denied, dropped=dropped,
+                   polls_while_hidden=polls_hidden, show_to_sharing_off_s=show_to_off_s)
+        return seq_c
+
+    def scenario_imageapi(self) -> None:
+        """A published game without "Allow Mesh / Image APIs": creating the EditableImage works, writing fails."""
+        ctl = tempfile.mkdtemp(prefix="rlps-e2e-imageapi-", dir=self.out)
+        token = secrets.token_urlsafe(32)
+        store = server.FrameStore()
+        service = server.FrameService(store, token, port=0)
+        service.start()
+        controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["low"])
+        self.scene("A")
+        controller.start()
+        os.environ["RLPS_EMU_IMAGE_API_DISABLED"] = "1"
+        try:
+            emu = self.start_emulator(f"http://127.0.0.1:{service.address[1]}", token, ctl)
+        finally:
+            os.environ.pop("RLPS_EMU_IMAGE_API_DISABLED", None)
+        try:
+            open(os.path.join(ctl, "join-Ivy"), "w").close()
+            _, st = self.wait_for(ctl, lambda s: "Allow Mesh / Image APIs" in (s["clients"].get("Ivy", {})
+                                                                            .get("status_text") or ""), 40,
+                                  "image API explanation on Ivy's TV")
+            c = st["clients"]["Ivy"]
+            time.sleep(2.0)
+            c2 = self.read_state(ctl)["clients"]["Ivy"]
+            self.check("E2E-30", "image API disabled (creation works, writing fails): the TV explains the owner setting "
+                       "and the ID-verification requirement instead of a raw error, and does not retry every frame",
+                       "ID-verified" in c["status_text"] and not c["picture_visible"]
+                       and c2["images_created"] - c["images_created"] <= 1, text=c["status_text"],
+                       images_created=c2["images_created"])
+        finally:
+            open(os.path.join(ctl, "quit"), "w").close()
+            try:
+                emu.wait(10)
+            except subprocess.TimeoutExpired:
+                emu.kill()
+            controller.stop()
+            service.close()
+            shutil.copy(os.path.join(ctl, "emulator.log"), os.path.join(self.out, "emulator-imageapi.log"))
 
     def scenario_secretdomain(self) -> None:
         """The secret's domain must allow the tunnel host (Roblox refuses to attach it otherwise)."""
@@ -833,7 +932,7 @@ def main() -> int:
     ap.add_argument("--lune", default=shutil.which("lune") or "lune")
     ap.add_argument("--profile", choices=sorted(app.PROFILES), default=app.DEFAULT_PROFILE)
     ap.add_argument("--scenario", choices=["live", "quality", "scroll", "congestion", "pacing", "viewers", "badtoken",
-                                           "secretdomain", "all"], default="all")
+                                           "secretdomain", "imageapi", "all"], default="all")
     ap.add_argument("--xvfb", action="store_true", help="start Xvfb even if DISPLAY is set")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -859,6 +958,8 @@ def main() -> int:
             h.scenario_badtoken()
         if args.scenario in ("secretdomain", "all"):
             h.scenario_secretdomain()
+        if args.scenario in ("imageapi", "all"):
+            h.scenario_imageapi()
     except Failure as exc:
         ok = False
         print(f"E2E FAILED: {exc}", flush=True)

@@ -588,3 +588,33 @@ R2 findings come from inspected public source code (**[CODE]**, static review un
   client availability not stated. Luavid and MahanBig use it in client decoders; the directive is a no-op where
   unsupported, so adding it is safe.
 - **Impact**: `--!native` on the decoder modules and the client script; real client gain = owner test.
+
+### F-0041 — The common ceiling in public projects is ~8 fps (one HTTP request per frame); batching and change-only data are the known remedies [COMMUNITY]
+- **Source**: S-0040, S-0041, S-0042. Already exceeded here (bundles, tile deltas, D-0007). No change.
+
+### F-0042 — EditableImage creation succeeds when the API is disabled; only writes fail. The API needs a 13+ ID-verified experience owner (group owner) [CODE][OFFICIAL]
+- **Source**: S-0046 (Renderer.luau `tryEditableImage`), S-0043 (announcement, staff #219: also Studio play mode).
+- **Impact**: client probes with a 1-pixel write and explains the owner requirement (E2E-30); INSTALL C.1. A Frame-grid
+  fallback was rejected (D-0012).
+
+### F-0043 — Only one EditableImage updates per frame on the display side; rewriting ~3.7 MB of EditableImage pixels every frame fails on some devices, 2.36 MB works [OFFICIAL]
+- **Source**: S-0001 (EditableImage.yaml "Update Limitations"), S-0044. Our design: one image, full redraw 2.36 MB only
+  on keyframes, dirty rectangles otherwise (D-0011). KI-0010 tracks the bug.
+
+### F-0044 — WebSockets and SSE (`CreateWebStreamClient`) are Studio-only; live experiences block them; max 4 clients [OFFICIAL]
+- **Source**: S-0045. Long-poll + bundles stay (F-0010, T-0015).
+
+### F-0045 — Moderation: unmoderated 2D content must be declared (Content Labels → Moderate 13+), content should be attributable and removable; communities report takedowns of screen-sharing games [OFFICIAL][COMMUNITY]
+- **Source**: S-0043 (Trust and Safety, Tips), S-0042, S-0041, DevForum 4852202 (questionnaire violations).
+- **Impact**: moderator kill switch + per-player hide (D-0012, E2E-28/29); INSTALL C.1b; SECURITY.
+
+### F-0046 — Live audio is only possible by additive resynthesis (sine-tone AudioPlayers tuned per frequency band); quality: music acceptable, speech echoey; ~8 kHz ceiling at 384 voices [CODE][COMMUNITY][OFFICIAL]
+- **Source**: S-0046, S-0047; no generator/oscillator class in the Audio API reference. Design T-0028 (needs the owner).
+
+### F-0047 — Client-side regressions exist in released Roblox clients (EditableMesh writes 350× slower on Windows 744; Pass2D 40 ms with heavy UI) [COMMUNITY][OFFICIAL]
+- **Source**: S-0048 (4950870, 4753653). Keep UI small; diagnostics attributes let the owner spot such regressions.
+
+### F-0048 — Music through voice chat is auto-moderated (warnings, 5-minute suspensions); a quoted appeal answer says "Streaming audio is not permitted under Roblox policy"; the Audio API has no raw-sample source [COMMUNITY][OFFICIAL]
+- **Source**: S-0050. Voice is also limited to servers of ≤ 50 players and voice-enabled listeners.
+- **Impact**: voice chat rejected as an audio path; live audio by resynthesis (T-0028) would be unmoderated audio with
+  no Content Label → owner decides the policy question before any implementation (D-0012).

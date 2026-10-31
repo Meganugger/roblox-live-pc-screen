@@ -45,7 +45,9 @@ changed (see "stale" markers in `TEST_RESULTS.md`).
    (or `start-sharing.bat --window "Notepad"` / `--tab "YouTube"`).
 2. Roblox Studio: open `RlpsDemo.rbxlx` (release ZIP or CI artifact), set `FrameServiceUrl`, add the `rlps_token`
    secret, enable Allow HTTP Requests + Allow Mesh / Image APIs, Play, press **Start sharing** on the PC.
-3. Full guide: [`docs/deployment/INSTALL.md`](docs/deployment/INSTALL.md); problems:
+3. Before publishing: Roblox's rules for showing a screen (ID verification, Content Labels, private audiences,
+   moderators who can hide the screen in game) — INSTALL C.1b.
+4. Full guide: [`docs/deployment/INSTALL.md`](docs/deployment/INSTALL.md); problems:
    [`docs/deployment/TROUBLESHOOTING.md`](docs/deployment/TROUBLESHOOTING.md).
 
 ## Repository map

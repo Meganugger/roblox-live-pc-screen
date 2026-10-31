@@ -107,6 +107,10 @@ and a 4×4 Bayer dither to hide banding. Useful as performance evidence for `--!
 | `LoneHEX/robloxstream` (2022) | requires an exploit client (`syn.websocket`, `Drawing.new`), not usable in a legitimate game |
 | `robotgamesrbx-glitch/Roblox-screen-share-controllable-account` (2025) | Flask JSON colour list 192×108 + remote key presses |
 | `DeepXx86/video-to-roblox` (2025) | pre-recorded 1-bit packed video frames in ModuleScripts (not live) |
+| `bruvie-fr/roblox-video-player` @ `4a66ac9` (2026-09, MIT + Commons Clause) — found in the forum research (T-0026) | videos from a link (yt-dlp + ffmpeg) encoded on the fly into a block codec (768×432 at 30 fps, ~100 kB/s), polled by the Roblox server and fanned out over a RemoteEvent (the same shape as ours), **audio by additive resynthesis** (384 looping sine `AudioPlayer`s, 1024-point FFT per frame), a one-pixel write probe because `CreateEditableImage` succeeds while the API is disabled, and a 192×108 Frame-grid fallback for owners without ID verification. Taken: the probe (E2E-30). Not taken: the Frame grid (D-0012); audio is T-0028 |
+| `Stud-del/screenshare`, `SipinSlowly/roblox-screenshare-method-v2`, `decompi/Pixel-Stream-Player`, `DevGeah/roblox-screenshare-scripts` (2024–2026) | part grids or CanvasDraw with JSON frames over playit.gg / ngrok; one HTTP request per frame (~8 fps); nothing new |
+
+The full forum survey (Reddit, DevForum, official announcements) is in [`FORUM_FINDINGS.md`](FORUM_FINDINGS.md).
 
 ## 7. What this changes for our project (D-0007)
 
