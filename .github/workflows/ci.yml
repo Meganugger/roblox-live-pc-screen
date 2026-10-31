@@ -1,0 +1,102 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LUAU_VERSION: "0.744"
+  LUNE_VERSION: "0.10.4"
+
+jobs:
+  python:
+    name: Python tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r desktop/requirements.txt pytest
+      - run: python -m pytest -q
+        working-directory: desktop
+
+  roblox-static:
+    name: Luau specs + Rojo build + luau-lsp (Roblox API types)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r desktop/requirements.txt
+      - name: Install Luau CLI
+        run: |
+          curl -fsSL -o /tmp/luau.zip "https://github.com/luau-lang/luau/releases/download/$LUAU_VERSION/luau-ubuntu.zip"
+          sudo unzip -oq /tmp/luau.zip -d /usr/local/bin
+      - run: python roblox/tests/run_luau_tests.py --analyze
+      - run: scripts/check_roblox.sh build/RlpsDemo.rbxlx
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RlpsDemo-place
+          path: build/RlpsDemo.rbxlx
+
+  e2e-linux:
+    name: Live pipeline test (Xvfb capture -> frame service -> Roblox scripts under emulation)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+      - run: python -m pip install -r desktop/requirements.txt python-xlib
+      - name: Install Lune
+        run: |
+          curl -fsSL -o /tmp/lune.zip "https://github.com/lune-org/lune/releases/download/v$LUNE_VERSION/lune-$LUNE_VERSION-linux-x86_64.zip"
+          sudo unzip -oq /tmp/lune.zip -d /usr/local/bin && sudo chmod +x /usr/local/bin/lune
+      - run: python tests/e2e/run_e2e.py --out build/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-linux
+          path: |
+            build/e2e/report.json
+            build/e2e/*.png
+            build/e2e/*.log
+
+  e2e-windows:
+    name: Live pipeline test on a real Windows desktop (mss capture)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r desktop/requirements.txt
+      - name: Install Lune
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/lune-org/lune/releases/download/v$env:LUNE_VERSION/lune-$env:LUNE_VERSION-windows-x86_64.zip" -OutFile "$env:RUNNER_TEMP\lune.zip"
+          Expand-Archive "$env:RUNNER_TEMP\lune.zip" -DestinationPath "$env:RUNNER_TEMP\lune"
+          "$env:RUNNER_TEMP\lune" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - run: python -m rlps.app --list-monitors
+        working-directory: desktop
+      - run: python tests/e2e/run_e2e.py --out build/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-windows
+          path: |
+            build/e2e/report.json
+            build/e2e/*.png
+            build/e2e/*.log

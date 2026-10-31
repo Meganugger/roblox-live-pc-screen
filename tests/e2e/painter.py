@@ -1,17 +1,18 @@
-"""Test-only desktop content for the live pipeline test: a full-screen X11 window that draws known scenes.
+"""Test-only desktop content for the live pipeline test: a full-screen window that draws known scenes.
 
-Reads one command per line on stdin: ``scene A`` | ``scene B`` | ``quit``. Prints ``ready <scene>`` after the X server
-has processed the drawing (XSync), so the test knows when the *real* screen shows the new content. Uses python-xlib
-(pure-Python X client) because the sandbox Python has no Tk. Never used by the product.
+Prints ``size <W> <H>`` (real screen size) at startup, then reads one command per line on stdin:
+``scene A`` | ``scene B`` | ``quit`` and prints ``ready <scene>`` once the window system has drawn it, so the test knows
+when the *real* screen shows the new content. Scene geometry is defined on a 1280x720 reference and scaled to the real
+screen. Backends: python-xlib (Linux/Xvfb; the sandbox Python has no Tk) or tkinter (Windows/macOS). Never used by the
+product.
 """
 
 from __future__ import annotations
 
 import sys
+import time
 
-from Xlib import X, display
-
-# Scene geometry in screen pixels (the test converts it to captured-frame pixels).
+REF_W, REF_H = 1280, 720
 BACKGROUND = (20, 40, 120)
 SCENES = {
     "A": {"rect": (100, 100, 400, 300), "color": (230, 30, 30)},
@@ -20,35 +21,79 @@ SCENES = {
 CHECKER = (560, 40, 160, 80, 8)  # x, y, w, h, cell: fine detail (text-like high-frequency content)
 
 
-def main() -> int:
-    d = display.Display()
-    screen = d.screen()
-    w, h = screen.width_in_pixels, screen.height_in_pixels
-    cmap = screen.default_colormap
+def shapes(name: str, w: int, h: int):
+    """Yield (rgb, x, y, w, h) rectangles of a scene in real screen pixels, background first."""
+    sx, sy = w / REF_W, h / REF_H
+    yield BACKGROUND, 0, 0, w, h
+    x, y, rw, rh = SCENES[name]["rect"]
+    yield SCENES[name]["color"], round(x * sx), round(y * sy), round(rw * sx), round(rh * sy)
+    cx, cy, cw, ch, cell = CHECKER
+    for yy in range(cy, cy + ch, cell):
+        for xx in range(cx, cx + cw, cell):
+            if ((xx - cx) // cell + (yy - cy) // cell) % 2 == 0:
+                yield (255, 255, 255), round(xx * sx), round(yy * sy), max(1, round(cell * sx)), max(1, round(cell * sy))
 
-    def pixel(rgb):
+
+class XlibBackend:
+    def __init__(self):
+        from Xlib import X, display
+
+        self.d = display.Display()
+        screen = self.d.screen()
+        self.w, self.h = screen.width_in_pixels, screen.height_in_pixels
+        self.cmap = screen.default_colormap
+        self.win = screen.root.create_window(0, 0, self.w, self.h, 0, screen.root_depth, X.InputOutput,
+                                             X.CopyFromParent, override_redirect=True,
+                                             background_pixel=self.pixel(BACKGROUND))
+        self.win.map()
+        self.gc = self.win.create_gc()
+
+    def pixel(self, rgb):
         r, g, b = rgb
-        return cmap.alloc_color(r * 257, g * 257, b * 257).pixel
+        return self.cmap.alloc_color(r * 257, g * 257, b * 257).pixel
 
-    win = screen.root.create_window(0, 0, w, h, 0, screen.root_depth, X.InputOutput, X.CopyFromParent,
-                                    override_redirect=True, background_pixel=pixel(BACKGROUND))
-    win.map()
-    gc = win.create_gc()
+    def draw(self, name: str) -> None:
+        for rgb, x, y, w, h in shapes(name, self.w, self.h):
+            self.gc.change(foreground=self.pixel(rgb))
+            self.win.fill_rectangle(self.gc, x, y, w, h)
+        self.d.sync()
 
-    def draw(name: str) -> None:
-        gc.change(foreground=pixel(BACKGROUND))
-        win.fill_rectangle(gc, 0, 0, w, h)
-        x, y, rw, rh = SCENES[name]["rect"]
-        gc.change(foreground=pixel(SCENES[name]["color"]))
-        win.fill_rectangle(gc, x, y, rw, rh)
-        cx, cy, cw, ch, cell = CHECKER
-        gc.change(foreground=pixel((255, 255, 255)))
-        for yy in range(cy, cy + ch, cell):
-            for xx in range(cx, cx + cw, cell):
-                if ((xx - cx) // cell + (yy - cy) // cell) % 2 == 0:
-                    win.fill_rectangle(gc, xx, yy, cell, cell)
-        d.sync()
+    def close(self) -> None:
+        self.win.destroy()
+        self.d.sync()
 
+
+class TkBackend:
+    def __init__(self):
+        import tkinter as tk
+
+        self.root = tk.Tk()
+        self.w, self.h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        self.root.overrideredirect(True)
+        self.root.geometry(f"{self.w}x{self.h}+0+0")
+        self.root.attributes("-topmost", True)
+        self.canvas = tk.Canvas(self.root, width=self.w, height=self.h, highlightthickness=0, bd=0)
+        self.canvas.pack()
+        self.root.update()
+
+    def draw(self, name: str) -> None:
+        self.canvas.delete("all")
+        for (r, g, b), x, y, w, h in shapes(name, self.w, self.h):
+            color = f"#{r:02x}{g:02x}{b:02x}"
+            self.canvas.create_rectangle(x, y, x + w, y + h, fill=color, outline="")
+        self.root.update()
+        time.sleep(0.15)  # let the compositor present the frame before reporting "ready"
+
+    def close(self) -> None:
+        self.root.destroy()
+
+
+def main() -> int:
+    try:
+        backend = XlibBackend() if sys.platform.startswith("linux") else TkBackend()
+    except ImportError:
+        backend = TkBackend()
+    print(f"size {backend.w} {backend.h}", flush=True)
     for line in sys.stdin:
         cmd = line.split()
         if not cmd:
@@ -56,10 +101,9 @@ def main() -> int:
         if cmd[0] == "quit":
             break
         if cmd[0] == "scene" and len(cmd) == 2 and cmd[1] in SCENES:
-            draw(cmd[1])
+            backend.draw(cmd[1])
             print(f"ready {cmd[1]}", flush=True)
-    win.destroy()
-    d.sync()
+    backend.close()
     return 0
 
 

@@ -41,9 +41,10 @@ import numpy as np  # noqa: E402
 from rlps import app, capture, codec, server  # noqa: E402
 
 sys.path.insert(0, HERE)
-import painter as scenes  # noqa: E402
+import painter as scenes  # noqa: E402  (only constants; the drawing runs in a subprocess)
 
-SCREEN_W, SCREEN_H = 1280, 720
+SCREEN_W, SCREEN_H = scenes.REF_W, scenes.REF_H  # scene coordinates (the painter scales them to the real screen)
+XVFB_SIZE = "1280x720x24"
 
 
 class Failure(AssertionError):
@@ -72,10 +73,10 @@ class Harness:
     # -------------------------------------------------------------------------------------------- environment
 
     def start_display(self) -> None:
-        if os.environ.get("DISPLAY") and not self.args.xvfb:
-            return
+        if not sys.platform.startswith("linux") or (os.environ.get("DISPLAY") and not self.args.xvfb):
+            return  # Windows/macOS: the real desktop; Linux with DISPLAY: that X server
         disp = ":%d" % (90 + os.getpid() % 9)
-        p = subprocess.Popen(["Xvfb", disp, "-screen", "0", f"{SCREEN_W}x{SCREEN_H}x24", "-nolisten", "tcp"],
+        p = subprocess.Popen(["Xvfb", disp, "-screen", "0", XVFB_SIZE, "-nolisten", "tcp"],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.procs.append(p)
         os.environ["DISPLAY"] = disp
@@ -89,6 +90,11 @@ class Harness:
         self.painter = subprocess.Popen([sys.executable, os.path.join(HERE, "painter.py")], stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, text=True)
         self.procs.append(self.painter)
+        line = self.painter.stdout.readline().split()
+        if len(line) != 3 or line[0] != "size":
+            raise Failure(f"painter did not start: {line!r}")
+        self.screen = (int(line[1]), int(line[2]))
+        self.metrics["screen"] = f"{self.screen[0]}x{self.screen[1]}"
 
     def scene(self, name: str) -> float:
         self.painter.stdin.write(f"scene {name}\n")
@@ -256,7 +262,7 @@ class Harness:
                        seq=seq, sha256=sha[:16],
                        size=[a["image_w"], a["image_h"]], latency_s=self.metrics["start_to_picture_s"])
             self.check("E2E-04", "frame geometry matches the profile and the 16:9 desktop",
-                       (a["image_w"], a["image_h"]) == capture.fit_size(SCREEN_W, SCREEN_H, profile.max_w,
+                       (a["image_w"], a["image_h"]) == capture.fit_size(*self.screen, profile.max_w,
                                                                         profile.max_h),
                        size=[a["image_w"], a["image_h"]])
             snap = self.snapshot(ctl, "sceneA", ["Alice"], a["image_w"], a["image_h"])
