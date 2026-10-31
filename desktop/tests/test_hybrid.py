@@ -135,6 +135,45 @@ class HybridTests(unittest.TestCase):
         c, _ = ch.push(target, budget=8000)
         self.assertIsNone(c)  # nothing left to send
 
+    def test_scrolling_is_sent_as_copies(self):
+        rng = np.random.default_rng(4)
+        page = np.full((H * 3, W, 3), 245, np.uint8)
+        for y in range(4, page.shape[0] - 10, 9):  # text-like lines
+            page[y:y + 6, 8:W - 8] = rng.integers(0, 80, (6, W - 16, 3))
+        ch = Chain()
+        ch.push(page[:H])
+        sizes = []
+        for k in range(1, 6):
+            c, info = ch.push(page[8 * k:8 * k + H])
+            self.assertGreater(info.copied_tiles, 0)
+            self.assertTrue(np.array_equal(ch.img[..., :3], page[8 * k:8 * k + H]))  # still lossless
+            self.assertTrue(np.array_equal(ch.img, ch.enc.recon))
+            sizes.append(len(c))
+        lossless_only = Chain()
+        lossless_only.push(page[:H])
+        lossless_only.enc._scroll_copies = lambda src, moving: {}  # same chain without scroll detection
+        plain = [len(lossless_only.push(page[8 * k:8 * k + H])[0]) for k in range(1, 6)]
+        self.assertLess(sum(sizes), sum(plain) * 0.6)
+
+    def test_copy_tiles_validated(self):
+        ch = Chain()
+        ch.push(smooth(0))
+        base = ch.img.copy()
+
+        def container(dx, dy, ref_flag=True):
+            entry = bytes((P.TILE_MODE_COPY,)) + dx.to_bytes(2, "little", signed=True) + dy.to_bytes(2, "little",
+                                                                                                    signed=True)
+            enc = codec.FrameEncoder(compression=P.COMP_NONE, tile_size=16)
+            return enc.pack([(0, entry)], P.FMT_HYBRID, W, H, session_id=7, seq=2, base_seq=1, keyframe=False,
+                            ref=ref_flag)
+
+        ok = codec.apply_container(base.copy(), codec.parse_container(container(16, 32)))
+        self.assertTrue(np.array_equal(ok[:16, :16], base[32:48, 16:32]))
+        with self.assertRaisesRegex(P.ProtocolError, "outside the frame"):
+            codec.apply_container(base.copy(), codec.parse_container(container(-1, 0)))
+        with self.assertRaisesRegex(P.ProtocolError, "without reference"):
+            codec.apply_container(base.copy(), codec.parse_container(container(0, 16, ref_flag=False)))
+
     def test_dimensions_must_be_multiples_of_16(self):
         with self.assertRaises(ValueError):
             hybrid.HybridEncoder(100, 96)

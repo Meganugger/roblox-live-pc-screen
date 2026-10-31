@@ -29,6 +29,7 @@ class HybridInfo:
     keyframe: bool = False
     moving_tiles: int = 0
     refined_tiles: int = 0
+    copied_tiles: int = 0  # scrolled tiles sent as copies from the previous picture
     mode: str = ""  # "lossless" | "dct" | "" (nothing sent)
     quality: int = -1  # IJG quality of DCT tiles in this frame (-1 = none)
     bytes: int = 0
@@ -62,10 +63,54 @@ class HybridEncoder:
         c = img.shape[2]
         return img.reshape(self.ty, T, self.tx, T, c).swapaxes(1, 2).reshape(self.count, T, T, c)
 
-    def _pack(self, entries, *, session_id, seq, base_seq, keyframe) -> bytes:
+    def _pack(self, entries, *, session_id, seq, base_seq, keyframe, ref=False) -> bytes:
         entries.sort(key=lambda e: e[0])
         return self.packer.pack(entries, P.FMT_HYBRID, self.w, self.h, session_id=session_id, seq=seq,
-                                base_seq=base_seq, keyframe=keyframe)
+                                base_seq=base_seq, keyframe=keyframe, ref=ref)
+
+    COPY_MAX_MEAN_ERR = 40.0  # a copy never predicts a tile worse than this (mean abs difference per channel)
+
+    def _scroll_copies(self, src: np.ndarray, moving: np.ndarray) -> dict[int, tuple[int, int]]:
+        """Moving tiles of ``src`` best predicted by the client's picture shifted vertically (scrolling):
+        {tile: (dx, dy)}, sent as 5-byte copies. The shift is measured against the client's picture itself (not the
+        previous capture), so rounding a sub-pixel scroll (non-integer downscale) never accumulates into drift.
+
+        A copy is exact when content and picture were exact there; otherwise it is a close prediction (e.g. text
+        shifted by under half a pixel), refined to lossless once the content stops moving."""
+        if self.recon is None or moving.sum() < max(8, self.count // 20):  # only worth it when a sizeable area moved
+            return {}
+        h, w = self.h, self.w
+        lum = lambda img: img[..., :3].astype(np.float32).mean(axis=2)  # noqa: E731
+        prof_a = lum(src).reshape(h, 16, w // 16).mean(axis=2)
+        prof_b = lum(self.recon).reshape(h, 16, w // 16).mean(axis=2)
+        if prof_a.std() < 1.0:
+            return {}
+        costs: dict[int, float] = {}
+        for dy in range(-h // 2, h // 2 + 1):  # src row r ~ recon row r + dy
+            lo, hi = max(0, -dy), min(h, h - dy)
+            if dy and hi - lo >= h // 4:
+                costs[dy] = float(np.abs(prof_a[lo:hi] - prof_b[lo + dy:hi + dy]).mean())
+        if not costs:
+            return {}
+        dy = min(costs, key=costs.get)
+        median = float(np.median(list(costs.values())))
+        if not costs[dy] < 0.5 * median:  # no clear vertical motion
+            return {}
+        idx = np.flatnonzero(moving)
+        ty, tx = idx // self.tx, idx % self.tx
+        ok = (ty * T + dy >= 0) & (ty * T + dy <= h - T)
+        idx, ty, tx = idx[ok], ty[ok], tx[ok]
+        if not idx.size:
+            return {}
+        cur = self._tiles(src)[idx][..., :3].astype(np.int16)
+        stay = self._tiles(self.recon)[idx][..., :3].astype(np.int16)
+        rows = (ty * T + dy)[:, None] + np.arange(T)[None, :]
+        cols = (tx * T)[:, None] + np.arange(T)[None, :]
+        shifted = self.recon[rows[:, :, None], cols[:, None, :], :3].astype(np.int16)
+        err_copy = np.abs(cur - shifted).reshape(idx.size, -1).mean(axis=1)
+        err_stay = np.abs(cur - stay).reshape(idx.size, -1).mean(axis=1)
+        good = (err_copy == 0) | ((err_copy <= 0.5 * err_stay) & (err_copy <= self.COPY_MAX_MEAN_ERR))
+        return {int(i): (0, int(dy)) for i in idx[good]}
 
     def encode(self, src: np.ndarray, *, session_id: int, seq: int, base_seq: int, budget: float | None = None,
                force_keyframe: bool = False) -> tuple[bytes | None, HybridInfo]:
@@ -78,10 +123,11 @@ class HybridEncoder:
         keyframe = force_keyframe or self.recon is None
         info.keyframe = keyframe
         st = self._tiles(src)
-        if self.src_prev is None or keyframe:
+        prev_src = self.src_prev
+        if prev_src is None or keyframe:
             changed = np.ones(self.count, bool)
         else:
-            changed = (st != self._tiles(self.src_prev)).reshape(self.count, -1).any(axis=1)
+            changed = (st != self._tiles(prev_src)).reshape(self.count, -1).any(axis=1)
         self.src_prev = src.copy()
         self.still = np.where(changed, 0, self.still + 1)
         self.stale |= changed
@@ -92,10 +138,20 @@ class HybridEncoder:
             need = (st != self._tiles(self.recon)).reshape(self.count, -1).any(axis=1)
             moving = need & self.stale  # new content not shown yet
         self.stale &= need  # a stale tile whose old reconstruction happens to match needs nothing
-        settled = need & ~moving & (self.still >= self.refine_after)  # shown lossy, stopped changing: refine
         if not need.any():
             return None, info
-        args = dict(session_id=session_id, seq=seq, base_seq=0 if keyframe else base_seq, keyframe=keyframe)
+        copies: dict[int, tuple[int, int]] = {}
+        if not keyframe and prev_src is not None:
+            copies = self._scroll_copies(src, moving)
+        if copies:  # scrolled content: 5-byte copies from the previous picture instead of pixels
+            cidx = np.fromiter(copies, np.int64, len(copies))
+            moving[cidx] = False  # new content shown; if the copied picture was lossy it is refined once still
+            self.stale[cidx] = False
+        settled = need & ~moving & (self.still >= self.refine_after)  # shown lossy, stopped changing: refine
+        copy_entries = [(i, bytes((P.TILE_MODE_COPY,)) + int(dx).to_bytes(2, "little", signed=True)
+                         + int(dy).to_bytes(2, "little", signed=True)) for i, (dx, dy) in copies.items()]
+        args = dict(session_id=session_id, seq=seq, base_seq=0 if keyframe else base_seq, keyframe=keyframe,
+                    ref=bool(copies))
         moving_idx = np.flatnonzero(moving)
         raw_entries = {int(i): bytes((P.TILE_MODE_RAW,)) + st[i].tobytes() for i in moving_idx}
 
@@ -104,11 +160,11 @@ class HybridEncoder:
         dct_recon = None
         if moving_idx.size:
             hopeless = budget is not None and moving_idx.size * self.lossless_tile_bytes > budget * 2
-            lossless = None if hopeless else self._pack(list(raw_entries.items()), **args)
+            lossless = None if hopeless else self._pack(list(raw_entries.items()) + copy_entries, **args)
             if lossless is not None:
                 self.lossless_tile_bytes = 0.7 * self.lossless_tile_bytes + 0.3 * len(lossless) / moving_idx.size
             if lossless is not None and (budget is None or len(lossless) <= budget):
-                chosen = list(raw_entries.items())
+                chosen = list(raw_entries.items()) + copy_entries
                 size = len(lossless)
             else:
                 coefs = dct.forward_coefficients(st[moving_idx][..., :3])
@@ -123,7 +179,7 @@ class HybridEncoder:
                     if qi not in cache:
                         qz = dct.quantize(coefs[sample], qi)
                         ent = list(zip(moving_idx[sample].tolist(), dct.pack_entries(qz, qi)))
-                        cache[qi] = int(len(self._pack(ent, **args)) * scale)
+                        cache[qi] = int(len(self._pack(ent, **args)) * scale) + 5 * len(copy_entries)
                     return cache[qi] <= budget
 
                 top = len(dct.QUALITIES) - 1
@@ -156,7 +212,7 @@ class HybridEncoder:
                 lo = max(lo, 0)
                 while True:  # the real encode; step down if the sample estimate was optimistic
                     qz = dct.quantize(coefs, lo)
-                    chosen = list(zip(moving_idx.tolist(), dct.pack_entries(qz, lo)))
+                    chosen = list(zip(moving_idx.tolist(), dct.pack_entries(qz, lo))) + copy_entries
                     size = len(self._pack(list(chosen), **args))
                     if size <= budget or lo == 0 or stride == 1:
                         break
@@ -168,7 +224,8 @@ class HybridEncoder:
                 dct_q, dct_recon = lo, dct.reconstruct(qz, lo)
             info.moving_tiles = int(moving_idx.size)
         else:
-            chosen, size = [], 0
+            chosen = list(copy_entries)
+            size = len(self._pack(list(chosen), **args)) if chosen else 0
 
         # 2. settled tiles: lossless refinement with what is left of the budget (oldest first)
         refine_idx = np.flatnonzero(settled)
@@ -190,7 +247,8 @@ class HybridEncoder:
             return None, info
         container = self._pack(chosen, **args)
 
-        # 3. the reconstruction follows exactly what was sent
+        # 3. the reconstruction follows exactly what was sent (copies read the picture as it was before this frame)
+        before = self.recon.copy() if copies else None
         if keyframe or self.recon is None:
             self.recon = np.zeros_like(src)
         rt = self.recon.reshape(self.ty, T, self.tx, T, 4).swapaxes(1, 2)  # (ty, tx, 16, 16, 4) view of recon
@@ -199,10 +257,15 @@ class HybridEncoder:
             rt[sent_raw // self.tx, sent_raw % self.tx] = st[sent_raw]
         if dct_recon is not None:
             rt[moving_idx // self.tx, moving_idx % self.tx] = dct_recon
+        for i, (dx, dy) in copies.items():
+            ty, tx = divmod(i, self.tx)
+            self.recon[ty * T:ty * T + T, tx * T:tx * T + T] = before[ty * T + dy:ty * T + dy + T,
+                                                                       tx * T + dx:tx * T + dx + T]
+        info.copied_tiles = len(copies)
         self.stale[moving_idx] = False
         if keyframe:
             self.stale[:] = False
-        info.mode = "dct" if dct_q is not None else "lossless"
+        info.mode = "dct" if dct_q is not None else ("lossless" if len(chosen) > len(copy_entries) else "copy")
         info.quality = dct.QUALITIES[dct_q] if dct_q is not None else -1
         info.bytes = len(container)
         return container, info

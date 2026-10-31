@@ -22,6 +22,7 @@ export type Assembler = typeof(setmetatable(
 		width: number,
 		height: number,
 		frame: buffer?,
+		ref: buffer?, -- snapshot of the frame before a PFLAG_REF frame (COPY tiles read from it)
 		sessionId: number, -- chain position = last complete frame (0 = none)
 		seq: number,
 		pendingSession: number, -- frame being assembled (pendingSeq 0 = none)
@@ -45,6 +46,7 @@ function ClientCore.new(decompress: Decoder.Decompress?): Assembler
 		width = 0,
 		height = 0,
 		frame = nil :: buffer?,
+		ref = nil :: buffer?,
 		sessionId = 0,
 		seq = 0,
 		pendingSession = 0,
@@ -65,6 +67,7 @@ end
 -- Drop every pixel (sharing stopped / session ended): nothing of the shared screen stays in client memory.
 function ClientCore.reset(self: Assembler)
 	self.frame = nil
+	self.ref = nil
 	self.width, self.height = 0, 0
 	self.sessionId, self.seq = 0, 0
 	self.pendingSession, self.pendingSeq, self.nextPart, self.partCount = 0, 0, 0, 0
@@ -110,6 +113,15 @@ function ClientCore.push(self: Assembler, record: buffer): (Result, string?)
 			end
 		end
 		self.pendingSession, self.pendingSeq, self.nextPart, self.partCount = h.sessionId, h.seq, 0, h.partCount
+		if h.usesRef then -- keep the picture as it was before this frame: its COPY tiles read from it
+			local f = self.frame :: buffer
+			local r = self.ref
+			if r == nil or buffer.len(r) ~= buffer.len(f) then
+				r = buffer.create(buffer.len(f))
+				self.ref = r
+			end
+			buffer.copy(r :: buffer, 0, f)
+		end
 	else
 		if self.pendingSeq == 0 then
 			if self.desynced or (h.sessionId == self.sessionId and h.seq <= self.seq) then
@@ -123,7 +135,8 @@ function ClientCore.push(self: Assembler, record: buffer): (Result, string?)
 		end
 	end
 	local frame = self.frame :: buffer
-	local n, aerr = Decoder.applyRecord(frame, self.width, self.height, record, self.decompress, self.dirty)
+	local n, aerr = Decoder.applyRecord(frame, self.width, self.height, record, self.decompress, self.dirty,
+		if h.usesRef then self.ref else nil)
 	if n == nil then
 		return breakChain(self, "apply failed: " .. tostring(aerr)), self.lastError
 	end

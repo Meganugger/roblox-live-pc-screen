@@ -78,6 +78,7 @@ class EncodeStatus:
     frames: int = 0  # records encoded
     skipped: int = 0  # captures not sent (over budget)
     fps_skipped: int = 0  # captures not encoded (viewers' frame-rate cap)
+    copied: int = 0  # tiles sent as copies of the previous picture (scrolling)
     bytes: int = 0
     last_mode: str = ""
     last_quality: int = -1
@@ -221,12 +222,14 @@ class FrameStore:
                 self._ring_size -= len(self._ring.popleft().data)
             st.frames += 1
             st.bytes += len(data)
+            st.copied += self._last_copied
             st.last_mode, st.last_quality = mode, quality
             self._cond.notify_all()
             return True
 
     def _encode(self, q, fmt, session, seq, force_key, budget):
         """-> (container | None, keyframe, mode, quality). Runs outside the condition lock."""
+        self._last_copied = 0
         base = seq - 1
         if fmt == P.FMT_HYBRID:
             if self._hybrid is None or force_key:
@@ -237,6 +240,7 @@ class FrameStore:
                 self._hybrid.reset()
             data, info = self._hybrid.encode(q, session_id=session, seq=seq, base_seq=base, budget=budget,
                                              force_keyframe=force_key)
+            self._last_copied = info.copied_tiles if data is not None else 0
             mode = "skipped" if info.skipped else info.mode
             return data, info.keyframe, mode, info.quality
         key = force_key or self._last_sent is None

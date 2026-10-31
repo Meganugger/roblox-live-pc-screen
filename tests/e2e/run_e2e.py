@@ -115,7 +115,8 @@ class Harness:
 
     def scene(self, name: str) -> float:
         """Show scene A/B, or 'noise<seed>' (moving colours + grain in NOISE_RECT)."""
-        cmd = f"noise {name[5:]}" if name.startswith("noise") else f"scene {name}"
+        cmd = (f"noise {name[5:]}" if name.startswith("noise") else f"page {name[4:]}" if name.startswith("page")
+               else f"scene {name}")
         self.painter.stdin.write(cmd + "\n")
         self.painter.stdin.flush()
         line = self.painter.stdout.readline().strip()
@@ -286,8 +287,8 @@ class Harness:
                        seq=seq, sha256=sha[:16],
                        size=[a["image_w"], a["image_h"]], latency_s=self.metrics["start_to_picture_s"])
             self.check("E2E-04", "frame geometry matches the profile and the 16:9 desktop",
-                       (a["image_w"], a["image_h"]) == capture.fit_size(*self.screen, profile.max_w,
-                                                                        profile.max_h),
+                       (a["image_w"], a["image_h"]) == capture.stream_size(*self.screen, profile.max_w,
+                                                                           profile.max_h, 16)[2:],
                        size=[a["image_w"], a["image_h"]])
             snap = self.snapshot(ctl, "sceneA", ["Alice"], a["image_w"], a["image_h"])
             self.check("E2E-05", "snapshot pixels == expected frame and == the captured desktop (lossless when still)",
@@ -502,6 +503,50 @@ class Harness:
                 shutil.copy(os.path.join(ctl, "emulator.log"),
                             os.path.join(self.out, f"emulator-quality{'-mangled' if mangle else ''}.log"))
 
+    def scenario_scroll(self) -> None:
+        """Scrolling a text page (non-integer downscale 1280 -> 1024): copy tiles from the previous picture keep the
+        stream small; the client follows bit-exactly and ends on the exact page."""
+        ctl = tempfile.mkdtemp(prefix="rlps-e2e-scroll-", dir=self.out)
+        token = secrets.token_urlsafe(32)
+        store = RecordingStore()
+        service = server.FrameService(store, token, port=0)
+        service.start()
+        controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["max"])
+        self.scene("page0")
+        controller.start()
+        emu = self.start_emulator(f"http://127.0.0.1:{service.address[1]}", token, ctl,
+                                  {"StartBytesPerSecond": 1_000_000})
+        try:
+            open(os.path.join(ctl, "join-Sam"), "w").close()
+            (seq0, _, first), _ = self.wait_match(ctl, store, ["Sam"], 40, "first page")
+            keyframe_bytes = store.status.bytes
+            copied0, bytes0 = store.status.copied, store.status.bytes
+            for k in range(1, 16):
+                self.scene(f"page{12 * k}")
+                time.sleep(0.12)
+            sent = store.status.bytes - bytes0
+            copied = store.status.copied - copied0
+            def exact(s):
+                seq, sha, rgba = self.expected(store)
+                cap = self.captured(store)
+                c = s["clients"].get("Sam", {})
+                return (cap is not None and np.array_equal(rgba, cap) and c.get("image_sha256") == sha) or None
+            self.wait_for(ctl, exact, 60, "page exact after scrolling")
+            self.metrics["scroll"] = {"keyframe_bytes": keyframe_bytes, "bytes_for_15_scroll_steps": sent,
+                                      "copied_tiles": copied}
+            self.check("E2E-21", "scrolling a text page: tiles sent as copies of the previous picture, 15 scroll steps "
+                       "cost less than 3 keyframes, client ends on the exact page",
+                       copied > 500 and sent < 3 * keyframe_bytes, **self.metrics["scroll"])
+        finally:
+            open(os.path.join(ctl, "quit"), "w").close()
+            try:
+                emu.wait(10)
+            except subprocess.TimeoutExpired:
+                emu.kill()
+            controller.stop()
+            service.close()
+            shutil.copy(os.path.join(ctl, "emulator.log"), os.path.join(self.out, "emulator-scroll.log"))
+
     def scenario_congestion(self) -> None:
         """Adaptive rate: grows while every viewer keeps up; a throttled viewer pulls it down or gets paused,
         the fast viewer keeps receiving frames, and both end on the exact picture."""
@@ -634,7 +679,7 @@ def main() -> int:
     ap.add_argument("--out", default=os.path.join(REPO, "build", "e2e"))
     ap.add_argument("--lune", default=shutil.which("lune") or "lune")
     ap.add_argument("--profile", choices=sorted(app.PROFILES), default=app.DEFAULT_PROFILE)
-    ap.add_argument("--scenario", choices=["live", "quality", "congestion", "pacing", "viewers", "badtoken", "all"], default="all")
+    ap.add_argument("--scenario", choices=["live", "quality", "scroll", "congestion", "pacing", "viewers", "badtoken", "all"], default="all")
     ap.add_argument("--xvfb", action="store_true", help="start Xvfb even if DISPLAY is set")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -648,6 +693,8 @@ def main() -> int:
             h.scenario_live()
         if args.scenario in ("quality", "all"):
             h.scenario_quality()
+        if args.scenario in ("scroll", "all"):
+            h.scenario_scroll()
         if args.scenario in ("congestion", "all"):
             h.scenario_congestion()
         if args.scenario in ("pacing", "all"):

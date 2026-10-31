@@ -31,6 +31,24 @@ def noise_image(seed: int, w: int, h: int):
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
+def page_image(offset: int, w: int, h: int):
+    """A white page of black 'text' lines, scrolled down by ``offset`` screen pixels (deterministic)."""
+    import numpy as np
+    page_h = h * 4
+    rng = np.random.default_rng(42)
+    page = np.full((page_h, w, 3), 248, np.uint8)
+    line_h, gap = max(8, h // 45), max(5, h // 70)
+    for y in range(10, page_h - line_h, line_h + gap):
+        x = 20
+        while x < w - 40:
+            word = int(rng.integers(3, 12)) * max(5, w // 160)
+            page[y:y + line_h, x:min(w - 20, x + word)] = (20, 20, 30)
+            page[y + line_h // 3:y + line_h // 3 + 2, x:min(w - 20, x + word):3] = (248, 248, 248)  # "letter" gaps
+            x += word + max(6, w // 120)
+    o = offset % (page_h - h)
+    return np.ascontiguousarray(page[o:o + h])
+
+
 def noise_geometry(w: int, h: int):
     x, y, rw, rh = NOISE_RECT
     sx, sy = w / REF_W, h / REF_H
@@ -87,6 +105,18 @@ class XlibBackend:
             self.win.put_image(self.gc, x, y + r0, w, r1 - r0, X.ZPixmap, 24, 0, bytes(bgrx[r0 * w * 4:r1 * w * 4]))
         self.d.sync()
 
+    def page(self, offset: int) -> None:
+        from Xlib import X
+        img = page_image(offset, self.w, self.h)
+        bgrx = bytearray(self.w * self.h * 4)
+        bgrx[0::4], bgrx[1::4], bgrx[2::4] = img[..., 2].tobytes(), img[..., 1].tobytes(), img[..., 0].tobytes()
+        rows = max(1, 60000 // (self.w * 4))
+        for r0 in range(0, self.h, rows):
+            r1 = min(self.h, r0 + rows)
+            self.win.put_image(self.gc, 0, r0, self.w, r1 - r0, X.ZPixmap, 24, 0,
+                               bytes(bgrx[r0 * self.w * 4:r1 * self.w * 4]))
+        self.d.sync()
+
     def close(self) -> None:
         self.win.destroy()
         self.d.sync()
@@ -123,6 +153,15 @@ class TkBackend:
         self.root.update()
         time.sleep(0.15)
 
+    def page(self, offset: int) -> None:
+        import tkinter as tk
+        img = page_image(offset, self.w, self.h)
+        self.canvas.delete("all")
+        self._photo = tk.PhotoImage(data=b"P6 %d %d 255 " % (self.w, self.h) + img.tobytes(), format="PPM")
+        self.canvas.create_image(0, 0, image=self._photo, anchor="nw")
+        self.root.update()
+        time.sleep(0.15)
+
     def close(self) -> None:
         self.root.destroy()
 
@@ -142,6 +181,9 @@ def main() -> int:
         if cmd[0] == "scene" and len(cmd) == 2 and cmd[1] in SCENES:
             backend.draw(cmd[1])
             print(f"ready {cmd[1]}", flush=True)
+        elif cmd[0] == "page" and len(cmd) == 2 and cmd[1].isdigit():
+            backend.page(int(cmd[1]))
+            print(f"ready page{cmd[1]}", flush=True)
         elif cmd[0] == "noise" and len(cmd) == 2 and cmd[1].isdigit():
             backend.noise(int(cmd[1]))
             print(f"ready noise{cmd[1]}", flush=True)

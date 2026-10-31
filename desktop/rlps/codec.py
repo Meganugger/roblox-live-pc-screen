@@ -150,7 +150,7 @@ class FrameEncoder:
                          stats=stats)
 
     def pack(self, entries: list[tuple[int, bytes]], fmt: int, w: int, h: int, *, session_id: int, seq: int,
-             base_seq: int, keyframe: bool, stats: EncodeStats | None = None) -> bytes:
+             base_seq: int, keyframe: bool, stats: EncodeStats | None = None, ref: bool = False) -> bytes:
         """Build a container from (tile index, tile data) pairs in increasing index order.
 
         Tile data is the raw pixel bytes (RGB565/RGB888/RGBA8) or a hybrid entry (mode byte + data)."""
@@ -182,7 +182,8 @@ class FrameEncoder:
                 z = self._cctx.compress(raw)
                 if len(z) < len(raw):
                     comp, payload = P.COMP_ZSTD, z
-            header = P.PART_HEADER.pack(P.VERSION, comp, fmt, P.PFLAG_KEYFRAME if keyframe else 0, ts, 0,
+            pflags = (P.PFLAG_KEYFRAME if keyframe else 0) | (P.PFLAG_REF if ref else 0)
+            header = P.PART_HEADER.pack(P.VERSION, comp, fmt, pflags, ts, 0,
                                         part_index, len(groups), w, h, len(group), session_id, seq, base_seq,
                                         len(raw), len(payload))
             records.append(header + payload)
@@ -301,7 +302,8 @@ def parse_container(data: bytes) -> Container:
         expect = (fmt, ts, i, part_count, width, height, session_id, seq, base_seq)
         got = (part.fmt, part.tile_size, part.part_index, part.part_count, part.width, part.height,
                part.session_id, part.seq, part.base_seq)
-        if got != expect or bool(part.flags & P.PFLAG_KEYFRAME) != bool(flags & P.CFLAG_KEYFRAME):
+        if got != expect or bool(part.flags & P.PFLAG_KEYFRAME) != bool(flags & P.CFLAG_KEYFRAME) or (
+                c.parts and (part.flags & P.PFLAG_REF) != (c.parts[0].flags & P.PFLAG_REF)):
             raise ProtocolError(f"part {i} header inconsistent with container")
         off += P.PART_HEADER_SIZE
         if off + comp_length > len(data):
@@ -324,8 +326,12 @@ def parse_part_header(data: bytes, off: int = 0) -> tuple[Part, int]:
         raise ProtocolError("unknown compression")
     if fmt not in P.BYTES_PER_PIXEL or ts not in P.ALLOWED_TILE_SIZES:
         raise ProtocolError("invalid part format/tile size")
-    if flags & ~P.PFLAG_KEYFRAME:
+    if flags & ~(P.PFLAG_KEYFRAME | P.PFLAG_REF):
         raise ProtocolError("unknown part flags")
+    if flags & P.PFLAG_KEYFRAME and flags & P.PFLAG_REF:
+        raise ProtocolError("keyframe parts cannot use a reference")
+    if flags & P.PFLAG_REF and fmt != P.FMT_HYBRID:
+        raise ProtocolError("only hybrid parts can use a reference")
     if not (1 <= width <= P.MAX_DIM and 1 <= height <= P.MAX_DIM):
         raise ProtocolError("invalid part dimensions")
     if not (1 <= part_count <= P.MAX_PARTS and part_index < part_count):
@@ -365,8 +371,10 @@ def decompress_part(part: Part) -> bytes:
     return raw
 
 
-def apply_part(frame_rgba: np.ndarray, part: Part) -> list[int]:
-    """Decode one part into ``frame_rgba`` ((H, W, 4) uint8). Validates fully before writing; returns tile indices."""
+def apply_part(frame_rgba: np.ndarray, part: Part, ref: np.ndarray | None = None) -> list[int]:
+    """Decode one part into ``frame_rgba`` ((H, W, 4) uint8). Validates fully before writing; returns tile indices.
+
+    ``ref`` = the picture as it was before this frame (required by COPY tiles of PFLAG_REF parts)."""
     if frame_rgba.shape != (part.height, part.width, 4):
         raise ProtocolError("frame buffer size does not match part dimensions")
     raw = decompress_part(part)
@@ -388,17 +396,28 @@ def apply_part(frame_rgba: np.ndarray, part: Part) -> list[int]:
                 raise ProtocolError("tile data length mismatch")
             mode = raw[off]
             size = (P.HYBRID_RAW_ENTRY if mode == P.TILE_MODE_RAW else
-                    P.HYBRID_DCT_ENTRY if mode == P.TILE_MODE_DCT else 0)
+                    P.HYBRID_DCT_ENTRY if mode == P.TILE_MODE_DCT else
+                    P.HYBRID_COPY_ENTRY if mode == P.TILE_MODE_COPY else 0)
             if size == 0:
                 raise ProtocolError("unknown tile mode")
             if off + size > len(raw):
                 raise ProtocolError("tile data length mismatch")
             if mode == P.TILE_MODE_DCT and raw[off + 1] >= len(_dct().QUALITIES):
                 raise ProtocolError("invalid DCT quality")
+            if mode == P.TILE_MODE_COPY:
+                if not part.flags & P.PFLAG_REF:
+                    raise ProtocolError("copy tile without reference")
+                dx, dy = int.from_bytes(raw[off + 1:off + 3], "little", signed=True), \
+                    int.from_bytes(raw[off + 3:off + 5], "little", signed=True)
+                x0, y0, _, _ = P.tile_rect(idx, w, h, ts)
+                if not (0 <= x0 + dx <= w - ts and 0 <= y0 + dy <= h - ts):
+                    raise ProtocolError("copy tile outside the frame")
             spans.append((idx, mode, off))
             off += size
         if off != len(raw):
             raise ProtocolError("tile data length mismatch")
+        if part.flags & P.PFLAG_REF and (ref is None or ref.shape != frame_rgba.shape):
+            raise ProtocolError("copy tile without reference")
         dct_spans = [(idx, off) for idx, mode, off in spans if mode == P.TILE_MODE_DCT]
         decoded = {}
         if dct_spans:  # one vectorized integer decode for all DCT tiles of the part
@@ -411,6 +430,10 @@ def apply_part(frame_rgba: np.ndarray, part: Part) -> list[int]:
             x0, y0, _, _ = P.tile_rect(idx, w, h, ts)
             if mode == P.TILE_MODE_RAW:
                 tile = np.frombuffer(raw, np.uint8, offset=off + 1, count=ts * ts * 4).reshape(ts, ts, 4)
+            elif mode == P.TILE_MODE_COPY:
+                dx = int.from_bytes(raw[off + 1:off + 3], "little", signed=True)
+                dy = int.from_bytes(raw[off + 3:off + 5], "little", signed=True)
+                tile = ref[y0 + dy: y0 + dy + ts, x0 + dx: x0 + dx + ts]
             else:
                 tile = decoded[idx]
             frame_rgba[y0: y0 + ts, x0: x0 + ts] = tile
@@ -449,6 +472,7 @@ def apply_container(frame_rgba: np.ndarray | None, container: Container) -> np.n
         frame_rgba = np.zeros(shape, np.uint8)
     if frame_rgba is None or frame_rgba.shape != shape:
         raise ProtocolError("delta without a matching base frame")
+    ref = frame_rgba.copy() if container.parts and container.parts[0].flags & P.PFLAG_REF else None
     for part in container.parts:
-        apply_part(frame_rgba, part)
+        apply_part(frame_rgba, part, ref)
     return frame_rgba

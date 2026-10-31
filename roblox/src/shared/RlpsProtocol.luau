@@ -16,9 +16,11 @@ Protocol.BYTES_PER_PIXEL = { [1] = 2, [2] = 3, [3] = 4, [4] = 4 } :: { [number]:
 
 Protocol.TILE_MODE_RAW = 0 -- mode u8 | 16*16*4 RGBA8 bytes
 Protocol.TILE_MODE_DCT = 1 -- mode u8 | quality u8 | 384 int16 zigzag coefficients
+Protocol.TILE_MODE_COPY = 2 -- mode u8 | dx i16 | dy i16: 16x16 block of the previous picture (PFLAG_REF parts)
 Protocol.HYBRID_TILE = 16
 Protocol.HYBRID_RAW_ENTRY = 1025
 Protocol.HYBRID_DCT_ENTRY = 770
+Protocol.HYBRID_COPY_ENTRY = 5
 
 Protocol.COMP_NONE = 0
 Protocol.COMP_ZSTD = 1 -- one zstd frame with content size (EncodingService Zstd)
@@ -29,6 +31,7 @@ Protocol.STATE_LIVE = 1
 Protocol.CFLAG_KEYFRAME = 0x01
 Protocol.CFLAG_UNCHANGED = 0x02
 Protocol.PFLAG_KEYFRAME = 0x01
+Protocol.PFLAG_REF = 0x02 -- this frame copies from the picture as it was before the frame
 
 Protocol.ALLOWED_TILE_SIZES = { [8] = true, [16] = true, [32] = true } :: { [number]: boolean }
 Protocol.MAX_DIM = 1024 -- EditableImage maximum

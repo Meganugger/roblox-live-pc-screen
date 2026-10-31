@@ -36,6 +36,7 @@ export type PartHeader = {
 	rawLength: number,
 	compLength: number,
 	keyframe: boolean,
+	usesRef: boolean,
 }
 
 export type PartRef = { header: PartHeader, offset: number, length: number } -- record = header + payload
@@ -83,8 +84,14 @@ function Decoder.parsePartHeader(data: buffer, off: number): (PartHeader?, strin
 	if bpp == nil or not TILE_SIZES[ts] then
 		return nil, "invalid part format/tile size"
 	end
-	if band(flags, bit32.bnot(Protocol.PFLAG_KEYFRAME)) ~= 0 then
+	if band(flags, bit32.bnot(bor(Protocol.PFLAG_KEYFRAME, Protocol.PFLAG_REF))) ~= 0 then
 		return nil, "unknown part flags"
+	end
+	if band(flags, Protocol.PFLAG_KEYFRAME) ~= 0 and band(flags, Protocol.PFLAG_REF) ~= 0 then
+		return nil, "keyframe parts cannot use a reference"
+	end
+	if band(flags, Protocol.PFLAG_REF) ~= 0 and fmt ~= Protocol.FMT_HYBRID then
+		return nil, "only hybrid parts can use a reference"
 	end
 	if width < 1 or width > MAX_DIM or height < 1 or height > MAX_DIM then
 		return nil, "invalid part dimensions"
@@ -122,6 +129,7 @@ function Decoder.parsePartHeader(data: buffer, off: number): (PartHeader?, strin
 		rawLength = rawLength,
 		compLength = compLength,
 		keyframe = band(flags, Protocol.PFLAG_KEYFRAME) ~= 0,
+		usesRef = band(flags, Protocol.PFLAG_REF) ~= 0,
 	},
 		nil
 end
@@ -217,6 +225,7 @@ function Decoder.parseContainer(data: buffer): (Container?, string?)
 			or h.seq ~= seq
 			or h.baseSeq ~= baseSeq
 			or h.keyframe ~= keyframe
+			or (#c.parts > 0 and h.usesRef ~= c.parts[1].header.usesRef)
 		then
 			return nil, "part " .. i .. " header inconsistent with container"
 		end
@@ -315,7 +324,8 @@ function Decoder.applyRecord(
 	frameHeight: number,
 	record: buffer,
 	decompress: Decompress?,
-	bounds: Bounds?
+	bounds: Bounds?,
+	ref: buffer? -- the picture as it was before this frame (COPY tiles of PFLAG_REF parts)
 ): (number?, string?)
 	local h, herr = Decoder.parseRecord(record)
 	if h == nil then
@@ -347,7 +357,7 @@ function Decoder.applyRecord(
 		end
 		local nq = #Dct.QUALITIES
 		local off = 2 * n
-		for _ = 1, n do -- validate every entry before writing a single pixel
+		for i = 1, n do -- validate every entry before writing a single pixel
 			if off >= rawLen then
 				return nil, "tile data length mismatch"
 			end
@@ -355,6 +365,7 @@ function Decoder.applyRecord(
 			local size = if mode == Protocol.TILE_MODE_RAW
 				then Protocol.HYBRID_RAW_ENTRY
 				elseif mode == Protocol.TILE_MODE_DCT then Protocol.HYBRID_DCT_ENTRY
+				elseif mode == Protocol.TILE_MODE_COPY then Protocol.HYBRID_COPY_ENTRY
 				else 0
 			if size == 0 then
 				return nil, "unknown tile mode"
@@ -365,22 +376,43 @@ function Decoder.applyRecord(
 			if mode == Protocol.TILE_MODE_DCT and readu8(raw, off + 1) >= nq then
 				return nil, "invalid DCT quality"
 			end
+			if mode == Protocol.TILE_MODE_COPY then
+				if not h.usesRef then
+					return nil, "copy tile without reference"
+				end
+				local x0, y0 = Protocol.tileRect(readu16(raw, 2 * (i - 1)), w, hgt, ts)
+				local sx, sy = x0 + buffer.readi16(raw, off + 1), y0 + buffer.readi16(raw, off + 3)
+				if sx < 0 or sx > w - ts or sy < 0 or sy > hgt - ts then
+					return nil, "copy tile outside the frame"
+				end
+			end
 			off += size
 		end
 		if off ~= rawLen then
 			return nil, "tile data length mismatch"
 		end
+		if h.usesRef and (ref == nil or buffer.len(ref :: buffer) ~= buffer.len(frame)) then
+			return nil, "copy tile without reference"
+		end
 		off = 2 * n
 		for i = 0, n - 1 do
 			local x0, y0 = Protocol.tileRect(readu16(raw, 2 * i), w, hgt, ts)
 			grow(bounds, x0, y0, 16, 16)
-			if readu8(raw, off) == Protocol.TILE_MODE_RAW then
+			local mode = readu8(raw, off)
+			if mode == Protocol.TILE_MODE_RAW then
 				local src = off + 1
 				for row = 0, 15 do
 					buffer.copy(frame, (y0 + row) * stride + x0 * 4, raw, src, 64)
 					src += 64
 				end
 				off += Protocol.HYBRID_RAW_ENTRY
+			elseif mode == Protocol.TILE_MODE_COPY then
+				local sx, sy = x0 + buffer.readi16(raw, off + 1), y0 + buffer.readi16(raw, off + 3)
+				local r = ref :: buffer
+				for row = 0, 15 do
+					buffer.copy(frame, (y0 + row) * stride + x0 * 4, r, (sy + row) * stride + sx * 4, 64)
+				end
+				off += Protocol.HYBRID_COPY_ENTRY
 			else
 				Dct.decodeTile(raw, off, frame, stride, x0, y0)
 				off += Protocol.HYBRID_DCT_ENTRY

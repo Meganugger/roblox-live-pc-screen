@@ -21,9 +21,12 @@ BYTES_PER_PIXEL = {FMT_RGB565: 2, FMT_RGB888: 3, FMT_RGBA8: 4, FMT_HYBRID: 4}
 # FMT_HYBRID tile entry modes (first byte of each tile's data).
 TILE_MODE_RAW = 0  # mode u8 | 16*16*4 RGBA8 bytes
 TILE_MODE_DCT = 1  # mode u8 | quality u8 | 384 int16 zigzag coefficients (rlps.dct)
+TILE_MODE_COPY = 2  # mode u8 | dx i16 | dy i16: copy the 16x16 block at (x0+dx, y0+dy) of the *previous* picture
+#                     (scrolling, moved windows); only in parts flagged PFLAG_REF
 HYBRID_TILE = 16
 HYBRID_RAW_ENTRY = 1 + 16 * 16 * 4  # 1025
 HYBRID_DCT_ENTRY = 2 + 384 * 2  # 770
+HYBRID_COPY_ENTRY = 5
 
 # Part payload compression.
 COMP_NONE = 0
@@ -39,6 +42,7 @@ CFLAG_UNCHANGED = 0x02  # no frame newer than ``after``; no parts
 
 # Part flags.
 PFLAG_KEYFRAME = 0x01
+PFLAG_REF = 0x02  # the frame copies from the picture as it was before this frame (set on every part of it)
 
 ALLOWED_TILE_SIZES = (8, 16, 32)
 DEFAULT_TILE_SIZE = 16

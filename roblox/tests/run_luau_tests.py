@@ -104,10 +104,11 @@ def expect_case(data: bytes) -> dict:
     out = {"fields": fields(c)}
     if c.state == P.STATE_LIVE and not c.flags & P.CFLAG_UNCHANGED:
         frame = np.zeros((c.height, c.width, 4), np.uint8)
+        ref = frame.copy() if c.parts and c.parts[0].flags & P.PFLAG_REF else None
         apply_err = None
         for part in c.parts:
             try:
-                C.apply_part(frame, part)
+                C.apply_part(frame, part, ref)
             except ProtocolError as e:
                 msg = str(e)
                 apply_err = "*" if msg.startswith(("bad zstd frame", "zstd decode failed")) else msg
@@ -215,11 +216,13 @@ def hybrid_sequences():
                                                     for t, b in ((1, 2500), (2, 4000), (3, 6000), (4, 9000))]
     frames += [(img_smooth(w, h, 4), 4000, False)] * 4 + [(extreme, 2500, False), (extreme, 2500, False),
                                                            (extreme, None, False)]
+    page = img_text(w, h * 3, 11)  # scrolling text: COPY tiles from the previous picture
+    frames += [(page[:h], None, False)] + [(page[6 * k:6 * k + h], 6000, False) for k in range(1, 5)]
     for name, max_part, comp in (("64x48-hybrid-zstd", P.DEFAULT_PART_RAW_BYTES, P.COMP_ZSTD),
                                  ("64x48-hybrid-none-small-parts", 3 * 1027, P.COMP_NONE)):
         enc = HY.HybridEncoder(w, h, packer=C.FrameEncoder(compression=comp, tile_size=16, max_part_raw_bytes=max_part))
         session = 0xB0B0_0000 + len(out)
-        ref, seq, steps, qualities = None, 0, [], set()
+        ref, seq, steps, qualities, copies = None, 0, [], set(), 0
         scale = 1 if comp == P.COMP_ZSTD else 5  # uncompressed DCT tiles are 770 bytes at every quality
         for rgb, budget, force in frames:
             data, info = enc.encode(C.quantize(rgb, P.FMT_HYBRID), session_id=session, seq=seq + 1, base_seq=seq,
@@ -228,6 +231,7 @@ def hybrid_sequences():
                 continue
             seq += 1
             qualities.add(info.quality)
+            copies += info.copied_tiles
             note_zstd(data)
             c = C.parse_container(data)
             ref = C.apply_container(ref, c)
@@ -236,6 +240,7 @@ def hybrid_sequences():
         if comp == P.COMP_ZSTD:
             assert len(qualities - {-1}) >= 3, qualities  # several DCT quality steps exercised
         assert -1 in qualities and len(qualities) >= 2, qualities  # lossless and DCT frames
+        assert copies > 0, "scroll frames must produce COPY tiles"
         out.append({"name": name, "steps": steps})
     return out
 
@@ -335,7 +340,24 @@ def hybrid_payload_cases():
     dct_tile = dct.pack_entries(qz, 6)[0]
     max_coef = bytes((P.TILE_MODE_DCT, 15)) + np.full(384, 32767, "<i2").tobytes()
     min_coef = bytes((P.TILE_MODE_DCT, 0)) + np.full(384, -32768, "<i2").tobytes()
+    def copy_entry(dx, dy):
+        return bytes((P.TILE_MODE_COPY,)) + dx.to_bytes(2, "little", signed=True) + dy.to_bytes(2, "little", signed=True)
+
+    def ref_container(entries, flags=P.PFLAG_REF):
+        idx = list(range(len(entries)))
+        raw = np.asarray(idx, "<u2").tobytes() + b"".join(entries)
+        ph = P.PART_HEADER.pack(P.VERSION, P.COMP_NONE, P.FMT_HYBRID, flags, 16, 0, 0, 1, w, h, len(idx), 3, 2, 1,
+                                len(raw), len(raw))
+        body = ph + raw
+        return P.CONTAINER_HEADER.pack(P.CONTAINER_MAGIC, P.VERSION, P.STATE_LIVE, 0, 0, 3, 2, 1, w, h, P.FMT_HYBRID,
+                                       16, 1, len(body)) + body
+
     specs = {
+        "hy-copy-ok": ref_container([copy_entry(16, 0), raw_tile]),
+        "hy-copy-outside": ref_container([copy_entry(-1, 0), raw_tile]),
+        "hy-copy-outside-y": ref_container([copy_entry(0, 1), raw_tile]),
+        "hy-copy-no-ref-flag": ref_container([copy_entry(16, 0), raw_tile], flags=0),
+        "hy-key-with-ref": container([raw_tile]) [:32 + 3] + bytes((P.PFLAG_KEYFRAME | P.PFLAG_REF,)) + container([raw_tile])[32 + 4:],
         "hy-raw+dct": container([raw_tile, dct_tile]),
         "hy-dct-extremes": container([max_coef, min_coef]),
         "hy-unknown-mode": container([raw_tile, bytes((5,)) + dct_tile[1:]]),

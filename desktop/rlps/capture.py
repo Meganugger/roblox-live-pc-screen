@@ -97,6 +97,28 @@ def resize(img: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
     return np.clip(work + 0.5, 0, 255).astype(np.uint8) if work.dtype != np.uint8 else work
 
 
+def stream_size(src_w: int, src_h: int, max_w: int, max_h: int, align: int = 1) -> tuple[int, int, int, int]:
+    """(content_w, content_h, frame_w, frame_h) for streaming a src_w x src_h screen.
+
+    The content keeps the source aspect ratio; an *integer* downscale factor is preferred when it keeps >= 90 % of
+    the width (integer area averaging maps scrolled content to identical pixels, so scrolling is sent as exact
+    copies). With ``align`` > 1 the frame is the content letterboxed (black bars) to a multiple of ``align``."""
+    cw, ch = fit_size(src_w, src_h, max_w, max_h)
+    if (cw, ch) != (src_w, src_h):
+        k = -(-src_w // cw) if src_w * ch >= src_h * cw else -(-src_h // ch)
+        iw, ih = src_w // k, src_h // k
+        while (iw > max_w or ih > max_h) and k < 64:
+            k += 1
+            iw, ih = src_w // k, src_h // k
+        if iw >= 0.9 * cw and iw >= 1 and ih >= 1:
+            cw, ch = iw, ih
+    if align <= 1:
+        return cw, ch, cw, ch
+    fw = min(max(align, -(-cw // align) * align), max(align, min(max_w, P.MAX_DIM) // align * align))
+    fh = min(max(align, -(-ch // align) * align), max(align, min(max_h, P.MAX_DIM) // align * align))
+    return min(cw, fw), min(ch, fh), fw, fh
+
+
 try:  # optional, much faster area-averaging resize (opencv-python-headless); numpy fallback otherwise
     import cv2 as _cv2
 except ImportError:  # pragma: no cover - depends on the machine
@@ -108,12 +130,19 @@ def bgra_to_rgb(bgra: np.ndarray, max_w: int, max_h: int, align: int = 1, use_cv
     if bgra.ndim != 3 or bgra.shape[2] != 4 or bgra.dtype != np.uint8:
         raise ValueError(f"expected (H, W, 4) uint8 BGRA, got {bgra.shape} {bgra.dtype}")
     h, w = bgra.shape[:2]
-    out_w, out_h = fit_size(w, h, max_w, max_h, align)
+    cw, ch, out_w, out_h = stream_size(w, h, max_w, max_h, align)
     if use_cv2 and _cv2 is not None:
-        small = bgra if (w, h) == (out_w, out_h) else _cv2.resize(bgra, (out_w, out_h), interpolation=_cv2.INTER_AREA)
-        return _cv2.cvtColor(small, _cv2.COLOR_BGRA2RGB)
-    small_bgr = resize(bgra[:, :, :3], out_w, out_h)  # resize first, reorder channels on the small image
-    return np.ascontiguousarray(small_bgr[:, :, ::-1])
+        small = bgra if (w, h) == (cw, ch) else _cv2.resize(bgra, (cw, ch), interpolation=_cv2.INTER_AREA)
+        rgb = _cv2.cvtColor(small, _cv2.COLOR_BGRA2RGB)
+    else:
+        small_bgr = resize(bgra[:, :, :3], cw, ch)  # resize first, reorder channels on the small image
+        rgb = np.ascontiguousarray(small_bgr[:, :, ::-1])
+    if (cw, ch) == (out_w, out_h):
+        return rgb
+    out = np.zeros((out_h, out_w, 3), np.uint8)  # letterbox: content centred, black bars
+    y0, x0 = (out_h - ch) // 2, (out_w - cw) // 2
+    out[y0:y0 + ch, x0:x0 + cw] = rgb
+    return out
 
 
 def _default_factory():
