@@ -33,9 +33,12 @@ Windows desktop ─mss/DXGI─► desktop app (Python)                        Ro
   screen becomes a pixel-exact copy of the desktop.
 * **Bundles**: one HTTP response carries every frame newer than the poller's position (plus 150 ms of batching), so
   500 requests/min do not cap the frame rate; the server plays them out at their capture spacing.
-* **Congestion control**: clients acknowledge frames with their decode time; the server adapts the byte rate (AIMD on
-  the age of unacknowledged frames) and a frame-rate cap (decode time), and reports both with every poll; the encoder
-  obeys them. A viewer far behind is paused and re-synced instead of slowing everyone.
+* **Congestion control**: clients acknowledge the bytes they processed and their decode time; the server adapts the
+  byte rate (AIMD on the median viewer's delay) and a frame-rate cap (median decode time), and reports both with every
+  poll; the encoder obeys them. **Per-viewer flow control** (`RlpsFanout`, D-0009) keeps each viewer's backlog within
+  about one second of its own delivery rate: a slow viewer is held, then gets exactly the frames it missed from the
+  played history (or the next keyframe, requested with `fresh=1`) — it never slows the others down and never piles up
+  minutes of stream.
 * **Binary bodies** are used after a probe proved them intact; otherwise base64.
 
 ## Flow control (D-0006)

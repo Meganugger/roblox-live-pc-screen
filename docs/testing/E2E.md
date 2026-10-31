@@ -37,7 +37,7 @@ roblox_emulator.luau (Lune) ─────────────────�
 | E2E-16 | pacing: with the rate pinned to 3000 B/s the forwarded stream stays within budget while the desktop changes ~2.7×/s, and the final frame is exact |
 | E2E-18 | moving grain at 150 kB/s: the encoder emits lossy DCT frames and the client shows ≥ 3 distinct **lossy** pictures bit-exactly (real Luau `RlpsDct`), then the still picture refines to the exact captured desktop |
 | E2E-19 | same with binary bodies mangled in transit (emulated text-only HTTP stack): the probe falls back to base64 |
-| E2E-20 | congestion control: the rate grows above its start with one fast viewer; a viewer throttled to 40 kB/s makes it back off or is paused, the fast viewer keeps receiving frames, both end exact |
+| E2E-20 | congestion control: the rate grows above its start with one fast viewer; a viewer throttled to 10 kB/s makes it back off or is held (`LaggingViewers`), the fast viewer keeps receiving frames, both end exact |
 | E2E-21 | scrolling a text page through a non-integer downscale (1280 → 1024): COPY tiles, 15 scroll steps cost less than 3 keyframes, the page ends pixel-exact |
 
 ## Run it

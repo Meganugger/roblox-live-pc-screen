@@ -27,10 +27,10 @@ has explicitly pressed Start, only in memory, and only reach Roblox servers that
 | 12 | No undisclosed endpoints | the desktop app makes **no outbound connections**; the Roblox server requests only `FrameServiceUrl` (owner-set attribute, must be `https://`) and the secret only attaches to its domain | `RlpsServer.server.luau` `pollOnce`; F-0011 |
 | 13 | No credentials in client-visible code | token only in `%APPDATA%\rlps\config.json` and in the Roblox secrets store; `GetSecret` is server-only; clients receive frames, never the token | E2E-15 (wrong token → client gets no image, no pixel bytes) |
 | 14 | Authenticated endpoint | `Authorization: Bearer`, `hmac.compare_digest`; token ≥ 24 chars (`secrets.token_urlsafe(32)` = 43) | `test_server.py::test_auth_required`, `test_short_token_refused` |
-| 15 | Validation + rate limits | strict query parser (unknown/repeated/oversized params → 400); token buckets 20/s (ok) and 0.5/s (failed auth); ≤ 8 concurrent polls; long-poll ≤ 25 s; both decoders validate every header, length, index, tile mode, DCT quality, COPY source rectangle and zstd content size before writing a pixel; bundles and response sizes bounded; client acks type-checked and bounded on the server | `test_server.py`, `test_hybrid.py`, Luau specs (5,984 checks), `test_codec.py` |
+| 15 | Validation + rate limits | strict query parser (unknown/repeated/oversized params → 400); token buckets 20/s (ok) and 0.5/s (failed auth); ≤ 8 concurrent polls; long-poll ≤ 25 s; both decoders validate every header, length, index, tile mode, DCT quality, COPY source rectangle and zstd content size before writing a pixel; bundles and response sizes bounded; client acks and syncs type-checked and bounded on the server (processed bytes clamped to what that client was sent; a sync is answered at most once per second and never while the previous answer is in flight) | `test_server.py`, `test_hybrid.py`, Luau specs (5,984 checks), `test_codec.py` |
 | 16 | Controls restricted to authorized users | sharing is controlled only on the PC; no in-game control surface; optional `ViewerUserIds` allowlist enforced by the server for fan-out *and* sync | E2E-17 (non-listed player: "not authorized", no pixel data) |
 | 17 | No access to local files | no file routes; the service never reads files | code review |
-| 18 | No generic proxy | the Roblox server builds one URL shape from the owner's attribute; players cannot influence it (the only client→server message is `"sync"`, rate-limited) | `RlpsServer.server.luau` |
+| 18 | No generic proxy | the Roblox server builds one URL shape from the owner's attribute; players cannot influence it (client→server messages are only `"sync"` and `"ack"`, both bounded; they can only change what that client is sent and the stream rate within the owner's `MinBytesPerSecond`…`MaxBytesPerSecond`) | `RlpsServer.server.luau`, `RlpsFanout.luau`, `RlpsFanout.spec.luau` |
 | 19 | Reliable cleanup | `controller.stop()` + `service.close()` in `finally`; capture thread joins; clients destroy EditableImages on STOPPED; a crash of the capture loop stops sharing | `test_app.py`, E2E-13, E2E-14 |
 | 20 | Config protected, secrets out of git | config created with mode 0600 (POSIX; per-user `%APPDATA%` on Windows); request logging never includes headers; `.gitignore` excludes configs and `.env` | `test_app.py` (0600 on POSIX) |
 
@@ -44,6 +44,9 @@ has explicitly pressed Start, only in memory, and only reach Roblox servers that
   the frames while sharing is on → rotate it (`--rotate-token`) and update the Roblox secret.
 * **Tunnel provider**: TLS terminates at Cloudflare/Tailscale, which can technically see the (compressed) frames.
   Use a named tunnel on infrastructure you trust if that matters.
+* **A player can influence the stream rate, not its content**: acks steer the rate within the owner's bounds. The rate
+  follows the *median* viewer (D-0009), so one client faking slowness cannot degrade the stream for the others when
+  at least two other viewers keep up; faking speed only overloads its own connection.
 * **Roblox**: frames pass through Roblox game servers and clients; Roblox moderation rules apply to what you show
   (Terms of Use / Community Standards — T-0016: the official pages could not be fetched from the agent sandbox, the owner
   must review them).

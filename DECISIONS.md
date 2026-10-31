@@ -115,3 +115,30 @@
 - **Why decode time**: the live test showed that lowering the bit rate does not help a CPU-bound client (DCT decode cost
   scales with frames, not bytes) — without the fps cap even an unthrottled emulated client fell behind.
 - **Revisit if**: Roblox exposes per-client network statistics to scripts.
+- **Superseded in part by D-0009** (2026-10-31): the pause rule (`LagDropSeconds`) is replaced by per-viewer flow
+  control; the rate follows the median viewer instead of the slowest.
+
+## D-0009 — Per-viewer flow control from processed-byte acks; the median viewer sets the rate (2026-10-31)
+
+- **Problem** (found by the live test on the Windows CI runner, then reproduced in a simulation): a client still
+  waiting for its first picture re-requests `sync` every 3 s; each re-sync restarted the lag measurement window and
+  re-sent the whole history to a viewer that was already too slow, so a 10 KB/s viewer was never detected and its
+  backlog kept growing. More generally, a time-based lag rule reacts only after the backlog of a slow viewer has grown
+  at the full stream rate for seconds (at 1 MB/s → minutes to drain at 10 KB/s), and the global "forward log" could not
+  count bytes for a viewer that had not acknowledged anything yet.
+- **Selected**: clients report the *bytes of parts they processed* (ack and sync); the server knows exactly what each
+  viewer has in flight. `RlpsFanout` keeps each viewer's backlog within max(128 KiB, 1 s × its measured delivery
+  rate) — measured BBR-style from message flights; a full window *holds* the viewer; once drained it gets exactly the
+  frames it missed from the played history, or waits for a fresh keyframe when that is cheaper. Syncs are ignored while
+  the previous answer is in flight. The AIMD rate follows the *lower median* viewer delay (majority rules: with PC
+  requirements the stream should be as good as most viewers sustain, not as poor as the worst). Keyframes for viewers
+  are requested with a new `fresh=1` poll flag (continue the chain, next capture is a keyframe) because `key=1`
+  replayed the ring's newest keyframe chain — every TV briefly rewound to old frames.
+- **Evidence**: `roblox/tests/RlpsFanout.spec.luau` network simulation (fast viewer 8 MB/s + 10 KB/s viewer on a 1 MB/s,
+  30 fps stream: the fast viewer receives all 1,031 frames, held once during warm-up; the slow one's backlog ≤ 120 KiB,
+  4 pictures, ends on the last frame); live test E2E-20 (rate keeps following the fast viewer, slow viewer held).
+- **Rejected**: lowering the rate to the slowest viewer (one bad connection ruins the stream for everyone and a client
+  could degrade it on purpose); per-viewer encodes / simulcast (one encoder on the owner's PC; a low-resolution second
+  layer for slow viewers stays a possible extension, KI-0008).
+- **Revisit if**: Roblox exposes per-client network statistics to scripts, or real servers show a different delivery
+  pattern (T-0018).

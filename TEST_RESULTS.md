@@ -166,3 +166,25 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
 - **Benchmark**: `scripts/bench.py` → `docs/testing/evidence/bench.txt` (PERFORMANCE.md).
 - **Not verified**: real Roblox (replication throughput, native-code decode speed on clients, raw-body probe outcome on
   live servers), the owner's PC (encode time, dxcam). CI status of the final commit: see PR #1 checks.
+- **CI** at `96badc5`: 4/5 green; the Windows live test failed E2E-20 (`min_rate == rate_after_growth`,
+  `max_lagging_viewers` 0: the 10 kB/s viewer was never detected) — root cause and fix in TR-0012 / D-0009. The failure
+  report itself was missing: the Windows step runs `bash -eo pipefail` and a `grep` without matches ended it before it
+  posted (fixed in `ce34fa9`).
+
+## TR-0012 — Per-viewer flow control (29th session, 2026-10-31)
+
+- **Commands / results**: `cd desktop && python3 -m pytest -q` → **85 passed** (+327 subtests; new
+  `test_fresh_continues_the_chain_and_forces_one_new_keyframe`); `python3 roblox/tests/run_luau_tests.py --analyze` →
+  luau-analyze OK, **6,588 / 0** (new `RlpsFanout.spec.luau`: 659 checks — every vector sequence relayed to an early
+  viewer and a late joiner after every step with CRC-exact pictures, Stop, ack clamping, sync suppression, hold +
+  suffix catch-up, waiting for a keyframe, history limit, median stats, and a 60 Hz network simulation);
+  `scripts/check_roblox.sh` → Rojo + luau-lsp strict OK; `python3 tests/e2e/run_e2e.py` → **25 / 25**.
+- **Simulation** (`RlpsFanout.spec.luau` §C, per-viewer bandwidth + latency): 1 MB/s, 30 fps stream, fast viewer 8 MB/s
+  + 10 kB/s viewer → fast viewer received all 1,031 frames, held once while warming up, backlog ≤ 363 KiB; slow viewer
+  backlog ≤ 120 KiB, 4 pictures, ended on the last frame; 8 keyframes in 70 s. Three similar viewers at 60 fps / 2.4 MB/s
+  → no frame skipped after warm-up. A 500 kB/s viewer next to a fast one: fast unaffected, the slow one saw ~45 % of
+  the frames.
+- **E2E-20**: rate 300 kB/s → 1.46 MB/s, unchanged when the 10 kB/s viewer joined (`LaggingViewers` = 1), fast viewer
+  107 distinct pictures in 14 s, both exact at the end.
+- **CI** at `5a56a07` (PR #1): **5 / 5 green** — Python on Linux and Windows, Luau specs + Rojo + luau-lsp, live test on
+  Xvfb and on the real Windows desktop (where E2E-20 had failed at `96badc5`).

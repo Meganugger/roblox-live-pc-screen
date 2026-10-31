@@ -41,7 +41,8 @@ Cloudflare *named* tunnel on your own hostname (optional, see A.3).
 
 **Recommended PC** (stream encoder at 1024×576 @ 30 fps): a 4-core CPU from the last ~8 years; the encoder needed
 < 33 ms per frame on a 2.1 GHz cloud vCPU. Upload bandwidth: the stream adapts, but 2–8 Mbit/s lets moving content
-stay sharp. Players' PCs decode the picture in Luau: the frame rate adapts to the slowest viewer.
+stay sharp. Players' PCs decode the picture in Luau: the frame rate and quality adapt to what most viewers keep up
+with; a player with a much slower PC or connection gets fewer pictures instead of slowing everyone down.
 
 ### A.2 Create the token
 
@@ -121,13 +122,14 @@ Select **ServerScriptService ⟩ Rlps ⟩ RlpsServer**, scroll to **Attributes**
 | `ViewerUserIds` | optional: comma-separated UserIds allowed to see the screen, e.g. `12345678, 87654321`; empty = everyone |
 | `MaxBytesPerSecond` | 8000000 — upper bound of the adaptive stream rate (per viewer; every viewer gets the same stream) |
 | `StartBytesPerSecond`, `MinBytesPerSecond` | 1000000, 100000 — where the rate starts and how low it may go |
-| `TargetLagSeconds`, `LagDropSeconds` | 0.35, 4 — acceptable delay of the slowest viewer; beyond `LagDropSeconds` a viewer is paused and re-synced |
+| `TargetLagSeconds` | 0.35 — acceptable delay of the median viewer (the rate follows most viewers; slower ones are held and caught up, never slowing the others) |
 | `BatchMs`, `ClientDecodeBudgetMs` | 150, 10 — frames per HTTP response window; decode time per client frame |
 | `PollWaitMs`, `MinPollInterval`, `StoppedPollInterval` | leave the defaults (15000, 0.15, 1) |
 
 The script also *writes* read-only diagnostics there while running: `Status`, `StatusDetail`, `Containers`,
-`ForwardedBytes`, `Dropped`, `LastError`, `RateBps` (current stream rate), `FpsCap`, `ForwardFps`, `MaxLagMs`,
-`Viewers`, `LaggingViewers`, `BodyMode` (`raw` or `base64`). Each client's `RlpsClient` script shows `State`, `Seq`,
+`ForwardedBytes`, `Dropped`, `LastError`, `RateBps` (current stream rate), `FpsCap`, `ForwardFps`, `LagMs` (delay of
+the median viewer), `MaxLagMs`, `Viewers`, `LaggingViewers` (held or waiting for a keyframe), `BodyMode` (`raw` or
+`base64`). Each client's `RlpsClient` script shows `State`, `Seq`,
 `DecodeMsPerFrame`, `QueueLength`, `Desyncs`, `LastError` (Explorer while playing, or the F9 console).
 
 ### C.3 The token secret

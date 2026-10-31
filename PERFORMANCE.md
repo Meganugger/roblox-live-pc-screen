@@ -16,8 +16,8 @@ slower than Roblox's native code generation).
 | lossless | up to 1024×576 | 15 fps | RGBA8 only (never lossy) |
 
 The byte rate is **not fixed**: it starts at `StartBytesPerSecond` (1 MB/s) and adapts between `MinBytesPerSecond`
-(100 kB/s) and `MaxBytesPerSecond` (8 MB/s) to what every viewer keeps up with (acks). The frame rate is capped by
-the slowest viewer's measured decode time. A 1920×1080 or 3840×2160 desktop is sent at 960×540 (an integer factor,
+(100 kB/s) and `MaxBytesPerSecond` (8 MB/s) to what the median viewer keeps up with (acks); slower viewers are held
+and caught up per viewer (D-0009). The frame rate is capped by the median viewer's measured decode time. A 1920×1080 or 3840×2160 desktop is sent at 960×540 (an integer factor,
 letterboxed to 960×544) because integer scaling turns scrolling into exact copies; 2560×1440 and 1366×768 at 1024×576.
 
 ## Codec (MEASURED)
@@ -64,7 +64,7 @@ when `dxcam` is installed (faster than GDI, captures hardware-accelerated video;
 | late joiner → picture | 0.2 s |
 | Stop → TVs off | 0.06–0.1 s |
 | scrolling a text page 15 steps | 32,455 copy tiles; 298 kB including refinement in the pauses (resending would be ≈ 15 × 50 kB) |
-| congestion (E2E-20) | rate grew 300 kB/s → 0.99–1.46 MB/s with one viewer; a 40 kB/s viewer was paused while the other kept receiving frames |
+| congestion (E2E-20) | rate grew 300 kB/s → 1.46 MB/s with one viewer and kept following it when a 10 kB/s viewer joined (held, `LaggingViewers` = 1); the fast viewer showed 107 distinct pictures meanwhile; both ended exact |
 
 The Lune emulator decodes about 8–15 fps of DCT-heavy 768×432 frames (interpreted Luau); the fps cap followed that
 measured decode time. Real Roblox clients run `--!native` code (documented for server scripts; client behaviour is an

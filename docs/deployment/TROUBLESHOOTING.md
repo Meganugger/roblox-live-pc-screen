@@ -75,10 +75,12 @@ keep the screen part's size 16:9 (the image is letterboxed with `ScaleType.Fit`,
 
 Look at three numbers:
 
-* **`RlpsServer.RateBps`** (bytes/s the stream may use). It grows while every viewer keeps up and shrinks when one
-  falls behind (`MaxLagMs`). Low and not growing → a viewer's connection (or Roblox replication) is the limit:
-  `LaggingViewers` > 0 means someone was paused. Raise `MinBytesPerSecond` only if all viewers have fast connections.
-* **`RlpsServer.FpsCap`** (frames/s the slowest viewer decodes). Low → a viewer's PC is slow to decode
+* **`RlpsServer.RateBps`** (bytes/s the stream may use). It grows while most viewers keep up and shrinks when the
+  median viewer falls behind (`LagMs`; `MaxLagMs` is the worst viewer). Low and not growing → most viewers' connections
+  (or Roblox replication) are the limit. `LaggingViewers` > 0 → that many viewers cannot keep up: each is *held* (its
+  backlog stays within about one second of its own speed) and catches up or jumps to the next keyframe — it sees a
+  slideshow, the others are unaffected. Raise `MinBytesPerSecond` only if all viewers have fast connections.
+* **`RlpsServer.FpsCap`** (frames/s the median viewer decodes). Low → most viewers' PCs are slow to decode
   (`RlpsClient.DecodeMsPerFrame`); moving content (DCT tiles) is the expensive part. Use `--profile high` (768×432).
 * **The sharing window's `encode … ms`** — above ~33 ms the PC cannot encode 30 fps at this profile: use `--profile
   high`, a region, or close CPU-heavy programs. `skipped … (over budget)` rising means the budget, not the PC, limits.

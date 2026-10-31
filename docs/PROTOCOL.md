@@ -3,7 +3,7 @@
 This document specifies every byte that travels from the desktop app to the Roblox clients. It is the contract between
 `desktop/rlps/protocol.py` + `codec.py` + `dct.py` + `hybrid.py` + `server.py` (producer, reference decoder) and
 `roblox/src/shared/RlpsProtocol.luau` + `RlpsDecoder.luau` + `RlpsDct.luau` + `RlpsClientCore.luau` +
-`roblox/src/server/RlpsRelayCore.luau` (consumers). Both implementations are cross-checked by
+`roblox/src/server/RlpsRelayCore.luau` + `RlpsFanout.luau` (consumers). Both implementations are cross-checked by
 `roblox/tests/run_luau_tests.py` (identical error strings, bit-identical pixels).
 
 All integers are **little-endian**. "MUST reject" means: discard the whole unit, change no state, report the error.
@@ -11,7 +11,7 @@ All integers are **little-endian**. "MUST reject" means: discard the whole unit,
 ## 1. HTTP endpoints
 
 ```
-GET /v1/frames?after=<u32>&session=<u32>&key=<0|1>&wait=<ms>&idle=<0|1>&rate=<B/s>&fps=<n>&batch=<ms>&max=<bytes>&enc=<0|1>
+GET /v1/frames?after=<u32>&session=<u32>&key=<0|1>&fresh=<0|1>&wait=<ms>&idle=<0|1>&rate=<B/s>&fps=<n>&batch=<ms>&max=<bytes>&enc=<0|1>
 GET /v1/probe
 Authorization: Bearer <token>
 ```
@@ -20,7 +20,8 @@ Authorization: Bearer <token>
 | --- | --- | --- |
 | `after` | 0 | seq of the last frame the poller has (0 = none) |
 | `session` | 0 | session id of that frame |
-| `key` | 0 | 1 = start from a keyframe |
+| `key` | 0 | 1 = start from a keyframe (the poller's chain is unknown or broken) |
+| `fresh` | 0 | 1 = continue the chain, but make the next captured frame a keyframe (viewers of the poller need one) |
 | `wait` | 10000 | long-poll: max ms to wait for a frame newer than `after` (≤ 25000) |
 | `idle` | 0 | 1 = the poller already shows STOPPED; hold the poll while sharing is off |
 | `rate` | 0 | byte rate the poller's viewers sustain (congestion control, §6); 0 = not reported |
@@ -46,6 +47,9 @@ decoder-side picture) and kept in a bounded ring (64 MiB / 1024 records). Evalua
 1. Sharing off → bundle `[STOPPED]`. With `idle=1` a poll that *arrives* while sharing is off is held until sharing
    starts or `wait` expires; a poll held while live always learns a stop at once.
 2. The poller's chain continues (`session` current and `after` within the ring) → every record with seq > `after`.
+   With `fresh=1` the next capture is forced to be a keyframe — even of an unchanged screen — unless the ring already
+   holds a keyframe newer than `after` (that one answers the request). `key=1` would instead replay the ring from its
+   newest keyframe: old frames every viewer has already seen.
 3. Otherwise (`key=1`, unknown session, `after` = 0 or left the ring) → the ring from its newest keyframe, if that
    keyframe is at most 24 records back; else the next capture is forced to be a keyframe and the poll waits for it.
 4. Nothing new within `wait` → bundle `[LIVE + UNCHANGED]` whose seq is `after` (current session) or 0 — **never
@@ -121,28 +125,44 @@ part without a reference picture.
 ## 5. Chain rules (relay and clients)
 
 * The Roblox server (`RlpsRelayCore`) forwards a container only if it extends its chain (keyframe, or delta with
-  `baseSeq` = its seq), drops anything else and asks for a keyframe. History for late joiners = last keyframe + later
-  frames (hard cap 48 MiB); a late joiner whose history would exceed 24 frames or 8 MiB is served a **fresh keyframe**
-  instead. STOPPED clears chain, history and the playout queue.
+  `baseSeq` = its seq), drops anything else and asks for a keyframe (`key=1`). The **played history** (`RlpsFanout`) =
+  the last keyframe broadcast + every frame broadcast after it, in playout order (beyond 48 MiB a fresh keyframe is
+  requested). STOPPED clears chain, history and the playout queue.
 * A client (`RlpsClientCore`) applies parts in order; part 0 of a keyframe restarts; part 0 of a delta needs its base;
   later parts must follow in order; anything else → desync → `sync` request (retried every 3 s while desynced). A part
   0 with REF first snapshots the current picture (COPY tiles read the snapshot). Only complete frames are drawn.
 * RemoteEvent messages, server → client: `("status", s, detail?)`, `("part", buffer)`, `("advance", sid, from, to)`,
-  `("reset")`; client → server: `("sync")`, `("ack", sessionId, seq, decodeMsPerFrame)`.
+  `("reset")`; client → server: `("sync", processed)`, `("ack", sessionId, seq, decodeMsPerFrame, processed)`.
+  `processed` = total bytes of `part` buffers the client has handled, or dropped (queue cleared on STOPPED or
+  overflow), since it started. The server clamps it to [previous value, bytes sent to that client].
 
 ## 6. Flow and congestion control
 
 * **Playout:** the server schedules each container of a bundle at `arrival + tOffsetMs`, never earlier than the
   previous one; more than 1 s of backlog is forwarded at once.
-* **Acks:** clients acknowledge their newest complete frame (≤ 10/s) with their average decode time per frame.
-* **Rate (AIMD, every 0.5 s):** lag = age of the oldest forwarded frame a viewer has not acknowledged. Max lag over
-  viewers > 2 × `TargetLagSeconds` → rate × 0.7; > target → × 0.9; otherwise, if the stream used ≥ 60 % of the rate,
-  × 1.12 + 20 kB/s. Clamped to [`MinBytesPerSecond`, `MaxBytesPerSecond`]; reported as `rate` on every poll.
-* **Frame rate:** fps cap = min over viewers of `ClientDecodeBudgetMs × 60 × 0.7 / decodeMsPerFrame` (drops at once,
-  rises by ≤ 2 fps per step; × 0.8 when lag is high); reported as `fps`. The desktop app skips captures to respect it.
+* **Acks:** clients acknowledge (≤ 10/s, whenever something changed) their newest complete frame, their average
+  decode time per frame and their `processed` byte count.
+* **Per-viewer flow control (`RlpsFanout`):** a viewer's *backlog* = bytes sent to it − `processed` (in the network or
+  in its decode queue; reliable RemoteEvents cannot be recalled). Its *window* = max(128 KiB, 1 s × its delivery rate),
+  the delivery rate being the windowed maximum (5 s) of samples (bytes processed during a message's flight ÷ flight
+  time). A frame is sent to a **live** viewer unless its backlog is non-zero and backlog + frame > window: then the
+  viewer is **held** (only status messages reach it). When its backlog is zero it rejoins: it is sent exactly the
+  played frames after the last one it was sent (no reset), or — if that would exceed 24 frames, 8 MiB or 2 × the
+  keyframe + its window — it **waits** for the next keyframe, which the server requests with `fresh=1` (at most every
+  2 s). `sync` (join, desync) is answered the same way, starting with `("reset")` and the status, from the keyframe;
+  a sync arriving before the previous answer was processed, or within 1 s of it, is ignored. Status messages go to
+  every viewer immediately; STOPPED reaches a held viewer after at most its window of backlog.
+* **Rate (AIMD, every 0.5 s):** a viewer is behind by the age of the oldest frame it was sent and has not processed
+  (a waiting viewer: by how long it has waited). The **lower median** over viewers past a 1 s warm-up drives the rate
+  — the majority sets the quality; a minority of slow viewers is held and caught up instead of slowing everyone: lag >
+  2 × `TargetLagSeconds` → rate × 0.7; > target → × 0.9; otherwise, if the stream used ≥ 60 % of the rate, × 1.12 +
+  20 kB/s. Clamped to [`MinBytesPerSecond`, `MaxBytesPerSecond`]; reported as `rate` on every poll.
+* **Frame rate:** fps cap = `ClientDecodeBudgetMs × 60 × 0.7 / decodeMsPerFrame` for the lower-median decode cost of
+  the live viewers (drops at once, rises by ≤ 2 fps per step; × 0.8 when lag is high); reported as `fps`. The desktop
+  app skips captures to respect it.
 * **Encoder budget:** token bucket at `rate` (capacity rate × 0.5 s, keyframes may overdraw); per frame, moving tiles
   go lossless if they fit, else DCT at the best quality that fits; tiles that stopped moving are refined to lossless with
   the remaining budget; scrolled content is sent as COPY tiles; a frame that cannot fit at the lowest quality is skipped
   (the next frame carries its changes).
-* **Lagging viewers:** a viewer more than `LagDropSeconds` behind stops receiving frames until it acknowledged
-  everything it was sent, then it is re-synced; it no longer limits the others.
+* **Diagnostics** (server script attributes): `RateBps`, `LagMs` (the median viewer's delay), `MaxLagMs`, `FpsCap`,
+  `Viewers`, `LaggingViewers` (held or waiting), `ForwardFps`.

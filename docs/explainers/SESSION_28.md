@@ -332,3 +332,139 @@ per frame, so rounding to 10 px every frame would drift by several pixels.
 **Answer: B.** Lowering the byte rate barely reduces DCT decode work per frame; only fewer frames do. If the viewer
 still falls more than `LagDropSeconds` behind, C happens as a last resort.
 </details>
+
+# Part 3 (29th session, continued): one slow viewer must not hold anyone back
+
+## Context
+
+Every Roblox client rebuilds the shared screen itself, so the game server sends each viewer the same stream of frame
+parts over a reliable `RemoteEvent`. "Reliable" has a cost that matters here: once a message is fired, it cannot be
+taken back. If a viewer's connection delivers 10 KB/s while the stream runs at 1 MB/s, everything the server keeps
+sending piles up in front of that viewer. A pile of 1 MB takes 100 s to drain at 10 KB/s, and every later message
+waits behind it, including the "sharing stopped" message.
+
+Part 2 added congestion control: clients acknowledged frames, and the server measured how old the oldest
+unacknowledged frame of each viewer was. A viewer more than `LagDropSeconds` behind was paused, then re-synced. That
+passed the live test on Linux, but the **Windows CI runner failed E2E-20**: the 10 KB/s viewer was never detected, and
+the rate never moved. Two flaws combined:
+
+1. A client that has not shown its first picture yet asks for a `sync` every 3 s. Each re-sync restarted that viewer's
+   measurement window, and re-sent the whole history to a viewer that was already drowning.
+2. Bytes in flight came from one global log that only knew about broadcasts. For a viewer that had not acknowledged
+   anything yet, the answer was "0 KB".
+
+> **Key concept — backlog.** For one viewer: bytes sent to it − bytes it has processed. It sits in the network or in
+> the client's decode queue. It is the only number that tells how long a new message (Stop, a new frame) will take to
+> reach that screen.
+
+## Intuition
+
+Treat each viewer like a TCP connection with a window.
+
+* **Clients count bytes, not frames.** Every ack (and every sync request) carries `processed`, the total bytes of
+  parts the client has handled. The server knows how much it sent, so the backlog is exact, even for a client that
+  has desynced or not finished its first frame.
+* **The window follows the viewer, not the stream.** The window is max(128 KiB, one second of that viewer's measured
+  delivery rate). The rate is measured like BBR: bytes processed during a message's flight ÷ flight time, taking the
+  maximum over 5 s.
+* **Full window → hold, not drop.** A held viewer gets nothing but status messages. Once its backlog is zero, it is
+  sent exactly the frames it missed, from the *played history* (last keyframe + later frames, in broadcast order). If
+  replaying would cost more than a fresh keyframe, it waits for the next keyframe instead.
+
+A worked example from the spec's network simulation: a 1 MB/s, 30 fps stream, viewer *Fast* at 8 MB/s, viewer *Slow*
+at 10 KB/s.
+
+| | Fast | Slow |
+| --- | --- | --- |
+| frames received | all 1,031 | 4 pictures (a slideshow) |
+| times held | 1, while warming up | 3 |
+| largest backlog | 363 KiB | 120 KiB → a Stop reaches it within ~12 s |
+| measured delivery rate | 1.98 MB/s | 10 KB/s |
+| last frame shown | the last one | the last one |
+
+> **Key concept — the median viewer sets the rate.** The AIMD controller uses the *lower median* viewer delay rather
+> than the worst. The game has PC requirements: the stream should be as good as most viewers sustain. A minority of
+> slow viewers is held and caught up, and one client cannot degrade the picture for everyone by faking slowness.
+
+> **Edge case — asking for a keyframe used to rewind every TV.** With `key=1` the frame service replays its ring from
+> the newest keyframe: frames every viewer has already shown. The new `fresh=1` flag keeps the chain going and makes
+> the *next* capture a keyframe, even of an unchanged screen. It is ignored if the ring already holds a keyframe newer
+> than the poller's position.
+
+## Code (map)
+
+```lua
+-- roblox/src/server/RlpsFanout.luau (new, pure Luau): in Fanout.broadcast, for each live viewer
+local backlog = v.sent - v.acked
+if bytes > 0 and backlog > 0 and backlog + bytes > window(self, v) then
+	v.state = "held" -- resumes once it processed everything (Fanout.ack)
+else
+	sendFrame(self, key, v, m, now)
+end
+```
+
+- `RlpsFanout.luau`: played history, viewer states (live / held / waiting), BBR-style rate samples, catch-up vs.
+  keyframe choice (more than 24 frames, more than 8 MiB, or more than 2 × keyframe + window → wait), sync
+  suppression, lower-median stats.
+- `RlpsServer.server.luau`: the global forward log, `syncPlayer` and `pendingSync` are gone. Broadcasts go through
+  the fan-out. The control loop uses `fan:stats()` and requests keyframes with `relay:requestFreshKeyframe()` (2 s
+  cooldown). `LagDropSeconds` is removed; `LagMs` is new. Changes to `ViewerUserIds` now notify the players who were
+  removed or added.
+- `RlpsClient.client.luau`: counts `processed`. Parts dropped when the queue is cleared count too, otherwise the
+  server would wait for them forever. Acks are sent even before the first picture.
+- `RlpsRelayCore.luau`: no history any more (the fan-out owns it, in playout order); records carry `keyframe`;
+  `pollParams` returns `fresh`.
+- `desktop/rlps/server.py`: the `fresh` query parameter.
+
+## Verification
+
+- `roblox/tests/RlpsFanout.spec.luau`, 659 checks:
+  - every vector sequence relayed to an early viewer, plus a new late joiner after every step, all CRC-exact;
+  - Stop, ack clamping, ignored sync spam, hold + exact catch-up, waiting for a keyframe;
+  - a 60 Hz network simulation (above).
+- `desktop/tests/test_server.py::test_fresh_continues_the_chain_and_forces_one_new_keyframe`.
+- Live test **25/25** locally. In E2E-20 the rate grew to 1.46 MB/s and *stayed* there when the 10 KB/s viewer joined
+  (`LaggingViewers` = 1). The fast viewer showed 107 distinct pictures in 14 s, and both ended exact.
+- Manual QA, in a published private server: join with one fast client, and a second one on a deliberately slow
+  connection (for example a throttled phone hotspot). Studio's *Incoming Replication Lag* setting adds delay only, not
+  a bandwidth limit. Watch `RlpsServer.LaggingViewers` rise to 1 and `RateBps` stay high while the fast client stays
+  smooth. Then press Stop and time how long the slow client takes to show "Screen sharing is off".
+
+## Alternatives
+
+| Alternative | Pros | Cons |
+| --- | --- | --- |
+| Lower the rate to the slowest viewer | Everyone sees the same smooth stream | One bad connection ruins the picture for all; a client can degrade it on purpose |
+| Simulcast (a second, low-resolution stream for slow viewers) | Slow viewers get smooth motion instead of a slideshow | Twice the encoding on the owner's PC and two chains to relay; kept as a possible extension (KI-0008) |
+
+## Quiz (part 3)
+
+<details><summary>8. Why do clients acknowledge processed bytes rather than the newest frame?</summary>
+
+- A. Bytes are smaller to send.
+- B. The server can compute each viewer's exact backlog, even for a client that has not completed a frame or has
+  desynced. Frame acks say nothing until a frame completes.
+- C. Roblox limits the number of acks.
+
+**Answer: B.** The failing viewer of the Windows run had acknowledged nothing, so a frame-based backlog was "0 KB".
+</details>
+
+<details><summary>9. A held viewer drains its backlog. What does it receive next?</summary>
+
+- A. A full re-sync starting with "reset".
+- B. Exactly the played frames after the last one it was sent, unless that costs more than a fresh keyframe; then it
+  waits for the next keyframe.
+- C. Only the newest frame.
+
+**Answer: B.** A is what a `sync` request (join or desync) gets. C is impossible: a delta needs its predecessor.
+</details>
+
+<details><summary>10. Why does the server ask for viewers' keyframes with `fresh=1` rather than `key=1`?</summary>
+
+- A. `key=1` is slower.
+- B. `key=1` makes the frame service replay its ring from the newest keyframe, which is old frames, so every TV
+  briefly rewinds. `fresh=1` continues the chain and makes the next capture a keyframe.
+- C. `fresh=1` is smaller.
+
+**Answer: B.** `key=1` remains the right request when the relay's own chain is unknown or broken.
+</details>
