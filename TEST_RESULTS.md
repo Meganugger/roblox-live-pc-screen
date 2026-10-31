@@ -223,4 +223,9 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   camera looked away, picture exact after looking back; E2E-26 cinema camera distance 7.970 (computed 7.970), aim 1.0.
 - **Not verified here**: real Roblox clients (WritePixelsBuffer cost per call, camera feel, DepthOfField look), window
   capture on the owner's PC; the real-Windows tests run in CI (see PR #3 checks).
+- **CI** at `6ee3067` (PR #3): **5 / 5 green**. On the real Windows runner `test_windows.py` passed both real tests: a Tk
+  window covered by a topmost window was captured by `PrintWindow` with its own colour (no screen fallback) and the
+  client-area crop dropped its title bar; minimize / close were reported; a Chromium browser page opened in a new
+  window was cropped to the page only and sharing paused when another tab opened. (The first run failed because the
+  covering window inherited the same title and, correctly, the topmost match was captured — the test now titles it.)
 
