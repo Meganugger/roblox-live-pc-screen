@@ -253,4 +253,4 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   (`test_browser_tab_page_only_and_pause_on_other_tab`): the window was matched while the browser still showed the
   page's `data:` URL as its title (it contains the tag too), so the tab query built from it stopped matching once the
   page's `<title>` loaded. Test fix: wait for the page's own title. Product behaviour unaffected (a tab is picked by
-  its title; KI-0009).
+  its title; KI-0009). **CI at `2fd54ee` (with the fix): 5 / 5 green.**
