@@ -199,3 +199,16 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   same ~32,400 copied tiles, because refinement during the 0.12 s pauses depends on machine load. One full-suite run
   failed at 385.5 kB vs 377.6 kB; bound set to ⅔ (docs/testing/E2E.md); the copy-share criterion is unchanged.
 - **CI** at `bc9ea90`: **5 / 5 green** (ruff now runs in both Python jobs).
+
+## TR-0014 — Secret domain mismatch reported by the owner (29th session, 2026-10-31)
+
+- **Owner report**: Studio TV showed "Screen unavailable / request failed: This secret cannot be used for a specified
+  domain" — Roblox refused to attach the `rlps_token` secret because its domain did not match the `FrameServiceUrl`
+  host (official rule, creator-docs `cloud-services/secrets.md`: `*`, `*.example.com` or an exact host).
+- **Fix**: the server turns that error into "set the domain of secret 'rlps_token' to *.trycloudflare.com or <host>
+  (host only, no https://): it does not allow <host>" (fix first: the TV shows ~160 characters; full text in
+  `LastError`); a failed `/v1/probe` is retried instead of fixing base64 bodies for the URL.
+- **Test**: the emulator now enforces Roblox's secret domain patterns (`RLPS_SECRET_DOMAIN`); new E2E-22 (domain
+  `trycloudflare.com` → hint on the TV, no pixel; `*.trycloudflare.com` → exact desktop).
+- **Results**: ruff clean; Python 85 passed; Luau 6,588 / 0; Rojo + luau-lsp OK; live pipeline **26 / 26**.
+

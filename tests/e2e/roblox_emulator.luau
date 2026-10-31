@@ -10,7 +10,8 @@
 --     delivery is ordered per client and arguments are copied (buffers are copied, like the engine does).
 --   * HttpService:RequestAsync -> real HTTP (Lune net) to the real Python frame service. The public HTTPS tunnel hop
 --     is emulated by rewriting RLPS_PUBLIC_URL to RLPS_BASE_URL. HttpEnabled is honoured; 500 requests/min enforced.
---   * HttpService:GetSecret -> server-only secret store with Secret:AddPrefix (the value never reaches script code).
+--   * HttpService:GetSecret -> server-only secret store with Secret:AddPrefix (the value never reaches script code);
+--     a secret only attaches to requests for its domain (RLPS_SECRET_DOMAIN: exact host, *.parent or *, default *).
 --   * EncodingService: Base64Decode (strict) and DecompressBuffer(Zstd) (Lune serde zstd).
 --   * AssetService:CreateEditableImage + EditableImage:WritePixelsBuffer (RGBA8, bounds + size checks, max 1024²).
 --   * RunService.Heartbeat at ~60 Hz per client; task library from Lune.
@@ -33,6 +34,20 @@ local OUT = assert(ENV.RLPS_OUT, "RLPS_OUT")
 local BASE_URL = assert(ENV.RLPS_BASE_URL, "RLPS_BASE_URL")
 local PUBLIC_URL = ENV.RLPS_PUBLIC_URL or "https://rlps-e2e.test"
 local SECRET_VALUE = ENV.RLPS_TOKEN
+local SECRET_DOMAIN = string.lower(ENV.RLPS_SECRET_DOMAIN or "*")
+
+-- Roblox secret domain patterns (creator docs, cloud-services/secrets): "*", "*.example.com", "my.example.com"
+local function domainAllows(pattern: string, host: string): boolean
+	host = string.lower(host)
+	if pattern == "*" then
+		return true
+	end
+	local parent = string.match(pattern, "^%*%.(.+)$")
+	if parent then
+		return #host > #parent + 1 and string.sub(host, -(#parent + 1)) == "." .. parent
+	end
+	return host == pattern
+end
 local MAX_SECONDS = tonumber(ENV.RLPS_MAX_SECONDS) or 180
 local started = os.clock()
 
@@ -514,9 +529,13 @@ local function makeServices(peer)
 				httpRequests.failures += 1
 				error("HttpError: DnsResolve", 2)
 			end
+			local host = string.match(url, "^https?://([^/:]+)") or ""
 			url = BASE_URL .. string.sub(url, #PUBLIC_URL + 1)
 			local headers = {}
 			for k, v in opts.Headers or {} do
+				if getmetatable(v) == SecretMT and not domainAllows(SECRET_DOMAIN, host) then
+					error("This secret cannot be used for a specified domain", 2)
+				end
 				if getmetatable(v) == SecretMT then
 					headers[k] = rawget(v, "prefix") .. rawget(v, "value") .. rawget(v, "suffix")
 				else

@@ -39,6 +39,7 @@ roblox_emulator.luau (Lune) ─────────────────�
 | E2E-19 | same with binary bodies mangled in transit (emulated text-only HTTP stack): the probe falls back to base64 |
 | E2E-20 | congestion control: the rate grows above its start with one fast viewer; a viewer throttled to 10 kB/s makes it back off or is held (`LaggingViewers`), the fast viewer keeps receiving frames, both end exact |
 | E2E-21 | scrolling a text page through a non-integer downscale (1280 → 1024): more than half of the changed tiles are COPY tiles, the 15 steps cost less than ⅔ of resending them as lossless keyframes (refinement in the pauses varies with load: 262–386 kB measured), the page ends pixel-exact |
+| E2E-22 | secret domain: with `trycloudflare.com` (no wildcard) Roblox refuses the secret — the TV names `*.trycloudflare.com` and the host, no pixel arrives; with `*.trycloudflare.com` the desktop appears (the emulator enforces Roblox's documented domain patterns) |
 
 ## Run it
 
