@@ -51,6 +51,23 @@ class Failure(AssertionError):
     pass
 
 
+class RecordingStore(server.FrameStore):
+    """FrameStore that remembers, per published frame, the SHA-256 of the decoder-side picture and whether it was
+    lossy (picture != captured frame) — lets the test prove that clients show lossy frames bit-exactly."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.history: dict[str, bool] = {}
+
+    def publish(self, q, fmt):
+        added = super().publish(q, fmt)
+        if added:
+            _, rgba = self.picture()
+            if rgba is not None:
+                self.history[hashlib.sha256(rgba.tobytes()).hexdigest()] = not np.array_equal(rgba, q)
+        return added
+
+
 def write_png(path: str, rgba: np.ndarray) -> None:
     h, w = rgba.shape[:2]
     raw = b"".join(b"\x00" + rgba[y].tobytes() for y in range(h))
@@ -97,7 +114,9 @@ class Harness:
         self.metrics["screen"] = f"{self.screen[0]}x{self.screen[1]}"
 
     def scene(self, name: str) -> float:
-        self.painter.stdin.write(f"scene {name}\n")
+        """Show scene A/B, or 'noise<seed>' (moving colours + grain in NOISE_RECT)."""
+        cmd = f"noise {name[5:]}" if name.startswith("noise") else f"scene {name}"
+        self.painter.stdin.write(cmd + "\n")
         self.painter.stdin.flush()
         line = self.painter.stdout.readline().strip()
         if line != f"ready {name}":
@@ -158,14 +177,19 @@ class Harness:
 
     @staticmethod
     def expected(store: server.FrameStore) -> tuple[int, str, np.ndarray]:
-        with store._cond:  # test-only access to the newest published frame
-            seq = store.seq
-            q = store._frames.get(seq)
-            fmt = store.fmt
-        if q is None:
+        """(seq, sha256, RGBA) of the picture every up-to-date client must show: the encoder's decoder-side
+        reconstruction after the newest frame of the chain (lossy tiles included, bit-exact)."""
+        seq, rgba = store.picture()
+        if rgba is None:
             return seq, "", np.zeros((0, 0, 4), np.uint8)
-        rgba = codec.expand_to_rgba(q, fmt)
         return seq, hashlib.sha256(rgba.tobytes()).hexdigest(), rgba
+
+    @staticmethod
+    def captured(store: server.FrameStore) -> np.ndarray | None:
+        """The newest captured frame (what the desktop really looks like, at stream resolution)."""
+        with store._cond:
+            q, fmt = store.latest, store.fmt
+        return None if q is None else codec.expand_to_rgba(q, fmt)
 
     def wait_match(self, ctl: str, store, names: list[str], timeout: float, what: str, after_seq: int = 0):
         """Wait until every named client's EditableImage equals the newest captured frame, which must be newer than
@@ -266,7 +290,8 @@ class Harness:
                                                                         profile.max_h),
                        size=[a["image_w"], a["image_h"]])
             snap = self.snapshot(ctl, "sceneA", ["Alice"], a["image_w"], a["image_h"])
-            self.check("E2E-05", "snapshot pixels == expected frame", np.array_equal(snap["Alice"], rgba))
+            self.check("E2E-05", "snapshot pixels == expected frame and == the captured desktop (lossless when still)",
+                       np.array_equal(snap["Alice"], rgba) and np.array_equal(rgba, self.captured(store)))
             self.semantic("E2E-06", snap["Alice"], "A")
 
             # L3: a late joiner gets the keyframe chain from the server history
@@ -327,7 +352,7 @@ class Harness:
             self.metrics["stop_to_tv_off_s"] = round(time.monotonic() - t4, 3)
             self.check("E2E-13", "after Stop: both TVs show 'Screen sharing is off', EditableImages destroyed, "
                        "no frames left in the service, within 5 s",
-                       store.seq == 0 and not store._frames and self.metrics["stop_to_tv_off_s"] < 5,
+                       store.seq == 0 and not store._ring and store.latest is None and self.metrics["stop_to_tv_off_s"] < 5,
                        latency_s=self.metrics["stop_to_tv_off_s"], status=st["server"]["attributes"].get("Status"))
 
             # L8: a player leaving is handled; no script errors anywhere
@@ -369,11 +394,12 @@ class Harness:
         store = server.FrameStore()
         service = server.FrameService(store, token, port=0)
         service.start()
-        controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["balanced"])
+        controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["low"])
         self.scene("A")
         controller.start()
         emu = self.start_emulator(f"http://127.0.0.1:{service.address[1]}", token, ctl,
-                                  {"MaxBytesPerSecond": budget})
+                                  {"MaxBytesPerSecond": budget, "StartBytesPerSecond": budget,
+                                   "MinBytesPerSecond": budget})
         try:
             open(os.path.join(ctl, "join-Dave"), "w").close()
             (seq0, _, _), st = self.wait_match(ctl, store, ["Dave"], 40, "Dave shows the first frame")
@@ -407,6 +433,137 @@ class Harness:
             controller.stop()
             service.close()
             shutil.copy(os.path.join(ctl, "emulator.log"), os.path.join(self.out, "emulator-pacing.log"))
+
+    def scenario_quality(self) -> None:
+        """Moving grain under a byte budget: lossy DCT tiles through the real Luau decoder (bit-exact), then the
+        still picture converges to the exact desktop; also exercises the base64 fallback when bodies are mangled."""
+        for mangle in (False, True):
+            ctl = tempfile.mkdtemp(prefix="rlps-e2e-quality-", dir=self.out)
+            token = secrets.token_urlsafe(32)
+            store = RecordingStore()
+            service = server.FrameService(store, token, port=0)
+            service.start()
+            controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["max"])
+            self.scene("A")
+            controller.start()
+            budget = 150_000
+            env_attrs = {"MaxBytesPerSecond": budget, "StartBytesPerSecond": budget, "MinBytesPerSecond": budget}
+            if mangle:
+                os.environ["RLPS_EMU_TEXT_BODIES"] = "1"
+            try:
+                emu = self.start_emulator(f"http://127.0.0.1:{service.address[1]}", token, ctl, env_attrs)
+            finally:
+                os.environ.pop("RLPS_EMU_TEXT_BODIES", None)
+            tag = "E2E-19" if mangle else "E2E-18"
+            try:
+                open(os.path.join(ctl, "join-Gwen"), "w").close()
+                self.wait_match(ctl, store, ["Gwen"], 40, "first picture")
+                modes, lossy_seen = set(), set()
+                for k in range(1, 13):
+                    self.scene(f"noise{k}")
+                    deadline = time.monotonic() + 0.6
+                    while time.monotonic() < deadline:  # the client's picture must be one the encoder produced
+                        modes.add(store.status.last_mode)
+                        sha = self.read_state(ctl).get("clients", {}).get("Gwen", {}).get("image_sha256")
+                        if sha and store.history.get(sha):
+                            lossy_seen.add(sha)  # a lossy (DCT) picture, shown bit-exactly
+                        time.sleep(0.03)
+                lossy_matches = len(lossy_seen)
+                (seq_m, _, rgba_m), st = self.wait_match(ctl, store, ["Gwen"], 40, "Gwen matches the lossy stream",
+                                                         after_seq=1)
+                body_mode = st["server"]["attributes"].get("BodyMode")
+                dct_seen = "dct" in modes
+                cap = self.captured(store)
+                # still now: keep waiting until the refinement made the picture pixel-exact
+                def exact(s):
+                    seq, sha, rgba = self.expected(store)
+                    c = s["clients"].get("Gwen", {})
+                    cap = self.captured(store)
+                    return (cap is not None and rgba.shape == cap.shape and np.array_equal(rgba, cap)
+                            and c.get("image_sha256") == sha) or None
+                t0 = time.monotonic()
+                self.wait_for(ctl, exact, 60, "refinement to the exact desktop")
+                self.metrics[f"{tag}_refine_s"] = round(time.monotonic() - t0, 2)
+                self.check(tag, ("binary bodies mangled -> base64 fallback, " if mangle else "") +
+                           "moving grain at 150 KB/s: lossy DCT frames decoded bit-exactly by the client, then the "
+                           "still picture refines to the exact captured desktop",
+                           dct_seen and lossy_matches >= 3 and body_mode == ("base64" if mangle else "raw"),
+                           modes=sorted(m for m in modes if m), lossy_pictures_matched=lossy_matches,
+                           body_mode=body_mode, seq=seq_m,
+                           refine_s=self.metrics[f"{tag}_refine_s"], errors=st["server"]["errors"])
+            finally:
+                open(os.path.join(ctl, "quit"), "w").close()
+                try:
+                    emu.wait(10)
+                except subprocess.TimeoutExpired:
+                    emu.kill()
+                controller.stop()
+                service.close()
+                shutil.copy(os.path.join(ctl, "emulator.log"),
+                            os.path.join(self.out, f"emulator-quality{'-mangled' if mangle else ''}.log"))
+
+    def scenario_congestion(self) -> None:
+        """Adaptive rate: grows while every viewer keeps up; a throttled viewer pulls it down or gets paused,
+        the fast viewer keeps receiving frames, and both end on the exact picture."""
+        ctl = tempfile.mkdtemp(prefix="rlps-e2e-congestion-", dir=self.out)
+        token = secrets.token_urlsafe(32)
+        store = server.FrameStore()
+        service = server.FrameService(store, token, port=0)
+        service.start()
+        controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["high"])
+        self.scene("A")
+        controller.start()
+        start_rate = 300_000
+        os.environ["RLPS_EMU_THROTTLE_Slow"] = "40000"
+        try:
+            emu = self.start_emulator(f"http://127.0.0.1:{service.address[1]}", token, ctl,
+                                      {"StartBytesPerSecond": start_rate, "MaxBytesPerSecond": 4_000_000,
+                                       "MinBytesPerSecond": 50_000, "LagDropSeconds": 3})
+        finally:
+            os.environ.pop("RLPS_EMU_THROTTLE_Slow", None)
+        try:
+            open(os.path.join(ctl, "join-Fast"), "w").close()
+            self.wait_match(ctl, store, ["Fast"], 40, "Fast shows the first frame")
+            k = 100
+            def animate(seconds):
+                nonlocal k
+                end = time.monotonic() + seconds
+                while time.monotonic() < end:
+                    k += 1
+                    self.scene(f"noise{k}")
+                    time.sleep(0.05)
+            animate(8)
+            grown = self.read_state(ctl)["server"]["attributes"].get("RateBps", 0)
+            open(os.path.join(ctl, "join-Slow"), "w").close()
+            fast_shas, min_rate, max_lagging = set(), grown, 0
+            end = time.monotonic() + 14
+            while time.monotonic() < end:
+                k += 1
+                self.scene(f"noise{k}")
+                st = self.read_state(ctl)
+                a = st["server"]["attributes"]
+                min_rate = min(min_rate, a.get("RateBps", grown))
+                max_lagging = max(max_lagging, a.get("LaggingViewers", 0))
+                fast_shas.add(st["clients"]["Fast"].get("image_sha256"))
+                time.sleep(0.05)
+            self.scene("A")
+            (seq, _, _), st = self.wait_match(ctl, store, ["Fast", "Slow"], 90, "both settle after the congestion")
+            self.metrics["congestion"] = {"start_rate": start_rate, "rate_after_growth": grown,
+                                          "min_rate_with_slow_viewer": min_rate, "max_lagging_viewers": max_lagging,
+                                          "fast_distinct_pictures_meanwhile": len(fast_shas)}
+            self.check("E2E-20", "adaptive rate: grows above the start rate with one fast viewer; a 40 KB/s viewer "
+                       "makes it back off or gets paused while the fast viewer keeps getting frames; both end exact",
+                       grown > start_rate * 1.3 and (min_rate < grown * 0.6 or max_lagging >= 1)
+                       and len(fast_shas) >= 5, **self.metrics["congestion"])
+        finally:
+            open(os.path.join(ctl, "quit"), "w").close()
+            try:
+                emu.wait(10)
+            except subprocess.TimeoutExpired:
+                emu.kill()
+            controller.stop()
+            service.close()
+            shutil.copy(os.path.join(ctl, "emulator.log"), os.path.join(self.out, "emulator-congestion.log"))
 
     def scenario_viewers(self) -> None:
         """ViewerUserIds allowlist: only listed players receive pixels."""
@@ -476,8 +633,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--out", default=os.path.join(REPO, "build", "e2e"))
     ap.add_argument("--lune", default=shutil.which("lune") or "lune")
-    ap.add_argument("--profile", choices=sorted(app.PROFILES), default="balanced")
-    ap.add_argument("--scenario", choices=["live", "pacing", "viewers", "badtoken", "all"], default="all")
+    ap.add_argument("--profile", choices=sorted(app.PROFILES), default=app.DEFAULT_PROFILE)
+    ap.add_argument("--scenario", choices=["live", "quality", "congestion", "pacing", "viewers", "badtoken", "all"], default="all")
     ap.add_argument("--xvfb", action="store_true", help="start Xvfb even if DISPLAY is set")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -489,6 +646,10 @@ def main() -> int:
         h.start_painter()
         if args.scenario in ("live", "all"):
             h.scenario_live()
+        if args.scenario in ("quality", "all"):
+            h.scenario_quality()
+        if args.scenario in ("congestion", "all"):
+            h.scenario_congestion()
         if args.scenario in ("pacing", "all"):
             h.scenario_pacing()
         if args.scenario in ("viewers", "all"):
@@ -498,6 +659,11 @@ def main() -> int:
     except Failure as exc:
         ok = False
         print(f"E2E FAILED: {exc}", flush=True)
+    except Exception:  # a harness/product exception is a failure too, never a silent pass
+        import traceback
+        ok = False
+        traceback.print_exc()
+        print("E2E FAILED: unexpected exception", flush=True)
     finally:
         h.close()
         report = {"ok": ok, "duration_s": round(time.monotonic() - started, 1), "checks": h.checks,

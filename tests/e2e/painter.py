@@ -1,7 +1,7 @@
 """Test-only desktop content for the live pipeline test: a full-screen window that draws known scenes.
 
 Prints ``size <W> <H>`` (real screen size) at startup, then reads one command per line on stdin:
-``scene A`` | ``scene B`` | ``quit`` and prints ``ready <scene>`` once the window system has drawn it, so the test knows
+``scene A`` | ``scene B`` | ``noise <seed>`` | ``quit`` and prints ``ready <scene>`` once the window system has drawn it, so the test knows
 when the *real* screen shows the new content. Scene geometry is defined on a 1280x720 reference and scaled to the real
 screen. Backends: python-xlib (Linux/Xvfb; the sandbox Python has no Tk) or tkinter (Windows/macOS). Never used by the
 product.
@@ -19,6 +19,22 @@ SCENES = {
     "B": {"rect": (700, 250, 400, 350), "color": (30, 200, 60)},
 }
 CHECKER = (560, 40, 160, 80, 8)  # x, y, w, h, cell: fine detail (text-like high-frequency content)
+NOISE_RECT = (300, 150, 480, 320)  # "noise <seed>": smooth moving colours + grain here (forces lossy DCT tiles)
+
+
+def noise_image(seed: int, w: int, h: int):
+    import numpy as np
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    img = np.stack([128 + 110 * np.sin((xx + 13 * seed) / 23), 128 + 110 * np.sin((yy - 7 * seed) / 17),
+                    128 + 100 * np.sin((xx + yy + 11 * seed) / 31)], axis=2)
+    img += np.random.default_rng(seed).normal(0, 10, img.shape)
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def noise_geometry(w: int, h: int):
+    x, y, rw, rh = NOISE_RECT
+    sx, sy = w / REF_W, h / REF_H
+    return round(x * sx), round(y * sy), round(rw * sx), round(rh * sy)
 
 
 def shapes(name: str, w: int, h: int):
@@ -58,6 +74,19 @@ class XlibBackend:
             self.win.fill_rectangle(self.gc, x, y, w, h)
         self.d.sync()
 
+    def noise(self, seed: int) -> None:
+        from Xlib import X
+        self.draw("A")
+        x, y, w, h = noise_geometry(self.w, self.h)
+        img = noise_image(seed, w, h)
+        bgrx = bytearray(w * h * 4)
+        bgrx[0::4], bgrx[1::4], bgrx[2::4] = img[..., 2].tobytes(), img[..., 1].tobytes(), img[..., 0].tobytes()
+        rows = max(1, 60000 // (w * 4))  # stay below the X request size limit
+        for r0 in range(0, h, rows):
+            r1 = min(h, r0 + rows)
+            self.win.put_image(self.gc, x, y + r0, w, r1 - r0, X.ZPixmap, 24, 0, bytes(bgrx[r0 * w * 4:r1 * w * 4]))
+        self.d.sync()
+
     def close(self) -> None:
         self.win.destroy()
         self.d.sync()
@@ -84,6 +113,16 @@ class TkBackend:
         self.root.update()
         time.sleep(0.15)  # let the compositor present the frame before reporting "ready"
 
+    def noise(self, seed: int) -> None:
+        import tkinter as tk
+        self.draw("A")
+        x, y, w, h = noise_geometry(self.w, self.h)
+        img = noise_image(seed, w, h)
+        self._photo = tk.PhotoImage(data=b"P6 %d %d 255 " % (w, h) + img.tobytes(), format="PPM")
+        self.canvas.create_image(x, y, image=self._photo, anchor="nw")
+        self.root.update()
+        time.sleep(0.15)
+
     def close(self) -> None:
         self.root.destroy()
 
@@ -103,6 +142,9 @@ def main() -> int:
         if cmd[0] == "scene" and len(cmd) == 2 and cmd[1] in SCENES:
             backend.draw(cmd[1])
             print(f"ready {cmd[1]}", flush=True)
+        elif cmd[0] == "noise" and len(cmd) == 2 and cmd[1].isdigit():
+            backend.noise(int(cmd[1]))
+            print(f"ready noise{cmd[1]}", flush=True)
     backend.close()
     return 0
 

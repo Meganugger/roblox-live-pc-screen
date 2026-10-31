@@ -41,6 +41,7 @@ FRAMES_PATH = "/v1/frames"
 PROBE_PATH = "/v1/probe"
 PROBE_BODY = bytes(range(256)) * 4  # every byte value, 1 KiB: the poller checks it arrives unchanged
 RATE_HOLD_S = 5.0  # a poller's reported rate is honoured this long
+KEYFRAME_REPLAY_MAX = 24  # a poller that needs a keyframe gets a fresh one rather than more frames than this
 IDLE_ENCODE_S = 10.0  # nobody polled for this long: stop encoding (CPU), next poll gets a fresh keyframe
 
 
@@ -76,6 +77,7 @@ class EncodeStatus:
     rate: float = 0.0  # bytes/s budget in force
     frames: int = 0  # records encoded
     skipped: int = 0  # captures not sent (over budget)
+    fps_skipped: int = 0  # captures not encoded (viewers' frame-rate cap)
     bytes: int = 0
     last_mode: str = ""
     last_quality: int = -1
@@ -112,9 +114,20 @@ class FrameStore:
         self._force_key = True
         self._requested_rate: float | None = None
         self._requested_at = -1e9
+        self._requested_fps: float | None = None
+        self._last_record_t = -1e9
         self._tokens = 0.0
         self._tokens_at = clock()
         self.latest: np.ndarray | None = None  # newest *captured* frame (quantized)
+
+    def picture(self) -> tuple[int, np.ndarray | None]:
+        """(seq, RGBA picture every up-to-date client shows after frame seq) — tests and diagnostics."""
+        with self._enc_lock, self._cond:
+            if self.fmt == P.FMT_HYBRID and self._hybrid is not None and self._hybrid.recon is not None:
+                return self.seq, self._hybrid.recon.copy()
+            if self._last_sent is not None:
+                return self.seq, codec.expand_to_rgba(self._last_sent, self.fmt)
+            return self.seq, None
 
     # ------------------------------------------------------------------------------------------- producer side
 
@@ -144,6 +157,12 @@ class FrameStore:
         self.latest = None
         self._force_key = True
 
+    def current_fps(self) -> float | None:
+        now = self._clock()
+        if self._requested_fps is not None and now - self._requested_at <= RATE_HOLD_S:
+            return self._requested_fps
+        return None
+
     def current_rate(self) -> float:
         now = self._clock()
         if self._requested_rate is not None and now - self._requested_at <= RATE_HOLD_S:
@@ -166,9 +185,13 @@ class FrameStore:
                 self._force_key = True  # nobody watches: save the CPU, resume with a keyframe
                 return False
             session, seq, force_key = self.session_id, self.seq + 1, self._force_key
+            fps = self.current_fps()
+            if fps and not force_key and self._clock() - self._last_record_t < 1.0 / fps - 0.002:
+                self.status.fps_skipped += 1  # viewers cannot decode more frames/s: the next record covers this one
+                return False
             rate = self.current_rate()
             now = self._clock()
-            self._tokens = min(max(rate * 0.5, 256 * 1024), self._tokens + (now - self._tokens_at) * rate)
+            self._tokens = min(max(rate * 0.5, 16 * 1024), self._tokens + (now - self._tokens_at) * rate)
             self._tokens_at = now
             budget = self._tokens
         t0 = time.perf_counter()
@@ -188,9 +211,11 @@ class FrameStore:
                 self._reset_chain()
                 return False
             self.seq = seq
-            self._force_key = False
+            if keyframe:
+                self._force_key = False  # only a keyframe answers a keyframe request (one may arrive mid-encode)
             self._tokens -= len(data)
-            self._ring.append(Record(seq, self._clock(), keyframe, data))
+            self._last_record_t = self._clock()
+            self._ring.append(Record(seq, self._last_record_t, keyframe, data))
             self._ring_size += len(data)
             while len(self._ring) > 1 and (self._ring_size > self.ring_bytes or len(self._ring) > self.ring_records):
                 self._ring_size -= len(self._ring.popleft().data)
@@ -225,8 +250,11 @@ class FrameStore:
 
     # ------------------------------------------------------------------------------------------- consumer side
 
-    def _status(self) -> bytes:
-        return codec.status_container(P.STATE_LIVE, session_id=self.session_id, seq=self.seq, width=self.width,
+    def _status(self, after: int = 0, session: int = 0) -> bytes:
+        """LIVE + UNCHANGED "no news". Its seq never exceeds the poller's ``after``: a newer seq would tell the relay
+        that later frames look identical (v1 'advance' semantics) and make it skip deltas."""
+        seq = after if session == self.session_id and 0 < after <= self.seq else 0
+        return codec.status_container(P.STATE_LIVE, session_id=self.session_id, seq=seq, width=self.width,
                                       height=self.height, fmt=self.fmt, tile_size=self._packer.tile_size)
 
     def _available_from(self, after: int, session: int, key: bool) -> int | None:
@@ -237,13 +265,14 @@ class FrameStore:
             first = self._ring[0].seq
             if first - 1 <= after <= self.seq:
                 return after - first + 1  # == len(ring) when the poller is up to date
-        for i in range(len(self._ring) - 1, -1, -1):  # newest keyframe in the ring
+        for i in range(len(self._ring) - 1, -1, -1):  # newest keyframe in the ring, unless replaying is too long
             if self._ring[i].keyframe:
-                return i
+                return i if len(self._ring) - i <= KEYFRAME_REPLAY_MAX else None
         return None
 
     def respond(self, after: int, session: int, key: bool, wait_s: float, idle: bool = False, *,
-                rate: float | None = None, batch_s: float = 0.0, max_bytes: int = DEFAULT_MAX_BYTES) -> bytes:
+                rate: float | None = None, batch_s: float = 0.0, max_bytes: int = DEFAULT_MAX_BYTES,
+                fps: float | None = None) -> bytes:
         """Return the bundle for one poll (see module docstring)."""
         deadline = self._clock() + max(0.0, wait_s)
         with self._cond:
@@ -251,6 +280,7 @@ class FrameStore:
             self.last_poll, self.polls = now, self.polls + 1
             if rate is not None and rate > 0:
                 self._requested_rate, self._requested_at = float(rate), now
+                self._requested_fps = float(fps) if fps else None
             hold_while_stopped = idle and not self.live  # never delays news of a stop: only already-idle pollers
             asked_key = False
             while True:
@@ -268,7 +298,7 @@ class FrameStore:
                     break
                 remaining = deadline - self._clock()
                 if remaining <= 0:
-                    return bundle([(0, self._status())])
+                    return bundle([(0, self._status(after, session))])
                 self._cond.wait(remaining)
             # collect `batch_s` worth of frames after the first one (several frames per HTTP request)
             first_t = self._ring[start].t
@@ -279,10 +309,11 @@ class FrameStore:
                     break
                 self._cond.wait(batch_end - self._clock())
             if not self.live or self.session_id != sid:
-                return bundle([(0, codec.status_container(P.STATE_STOPPED) if not self.live else self._status())])
+                return bundle([(0, codec.status_container(P.STATE_STOPPED) if not self.live
+                                   else self._status(after, session))])
             start = self._available_from(after, session, key)
             if start is None or start >= len(self._ring):  # ring rolled over while batching (huge stream)
-                return bundle([(0, self._status())])
+                return bundle([(0, self._status(after, session))])
             records, total = [], 0
             for r in list(self._ring)[start:]:
                 if records and (total + len(r.data) > max_bytes or len(records) >= P.MAX_BUNDLE_ENTRIES):
@@ -435,7 +466,8 @@ class FrameService:
             return self._send(h, 503, b"too many concurrent polls\n", {"Retry-After": "1"})
         try:
             data = self.store.respond(q.after, q.session, q.key, q.wait_ms / 1000.0, q.idle,
-                                      rate=q.rate or None, batch_s=q.batch_ms / 1000.0, max_bytes=q.max_bytes)
+                                      rate=q.rate or None, batch_s=q.batch_ms / 1000.0, max_bytes=q.max_bytes,
+                                      fps=q.fps or None)
         finally:
             self._slots.release()
         if q.raw:
@@ -461,11 +493,12 @@ class Query:
     batch_ms: int = 0
     max_bytes: int = DEFAULT_MAX_BYTES
     raw: bool = False  # enc=1: binary body
+    fps: int = 0  # frames/s the viewers can decode (0 = not reported)
 
 
 def parse_query(query: str) -> Query:
     """Strictly parse the poll parameters. Raises ValueError on anything unexpected."""
-    allowed = {"after", "session", "key", "wait", "idle", "rate", "batch", "max", "enc"}
+    allowed = {"after", "session", "key", "wait", "idle", "rate", "batch", "max", "enc", "fps"}
     values: dict[str, str] = {}
     for name, value in parse_qsl(query, keep_blank_values=True, strict_parsing=bool(query), max_num_fields=12):
         if name not in allowed or name in values:
@@ -493,4 +526,5 @@ def parse_query(query: str) -> Query:
         batch_ms=uint("batch", 0, MAX_BATCH_MS),
         max_bytes=uint("max", DEFAULT_MAX_BYTES, P.MAX_BUNDLE_BYTES, lo=64 * 1024),
         raw=uint("enc", 0, 1) == 1,
+        fps=uint("fps", 0, 240),
     )

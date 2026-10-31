@@ -50,9 +50,9 @@ local function getTables(qi: number): { { number } }
 		luma[k] = math.clamp((BASE_LUMA[pos] * s + 50) // 100, 1, 255)
 		chroma[k] = math.clamp((BASE_CHROMA[pos] * s + 50) // 100, 1, 255)
 	end
-	t = { luma, chroma }
-	tables[qi] = t
-	return t
+	local created = { luma, chroma }
+	tables[qi] = created
+	return created
 end
 
 -- scratch state (single-threaded Luau: one decode at a time)

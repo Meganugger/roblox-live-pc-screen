@@ -244,6 +244,10 @@ class FrameFlowTests(ServiceTestCase):
             sid = store.start()
             for v in range(1, 5):  # ring keeps seq 3 and 4 (deltas): no keyframe left
                 store.publish(frame(value=v), P.FMT_RGB565)
+            st = c.last(after=3, session=sid, key=1, wait=100)  # no keyframe yet: "no news" never jumps ahead
+            self.assertTrue(st.flags & P.CFLAG_UNCHANGED)
+            self.assertLessEqual(st.seq, 3)
+            self.assertEqual(c.last(after=0, session=sid, wait=100).seq, 0)
             threading.Timer(0.2, lambda: store.publish(frame(value=9), P.FMT_RGB565)).start()
             got = c.poll(after=0, session=sid, wait=3000)
             self.assertEqual(len(got), 1)

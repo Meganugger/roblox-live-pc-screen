@@ -20,9 +20,8 @@ import numpy as np
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "desktop"))
 
-from rlps import app, capture, codec  # noqa: E402
+from rlps import app, capture, codec, hybrid  # noqa: E402
 
-CLIENT_BUDGET = 50_000  # bytes/s per client (F-0017 planning target, not a hard limit)
 
 
 def text_page(w: int, h: int, rng: np.random.Generator) -> np.ndarray:
@@ -74,31 +73,61 @@ def workloads(w: int, h: int, frames: int):
     yield "full-screen video", [video_frame(w, h, i, rng) for i in range(frames)]
 
 
+BUDGETS = {"unlimited": None, "2 MB/s": 2_000_000, "500 KB/s": 500_000}
+
+
 def bench_codec(frames: int) -> list[dict]:
+    """Every profile x workload x byte budget: bytes per frame, DCT quality, frames skipped, encode time."""
     rows = []
     for prof in app.PROFILES.values():
-        w, h = capture.fit_size(1920, 1080, prof.max_w, prof.max_h)
+        w, h = capture.fit_size(1920, 1080, prof.max_w, prof.max_h, 16 if prof.fmt == 4 else 1)
         for name, seq in workloads(w, h, frames):
-            enc = codec.FrameEncoder()
             qs = [codec.quantize(f, prof.fmt) for f in seq]
-            t0 = time.perf_counter()
-            key = enc.encode(qs[0], prof.fmt, session_id=1, seq=1)
-            key_ms = (time.perf_counter() - t0) * 1000
-            sizes, times = [], []
-            for i in range(1, len(qs)):
-                t0 = time.perf_counter()
-                d = enc.encode(qs[i], prof.fmt, session_id=1, seq=i + 1, base_seq=i, prev=qs[i - 1])
-                times.append((time.perf_counter() - t0) * 1000)
-                sizes.append(0 if d is None else len(codec.to_body(d)))
-            mean = statistics.mean(sizes)
-            rows.append({
-                "profile": prof.name, "size": f"{w}x{h}", "fmt": "RGB565" if prof.fmt == 1 else "RGB888",
-                "fps": prof.fps, "workload": name,
-                "keyframe_body_bytes": len(codec.to_body(key)), "keyframe_encode_ms": round(key_ms, 1),
-                "delta_body_bytes_mean": round(mean), "delta_encode_ms_median": round(statistics.median(times), 2),
-                "bytes_per_s_at_profile_fps": round(mean * prof.fps),
-                "fps_within_50KBps": None if mean == 0 else round(CLIENT_BUDGET / mean, 1),
-            })
+            for bname, rate in BUDGETS.items():
+                if prof.fmt != 4 and rate is not None:
+                    continue  # lossless profile: no budget-driven quality
+                per_frame = None if rate is None else rate / prof.fps
+                sizes, times, qualities, skipped = [], [], [], 0
+                if prof.fmt == 4:
+                    enc = hybrid.HybridEncoder(w, h, packer=codec.FrameEncoder(level=1, tile_size=16,
+                                                                               max_part_raw_bytes=96 * 1024))
+                    tokens, sq = 0.0, 0
+                    for i, q in enumerate(qs):
+                        tokens = (per_frame or 0) * 1.5 if i == 0 else min(tokens + (per_frame or 0), (per_frame or 0) * 15)
+                        t0 = time.perf_counter()
+                        data, info = enc.encode(q, session_id=1, seq=sq + 1, base_seq=sq,
+                                                budget=None if per_frame is None else tokens)
+                        if i:
+                            times.append((time.perf_counter() - t0) * 1000)
+                        if data is None:
+                            skipped += info.skipped
+                            if i:
+                                sizes.append(0)
+                            continue
+                        sq += 1
+                        tokens -= len(data)
+                        if i:
+                            sizes.append(len(data))
+                            if info.quality > 0:
+                                qualities.append(info.quality)
+                else:
+                    enc = codec.FrameEncoder(level=1)
+                    prev = None
+                    for i, q in enumerate(qs):
+                        t0 = time.perf_counter()
+                        data = enc.encode(q, prof.fmt, session_id=1, seq=i + 1, base_seq=i, prev=prev,
+                                          keyframe=prev is None)
+                        if i:
+                            times.append((time.perf_counter() - t0) * 1000)
+                            sizes.append(0 if data is None else len(data))
+                        prev = q
+                mean = statistics.mean(sizes) if sizes else 0
+                rows.append({
+                    "profile": prof.name, "size": f"{w}x{h}", "fps": prof.fps, "workload": name, "budget": bname,
+                    "bytes_per_frame": round(mean), "bytes_per_s_at_fps": round(mean * prof.fps),
+                    "dct_quality_mean": round(statistics.mean(qualities)) if qualities else None,
+                    "frames_skipped": skipped, "encode_ms_median": round(statistics.median(times), 1) if times else 0,
+                })
     return rows
 
 
@@ -115,7 +144,8 @@ def bench_capture(frames: int) -> list[dict]:
                 t0 = time.perf_counter()
                 bgra = src.grab_bgra()
                 t1 = time.perf_counter()
-                codec.quantize(capture.bgra_to_rgb(bgra, prof.max_w, prof.max_h), prof.fmt)
+                codec.quantize(capture.bgra_to_rgb(bgra, prof.max_w, prof.max_h, 16 if prof.fmt == 4 else 1),
+                               prof.fmt)
                 t2 = time.perf_counter()
                 grab.append((t1 - t0) * 1000)
                 conv.append((t2 - t1) * 1000)
@@ -138,11 +168,11 @@ def main() -> int:
     print(json.dumps(env))
     for r in result["capture"]:
         print("capture", json.dumps(r))
-    print(f"{'profile':9} {'workload':38} {'key B':>8} {'delta B':>8} {'enc ms':>7} {'B/s':>8} {'fps@50KB/s':>10}")
+    print(f"{'profile':9} {'workload':38} {'budget':>10} {'B/frame':>8} {'B/s':>9} {'DCT q':>6} {'skip':>5} {'enc ms':>7}")
     for r in result["codec"]:
-        print(f"{r['profile']:9} {r['workload']:38} {r['keyframe_body_bytes']:>8} {r['delta_body_bytes_mean']:>8} "
-              f"{r['delta_encode_ms_median']:>7} {r['bytes_per_s_at_profile_fps']:>8} "
-              f"{str(r['fps_within_50KBps']):>10}")
+        print(f"{r['profile']:9} {r['workload']:38} {r['budget']:>10} {r['bytes_per_frame']:>8} "
+              f"{r['bytes_per_s_at_fps']:>9} {str(r['dct_quality_mean']):>6} {r['frames_skipped']:>5} "
+              f"{r['encode_ms_median']:>7}")
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump(result, fh, indent=2)

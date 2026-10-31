@@ -340,14 +340,20 @@ local function deliverToClient(peer, replica, packed, bytes)
 	if not peer.alive then
 		return
 	end
-	peer.recvBytes += bytes
-	peer.recvMessages += 1
-	table.insert(peer.inbox, { replica, packed })
+	table.insert(peer.inbox, { replica, packed, bytes })
 	if not peer.pumping then
 		peer.pumping = true
 		task.defer(function()
 			while #peer.inbox > 0 do
 				local item = table.remove(peer.inbox, 1)
+				if peer.throttle then -- emulated slow connection: bytes/s, in order (reliable remotes queue up)
+					task.wait(item[3] / peer.throttle)
+				end
+				if not peer.alive then
+					break
+				end
+				peer.recvBytes += item[3]
+				peer.recvMessages += 1
 				I(item[1]).props.OnClientEvent:Fire(table.unpack(item[2], 1, item[2].n))
 			end
 			peer.pumping = false
@@ -385,6 +391,10 @@ classMethods.RemoteEvent = {
 		local s = I(replica)
 		assert(s.peer ~= server, "FireServer can only be called from a client")
 		local packed = argCopy(...)
+		if packed[1] == "ack" then
+			s.peer.lastAck = { packed[2], packed[3], packed[4] }
+			s.peer.acks = (s.peer.acks or 0) + 1
+		end
 		local serverRemote = s.serverRemote
 		local player = s.peer.serverPlayer
 		task.defer(function()
@@ -403,6 +413,7 @@ local function replicateRemote(serverRemote, peer)
 	local replica = newInstance("RemoteEvent", peer)
 	I(replica).props.OnClientEvent = newSignal()
 	I(replica).serverRemote = serverRemote
+	I(replica).attrs = s.attrs -- attributes replicate server -> client (shared table: read-only use on clients)
 	replica.Name = s.Name
 	s.replicas[peer] = replica
 	replica.Parent = peer.game.ReplicatedStorage
@@ -519,12 +530,17 @@ local function makeServices(peer)
 				error("HttpError: ConnectFail", 2)
 			end
 			httpRequests.bytes += #res.body
+			local body = res.body
+			if ENV.RLPS_EMU_TEXT_BODIES == "1" then
+				-- simulate an HTTP stack that treats bodies as text: every byte >= 0x80 becomes '?'
+				body = string.gsub(body, "[\128-\255]", "?")
+			end
 			return {
 				Success = res.ok,
 				StatusCode = res.statusCode,
 				StatusMessage = res.statusMessage,
 				Headers = res.headers,
-				Body = res.body,
+				Body = body,
 			}
 		end,
 	}
@@ -867,7 +883,16 @@ do
 			end
 		end
 	end)
-	-- the server script expects to report into this; any script error is collected as a test failure
+	task.spawn(function() -- server Heartbeat (~60 Hz)
+		local last = os.clock()
+		while true do
+			task.wait(1 / 60)
+			local now = os.clock()
+			I(server.game.RunService).props.Heartbeat:Fire(now - last)
+			last = now
+		end
+	end)
+	-- any script error is collected as a test failure
 	for _, d in methods.GetDescendants(server.game.ServerScriptService) do
 		if I(d).ClassName == "Script" then
 			runScript(server, d)
@@ -881,6 +906,7 @@ local function join(name)
 		return
 	end
 	local peer = newPeer(name, true)
+	peer.throttle = tonumber(ENV["RLPS_EMU_THROTTLE_" .. name]) -- optional bytes/s for this client
 	clients[name] = peer
 	table.insert(clientOrder, name)
 	-- client-side LocalPlayer + PlayerGui; camera placed in front of the TV
@@ -958,6 +984,17 @@ local function clientState(peer)
 	local st = {
 		alive = peer.alive,
 		recv_bytes = peer.recvBytes,
+		queued_messages = #peer.inbox,
+		last_ack = peer.lastAck,
+		script_attributes = (function()
+			for _, d in methods.GetDescendants(peer.game.StarterPlayer) do
+				if I(d).ClassName == "LocalScript" then
+					return methods.GetAttributes(d)
+				end
+			end
+			return nil
+		end)(),
+		acks = peer.acks or 0,
 		recv_messages = peer.recvMessages,
 		pixel_writes = peer.pixelWrites,
 		images_created = peer.imagesCreated,

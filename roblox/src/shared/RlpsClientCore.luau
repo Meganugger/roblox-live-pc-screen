@@ -31,6 +31,7 @@ export type Assembler = typeof(setmetatable(
 		desynced: boolean,
 		dirty: Decoder.Bounds,
 		lastError: string?,
+		lastDetail: string?, -- numbers behind the last desync (diagnostics)
 		framesCompleted: number,
 		partsApplied: number,
 		desyncs: number,
@@ -53,6 +54,7 @@ function ClientCore.new(decompress: Decoder.Decompress?): Assembler
 		desynced = false,
 		dirty = Decoder.emptyBounds(),
 		lastError = nil :: string?,
+		lastDetail = nil :: string?,
 		framesCompleted = 0,
 		partsApplied = 0,
 		desyncs = 0,
@@ -102,6 +104,8 @@ function ClientCore.push(self: Assembler, record: buffer): (Result, string?)
 				return "ignored", "stale delta"
 			end
 			if h.sessionId ~= self.sessionId or h.baseSeq ~= self.seq or self.pendingSeq ~= 0 then
+				self.lastDetail = string.format("delta %d<-%d on frame %d (assembling %d)", h.seq, h.baseSeq, self.seq,
+					self.pendingSeq)
 				return breakChain(self, "delta does not follow the current frame"), self.lastError
 			end
 		end
