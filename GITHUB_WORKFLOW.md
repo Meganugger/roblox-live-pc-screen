@@ -11,6 +11,20 @@ its real status. Update this file when a capability is verified, fails, or chang
   the owner for a token; all remote writes go through the GitHub MCP tools.
 - The local working copy (`/data/roblox-live-pc-screen` in the agent sandbox) is **temporary**. Never treat it as durable.
 
+## Environment (verified 2026-10-31, 28th session — Notion custom agent through the Claude harness)
+
+- The repository is **mounted as a git clone** at `/workspace/roblox-live-pc-screen` with a credential helper:
+  `git fetch`/`git push` work, but **pushes are only accepted for `claude/*` branches** (D-0004). ✅ verified: branch
+  `claude/rlps-session-28-finish` pushed repeatedly; `git ls-remote origin <branch>` == local `HEAD` after every push.
+- The credential is **not** a GitHub REST token (`api.github.com` answers 401): use the GitHub MCP tools for API work.
+- ✅ `create_pull_request` (draft PR #1), ✅ `pull_request_read get_check_runs` (CI job status), ✅ `get_comments`
+  (CI failure output posted by the workflow itself — the only way to read CI logs from here).
+- ✅ Pushing `.github/workflows/*.yml` through git works (workflow runs started on the PR).
+
+Checkpoint procedure in this environment: `git commit` → `git push` → `git ls-remote origin <branch>` must equal
+`git rev-parse HEAD` → CI status via `get_check_runs`. The MCP `push_files` procedure below remains the fallback when
+no clone is mounted.
+
 ## Capability matrix
 
 | Need | Tool | Status |
@@ -30,7 +44,7 @@ its real status. Update this file when a capability is verified, fails, or chang
 | Delete file | `delete_file` | available, not exercised |
 | Code search (public GitHub) | `search_code` | available (used for research) |
 | Secret scan of content | `run_secret_scanning` | available (use before pushing config-like files) |
-| **Workflow runs / CI logs** | — | ❌ **no GitHub Actions tool is exposed** by this MCP server. CI results cannot be inspected through the integration; the repo is private so public web pages are not readable either. Record CI as "not inspectable from agent environment" unless a future environment exposes it. |
+| **Workflow runs / CI logs** | `pull_request_read` `get_check_runs` / `get_status` | ✅ job status per check run (28th session). ❌ logs: no tool; workaround = the workflow posts failure output as a PR comment (`get_comments`). |
 | Recursive tree API | — | ❌ not exposed; walk directories with `get_file_contents` per directory. |
 | Binary file upload | `push_files` / `create_or_update_file` carry text | ⚠️ text only — keep committed artefacts text-based (e.g. `.rbxlx`/`.rbxmx` XML instead of binary `.rbxl`). |
 

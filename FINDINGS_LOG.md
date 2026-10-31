@@ -539,3 +539,26 @@ R2 findings come from inspected public source code (**[CODE]**, static review un
 - **Impact**: the inspected code (F-0024…F-0028) is the only available ScreenBlox implementation; claims about lost
   versions (CanvasDraw/480p, F-0029) cannot be verified. GitHub forks of `Reb0rnEnder/ScreenBlox` remain unchecked.
 - **Action**: T-0004 DONE; T-0007 checks ScreenBlox forks and CanvasDraw (S-0031) as an EditableImage usage reference.
+
+### F-0034 — Windows desktop capture works through the whole pipeline on a GitHub `windows-latest` runner [MEASURED]
+- **Date**: 2026-10-31 (28th session). **Approach**: CI job `e2e-windows` (`.github/workflows/ci.yml`) runs
+  `tests/e2e/run_e2e.py` on the runner's interactive desktop (Tk painter window, `mss` GDI capture).
+- **Finding**: E2E-01…16 passed at `fb6bcdd`: the runner desktop is 1024×768; frames reached two emulated Roblox
+  clients byte-exact; start → picture 0.99 s, desktop change → both TVs 0.16 s, stop → TVs off 0.20 s.
+- **Impact**: KI-0001 is partially closed — the capture path works on real Windows (GDI). Still unverified: the owner's
+  PC (multi-monitor, high DPI scaling, HDR, hardware-accelerated video that may capture black with GDI).
+- **Evidence**: PR #1 comment by `github-actions[bot]` (2026-10-31T14:56:32Z) with the run output.
+
+### F-0035 — Roblox Help Center (Terms of Use / Community Standards) is not reachable from the agent sandbox [NEGATIVE]
+- **Approach**: `curl` of `https://en.help.roblox.com/hc/en-us/articles/203313410-Roblox-Community-Standards` (403) and
+  of the Wayback Machine copy (403), 2026-10-31.
+- **Impact**: T-0016 stays BLOCKED for the agent; the install guide tells the owner to review the rules and lists the
+  obvious risks (personal information, content without rights). No rule is claimed from memory.
+
+### F-0036 — Secrets can be the request URL itself (`AddPrefix`/`AddSuffix`, "usable as the url argument") [OFFICIAL]
+- **Source**: S-0010 (`cloud-services/secrets.md`, re-read 2026-10-31) and F-0011.
+- **Finding**: Local Secrets are edited in Studio ⟩ File ⟩ Experience Settings ⟩ Security ⟩ Local Secrets (UI, no file
+  format); published secrets in Creator Dashboard ⟩ Secrets with a domain pattern.
+- **Impact / idea (not implemented, T-0017)**: storing the tunnel base URL as a secret would let the owner change a
+  quick-tunnel URL in the dashboard without republishing; requires verifying that `RequestAsync` accepts a `Secret` as
+  `Url`. Until then the URL is the `FrameServiceUrl` attribute.

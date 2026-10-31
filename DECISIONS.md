@@ -61,3 +61,30 @@
   them. T-0016 (content policy) stays required before publishing guidance (T-0014).
 - **Consequences**: next tasks are T-0009 (codec + protocol), T-0010 (capture app), T-0011 (frame service), T-0012
   (Roblox scripts + TV), T-0013 (tests).
+
+## D-0004 — Write path changes to branch + draft PR (2026-10-31, 28th session) — revises D-0001
+
+- **Evidence**: this environment mounts a git clone whose credentials can push only `claude/*` branches; the owner's
+  agent instructions require a draft PR for code changes.
+- **Selected**: work on `claude/rlps-session-28-finish`, PR #1 into `main`; CI runs on the PR.
+- **Consequence**: `main` stays at `e44fa8a` until the owner merges PR #1. **The next session must check open PRs and
+  `claude/*` branches first** (recorded in README/SESSION_HANDOFF).
+
+## D-0005 — Verification without Roblox: emulate the engine, run the real scripts (2026-10-31)
+
+- **Problem**: the scripts that matter most (`RlpsServer`, `RlpsClient`) had only static checks; the 26th session had
+  rejected an engine emulation as too large.
+- **Options**: (a) test only the pure cores (done, TR-0004/5); (b) a minimal Roblox emulation under Lune that runs the
+  unmodified scripts against the real frame service; (c) wait for owner Studio tests.
+- **Selected**: (b), ~700 lines, limited to documented behaviour the scripts use; unknown members raise like the engine.
+  It found 5 product defects in its first hours (TR-0008).
+- **Limits**: cannot prove real Roblox limits/rendering; owner acceptance (INSTALL D/E) stays mandatory.
+
+## D-0006 — Start latency and backpressure (2026-10-31)
+
+- **idle long-poll**: a poll with `idle=1` (relay already shows STOPPED) is held by the frame service until sharing
+  starts; every other poll learns STOPPED immediately. Start → picture 3.1 s → 1.0 s, fewer requests while idle.
+  Rejected: holding every poll while stopped (delayed stop news by up to 15 s — measured).
+- **Pacing**: after forwarding N bytes the server waits N / `MaxBytesPerSecond` (48,000) before the next poll. Because
+  deltas are computed against the last forwarded frame, busy content lowers the frame rate instead of queueing.
+  Rejected: per-client queues (memory growth, latency), dropping parts (breaks the chain).

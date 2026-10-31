@@ -1,30 +1,45 @@
 # SESSION_HANDOFF.md — Resume from a completely clean conversation
 
-_Last updated: 2026-10-25 ~11:31 UTC, 15th session start. Read `WORK_LOG.md` (last rows) and `list_commits` first: later
-commits may already contain the work listed under "Exact next task"._
+_Last updated: 2026-10-31, end of the 28th session (Notion custom agent through the Claude harness)._
 
-- **Repository**: https://github.com/Meganugger/roblox-live-pc-screen (private) · **Branch**: `main`.
-- **Baseline verified by the 25th session**: `e34d392fa6190b87d493e1e92252672f60cf2044` (24th-session start record on top of `7775c3e`).
-- **Architecture**: D-0002 / `ARCHITECTURE.md` (capture app → authenticated delta frame service over an HTTPS tunnel →
-  Roblox server long-poll → reliable `RemoteEvent` buffers → client zstd decode → `EditableImage` on a TV `SurfaceGui`).
-- **Done (code + sandbox tests)**: Python codec, frame service, capture, sharing app (`desktop/rlps/`, TR-0001…TR-0003);
-  Luau protocol/decoder/base64/client core + server relay core (`roblox/src/shared`, `roblox/src/server/RlpsRelayCore.luau`,
-  spec harness TR-0004/TR-0005); server script `RlpsServer.server.luau`, client script `RlpsClient.client.luau`, TV model +
-  Rojo project (Rojo build + strict Roblox-API analysis TR-0006).
-- **Not done**: end-to-end integration harness (in progress), `docs/PROTOCOL.md`, tunnel/deployment guide (T-0014), CI
-  (T-0013), release ZIP. Real Windows capture and every Roblox runtime behaviour are unverified (KI-0001/KI-0002).
+- **Repository**: https://github.com/Meganugger/roblox-live-pc-screen (private).
+- **Where the newest work is**: branch `claude/rlps-session-28-finish`, draft **PR #1** → `main`. `main` (`e44fa8a`)
+  does **not** contain it until the owner merges. First calls: `list_pull_requests`, `list_commits` on the branch,
+  `pull_request_read get_check_runs` and `get_comments` for PR #1 (CI failures are posted there as comments).
+- **Architecture**: `ARCHITECTURE.md` (D-0002, D-0006). Wire format: `docs/PROTOCOL.md`.
+- **Done**: full pipeline implemented and tested up to verification level L3 (`docs/IMPROVED_PROMPT.md` ladder):
+  Python 66/66, Luau 5,664/0, Rojo + luau-lsp OK, live pipeline test 21/21 locally, CI green on Linux and the live
+  pipeline passing with real Windows capture (F-0034). Docs for install/troubleshooting/security/performance done;
+  Windows scripts done; release ZIP built by the session (`dist/` is git-ignored; rebuild with the commands below).
+- **Failed approaches this session (do not repeat)**: holding *every* poll while sharing is off (delayed stop news by
+  15 s); reading CI logs through `api.github.com` with the git credential (401 — it is not a REST token); fetching the
+  Roblox help center (403, F-0035).
+- **Recently changed files**: `desktop/rlps/{server,app}.py`, `roblox/src/server/{RlpsServer.server,RlpsRelayCore}.luau`,
+  `roblox/src/client/RlpsClient.client.luau`, `default.project.json`, `tests/e2e/*`, `scripts/{bench.py,windows/*}`,
+  `.github/workflows/ci.yml`, all state docs, `docs/{PROTOCOL,IMPROVED_PROMPT}.md`, `docs/deployment/*`, `docs/testing/*`.
 
-## How to recover a working copy (no git credentials in the agent sandbox)
+## Reproduce the baseline (≈ 3 minutes)
 
-1. `list_commits` on `main` → head SHA. 2. `get_file_contents` for each file you need (directory listings give blob SHAs).
-3. Faster (23rd–25th sessions): per-directory listings with `fields: [type,path,size,download_url]`, `save_tool_result_to_file`,
-   then download every tokenized `download_url` with curl/urllib **immediately** (tokens expire within minutes); `git init`. Internet works (pip, curl, public GitHub releases); the private repo cannot be cloned.
-4. Checkpoint: `scripts/agent/make_push_payload.py` → `run_mcp_tool_from_file` with GitHub `push_files`; verify with
-   `list_commits` + `get_file_contents` listings (blob SHAs must MATCH). Push within ~8 minutes of starting and after every
-   coherent unit (KI-0004: four sessions lost unpushed work).
+```bash
+pip install -r desktop/requirements.txt pytest python-xlib       # + Xvfb, Luau CLI 0.744, Lune 0.10.4
+(cd desktop && python3 -m pytest -q)                              # 66 passed
+python3 roblox/tests/run_luau_tests.py --analyze                  # TOTAL passed=5664 failed=0
+scripts/check_roblox.sh                                           # Rojo build + luau-lsp OK -> build/RlpsDemo.rbxlx
+python3 tests/e2e/run_e2e.py                                      # 21/21, ~60 s
+```
+
+Release ZIP: `git archive --format=zip --prefix=rlps/ -o dist/rlps-src.zip HEAD`, then add `build/RlpsDemo.rbxlx`.
 
 ## Exact next task
 
-T-0012/T-0013 integration harness: run the unmodified `RlpsServer.server.luau` and two `RlpsClient.client.luau` instances
-under Lune with a Roblox API emulation against the real `desktop/rlps/server.py` fed by the real capture loop; assert the
-reconstructed EditableImage pixels, live updates and the STOPPED state. Then `docs/PROTOCOL.md`, deployment guide, ZIP.
+**T-0018 — owner acceptance test (cannot be done by the agent: needs Windows + Roblox Studio + the owner's account).**
+Dependencies: PR #1 merged (T-0019). Procedure: `docs/deployment/INSTALL.md` parts A–E. Completion criteria: in a
+published private server the TV shows the owner's real desktop, follows a window move, and shows "Screen sharing is
+off" after Stop. Record in `TEST_RESULTS.md` as TR-0011: date, PC (Windows version, monitor resolution/scaling),
+profile, tunnel type, observed latencies, `RlpsServer` attributes (`Status`, `LastError`, `ForwardedBytes`), screenshots.
+
+**If the owner reports a problem**, the next agent session: reproduce it in `tests/e2e/` where possible (add a
+scenario), fix, rerun all four commands above, push to a `claude/*` branch, update PR, update this file.
+
+**Optional agent work while waiting**: T-0017 (tunnel URL stored as a secret, F-0036 — needs a live check first),
+deferred research T-0005/T-0006/T-0007 (non-blocking, D-0003).

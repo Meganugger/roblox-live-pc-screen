@@ -20,3 +20,15 @@ Windows desktop ──mss──► desktop app (Python)                      Rob
 | Roblox server | `roblox/src/server/` | poller, validation, fan-out, keyframes for joiners, status |
 | Roblox client | `roblox/src/client/` | reconstruction, SurfaceGui, status/stopped/error screens |
 | TV model | `roblox/models/RlpsTV.model.json` → `Workspace.RlpsTV` (Rojo) | screen part tagged `RlpsScreen` (16×9 studs), bezel, neck, base |
+| Windows scripts | `scripts/windows/*.bat` | setup, show token, start app, start quick tunnel, emergency stop |
+| Live pipeline test | `tests/e2e/` | real capture → frame service → unmodified Roblox scripts under a Lune engine emulation (`docs/testing/E2E.md`) |
+
+## Flow control (D-0006)
+
+* **Idle polls**: once the server shows STOPPED it polls with `idle=1`; the frame service holds such a poll until the
+  owner presses Start (picture ≈ 1 s after Start) or the wait expires. Polls that believe sharing is live learn a stop
+  immediately (TV off ≈ 0.2 s after Stop).
+* **Pacing**: after forwarding N bytes the server waits N / `MaxBytesPerSecond` (48 KB/s) before polling again. The
+  frame service computes each delta against the server's last forwarded frame, so slower polling means fewer, larger
+  deltas — never a queue. Static screens cost nothing; video is slowed to fit the budget (`PERFORMANCE.md`).
+* **Late joiners / desync**: the server keeps the last keyframe + later deltas (≤ 384 KiB) and replays it on `sync`.
