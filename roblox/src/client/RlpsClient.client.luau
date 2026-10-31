@@ -35,6 +35,13 @@ local playerGui = player:WaitForChild("PlayerGui") :: PlayerGui
 -- ------------------------------------------------------------------------------------------------- frame assembly
 
 local function decompress(payload: buffer, rawLength: number): (buffer?, string?)
+	-- the declared content size is checked before decompressing, so a bad part can never allocate more than rawLength
+	local okSize, size = pcall(function(): number?
+		return EncodingService:GetDecompressedBufferSize(payload, Enum.CompressionAlgorithm.Zstd)
+	end)
+	if not okSize or size ~= rawLength then
+		return nil, "zstd content size does not match rawLength"
+	end
 	local ok, out = pcall(function(): buffer
 		return EncodingService:DecompressBuffer(payload, Enum.CompressionAlgorithm.Zstd)
 	end)

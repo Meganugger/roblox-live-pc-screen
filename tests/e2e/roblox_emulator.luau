@@ -533,6 +533,33 @@ local function makeServices(peer)
 			assert(type(input) == "buffer", "Base64Decode expects a buffer")
 			return base64Decode(input)
 		end,
+		GetDecompressedBufferSize = function(_, input, algorithm)
+			-- zstd frame header (RFC 8878 §3.1.1): magic, frame header descriptor, optional window/dict id, FCS
+			assert(type(input) == "buffer", "GetDecompressedBufferSize expects a buffer")
+			if algorithm ~= Enum.CompressionAlgorithm.Zstd then
+				error("unsupported algorithm in emulator", 2)
+			end
+			if buffer.len(input) < 6 or buffer.readu32(input, 0) ~= 0xFD2FB528 then
+				return nil
+			end
+			local fhd = buffer.readu8(input, 4)
+			local fcsFlag = bit32.rshift(fhd, 6)
+			local single = bit32.band(bit32.rshift(fhd, 5), 1) == 1
+			local dictFlag = bit32.band(fhd, 3)
+			local off = 5 + (if single then 0 else 1) + ({ 0, 1, 2, 4 })[dictFlag + 1]
+			local fcsSize = ({ if single then 1 else 0, 2, 4, 8 })[fcsFlag + 1]
+			if fcsSize == 0 or buffer.len(input) < off + fcsSize then
+				return nil
+			end
+			if fcsSize == 1 then
+				return buffer.readu8(input, off)
+			elseif fcsSize == 2 then
+				return buffer.readu16(input, off) + 256
+			elseif fcsSize == 4 then
+				return buffer.readu32(input, off)
+			end
+			return buffer.readu32(input, off) + buffer.readu32(input, off + 4) * 4294967296
+		end,
 		DecompressBuffer = function(_, input, algorithm)
 			assert(type(input) == "buffer", "DecompressBuffer expects a buffer")
 			if algorithm ~= Enum.CompressionAlgorithm.Zstd then
