@@ -1009,7 +1009,8 @@ local function writeState()
 		state.clients[name] = (clientState(clients[name]))
 	end
 	fs.writeFile(OUT .. "/state.json.tmp", serde.encode("json", state))
-	fs.move(OUT .. "/state.json.tmp", OUT .. "/state.json", true)
+	-- Windows: the replace fails while the test reads the file; the next cycle (0.1 s) writes it again
+	pcall(fs.move, OUT .. "/state.json.tmp", OUT .. "/state.json", true)
 end
 
 local function snapshot(tag)

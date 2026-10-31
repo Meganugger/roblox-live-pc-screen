@@ -215,6 +215,12 @@ class FrameService:
             def log_message(self, fmt, *args):  # never logs headers (token)
                 log.debug("%s %s", self.address_string(), fmt % args)
 
+            def handle(self):
+                try:
+                    super().handle()
+                except ConnectionError:  # poller/tunnel went away (read or write side): normal for long-polls
+                    log.debug("%s disconnected", self.address_string())
+
             def do_GET(self):
                 service._handle(self)
 

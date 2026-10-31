@@ -137,7 +137,7 @@ class Harness:
         try:
             with open(os.path.join(ctl, "state.json"), encoding="utf-8") as fh:
                 return json.load(fh)
-        except (FileNotFoundError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError):  # missing, or being replaced right now (Windows: PermissionError)
             return {}
 
     def wait_for(self, ctl: str, pred, timeout: float, what: str):
