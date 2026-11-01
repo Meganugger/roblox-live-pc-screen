@@ -23,6 +23,9 @@ TILE_MODE_RAW = 0  # mode u8 | 16*16*4 RGBA8 bytes
 TILE_MODE_DCT = 1  # mode u8 | quality u8 | 384 int16 zigzag coefficients (rlps.dct)
 TILE_MODE_COPY = 2  # mode u8 | dx i16 | dy i16: copy the 16x16 block at (x0+dx, y0+dy) of the *previous* picture
 #                     (scrolling, moved windows); only in parts flagged PFLAG_REF
+TILE_MODE_DCT2 = 3  # mode u8 | quality u8 | 384 int16: a DCT macroblock at *half* resolution covering the 32x32 area of
+#                     this tile and its right, lower and lower-right neighbours (pixel-doubled); those three tiles are
+#                     not listed. For large moving areas (video): a quarter of the client's DCT work and bytes
 HYBRID_TILE = 16
 HYBRID_RAW_ENTRY = 1 + 16 * 16 * 4  # 1025
 HYBRID_DCT_ENTRY = 2 + 384 * 2  # 770

@@ -618,3 +618,21 @@ R2 findings come from inspected public source code (**[CODE]**, static review un
 - **Source**: S-0050. Voice is also limited to servers of ≤ 50 players and voice-enabled listeners.
 - **Impact**: voice chat rejected as an audio path; live audio by resynthesis (T-0028) would be unmoderated audio with
   no Content Label → owner decides the policy question before any implementation (D-0012).
+
+### F-0049 — Roblox queues RemoteEvent traffic above a soft per-client budget (~50 KB/s cited) instead of dropping it [COMMUNITY][OFFICIAL guidance]
+- **Source**: S-0051 (DevForum 4209361 #14: "Roblox queues exceeding RemoteEvents when network bandwidth goes above
+  50 KB/s (soft limit) and only attempts to send them once there is available bandwidth"; official performance
+  guidance: ~50 KB/s receive as a historical planning target, S-0017).
+- **Impact**: sending faster than a player's link turns into delay, not loss → the rate control must watch queueing
+  delay (D-0013), and the emulator models a queueing link (`RLPS_EMU_LINK_BPS`).
+
+### F-0050 — Client scripts run interpreted: a DCT tile costs 0.3 ms (0.17 ms after D-0013), a full 1024×576 frame of motion 0.7 s [MEASURED][OFFICIAL]
+- **Source**: S-0039 (native code generation is documented for server scripts only); `luau.load` with and without
+  codegen in Lune 0.10.4 on the 2.1 GHz sandbox: 0.306 vs 0.062 ms per tile (10 coefficients per block); after the
+  IDCT rework 0.170 ms; floor (colour conversion) 0.056 ms.
+- **Impact**: client decode time, not bandwidth, limits video on real clients → DCT2 for large moving areas, fps cap
+  from decode time and decode-queue wait.
+
+### F-0051 — The owner's Reddit thread (1sp88kg) re-read in full: nothing on latency beyond "buffer", "compression", "send only the changes" and WebSockets; its author reaches "1 fps 2 fps" [COMMUNITY]
+- **Source**: S-0040 (fetched again 2026-10-31: 12 + 32 + 4 comments, unchanged).
+- **Impact**: none new; this project already sends only changes, compressed, many frames per request.

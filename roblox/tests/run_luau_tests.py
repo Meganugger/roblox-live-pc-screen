@@ -79,14 +79,28 @@ def fields(c: C.Container) -> dict:
                 height=c.height, format=c.fmt, tileSize=c.tile_size, partCount=len(c.parts))
 
 
+def hybrid_modes(raw: bytes, n: int) -> list[int]:
+    sizes = {P.TILE_MODE_RAW: P.HYBRID_RAW_ENTRY, P.TILE_MODE_DCT: P.HYBRID_DCT_ENTRY,
+             P.TILE_MODE_DCT2: P.HYBRID_DCT_ENTRY, P.TILE_MODE_COPY: P.HYBRID_COPY_ENTRY}
+    out, off = [], 2 * n
+    for _ in range(n):
+        out.append(raw[off])
+        off += sizes[raw[off]]
+    return out
+
+
 def dirty_rect(c: C.Container) -> list[int]:
     """[x, y, w, h] = union of the tile rectangles carried by every part (what RlpsClientCore.takeDirty reports)."""
     x0 = y0 = 1 << 30
     x1 = y1 = -1
     for part in c.parts:
         raw = C.decompress_part(part)
-        for idx in np.frombuffer(raw, dtype="<u2", count=part.tile_count).tolist():
+        indices = np.frombuffer(raw, dtype="<u2", count=part.tile_count).tolist()
+        modes = hybrid_modes(raw, part.tile_count) if part.fmt == P.FMT_HYBRID else [None] * len(indices)
+        for idx, mode in zip(indices, modes):
             tx, ty, tw, th = P.tile_rect(idx, c.width, c.height, c.tile_size)
+            if mode == P.TILE_MODE_DCT2:  # a half-resolution macroblock covers 32x32
+                tw, th = 2 * tw, 2 * th
             x0, y0, x1, y1 = min(x0, tx), min(y0, ty), max(x1, tx + tw), max(y1, ty + th)
     return [x0, y0, x1 - x0, y1 - y0]
 
@@ -250,6 +264,29 @@ def hybrid_sequences():
         assert -1 in qualities and len(qualities) >= 2, qualities  # lossless and DCT frames
         assert copies > 0, "scroll frames must produce COPY tiles"
         out.append({"name": name, "steps": steps})
+    # large moving area: half-resolution macroblocks (TILE_MODE_DCT2) next to full-resolution ones and lossless tiles
+    w2, h2 = 112, 80  # 7x5 tiles: the last tile column and row can only be full-resolution
+    enc = HY.HybridEncoder(w2, h2)
+    enc.HALF_RES_MIN_TILES = 8
+    base = img_smooth(w2, h2, 3).astype(np.float32)
+    seq, steps, modes, ref = 0, [], set(), None
+    for k, budget in enumerate((3000, 3500, 4000, 5000, 6000, 3000, None)):
+        rgb = np.clip(base * (0.5 + 0.12 * k), 0, 255).astype(np.uint8)
+        rgb[k * 7 % h2, :] = (255, 0, 255)  # extreme values: clamping in the doubled pixels
+        data, info = enc.encode(C.quantize(rgb, P.FMT_HYBRID), session_id=0xD2D2_0001, seq=seq + 1, base_seq=seq,
+                                budget=budget, force_keyframe=k == 0)
+        if data is None:
+            continue
+        seq += 1
+        note_zstd(data)
+        c = C.parse_container(data)
+        for part in c.parts:
+            modes |= set(hybrid_modes(C.decompress_part(part), part.tile_count))
+        ref = C.apply_container(ref, c)
+        assert np.array_equal(ref, enc.recon)
+        steps.append({"data": data, "fields": fields(c), "crc": frame_crc(ref), "dirty": dirty_rect(c)})
+    assert {P.TILE_MODE_DCT2, P.TILE_MODE_DCT} <= modes, modes
+    out.append({"name": "112x80-hybrid-halfres", "steps": steps})
     return out
 
 

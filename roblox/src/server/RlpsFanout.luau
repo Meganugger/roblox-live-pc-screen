@@ -4,7 +4,7 @@
 --
 -- Every viewer acknowledges how many bytes of part records it has processed. What it was sent but has not processed
 -- yet is its backlog — in the network or in its decode queue — and reliable RemoteEvents cannot be recalled. So the
--- backlog of each viewer is kept inside a window of about one second of what that viewer actually processes (its
+-- backlog of each viewer is kept inside a window of about half a second of what that viewer actually processes (its
 -- delivery rate, measured from its acks; at least `minWindow`): a slow player never piles up minutes of stream, and
 -- every later message (Stop included) reaches it in bounded time. A viewer is
 --   live     receiving the stream while its backlog stays inside the window;
@@ -27,8 +27,9 @@ Fanout.__index = Fanout
 export type Send = (key: any, kind: string, ...any) -> ()
 
 export type Config = {
-	minWindow: number?, -- backlog bytes allowed whatever the viewer's measured rate (default 128 KB)
-	windowSeconds: number?, -- backlog allowed, in seconds of the viewer's delivery rate (default 1)
+	minWindow: number?, -- backlog bytes allowed whatever the viewer's measured rate (default 64 KB)
+	windowSeconds: number?, -- backlog allowed, in seconds of the viewer's delivery rate (default 0.5)
+	baseWindow: number?, -- seconds of delay samples behind a viewer's base (uncongested) delay (default 10)
 	rateWindow: number?, -- seconds of delivery-rate samples behind the estimate (windowed maximum, default 5)
 	maxReplayFrames: number?, -- a catch-up never replays more frames than this (default 24)
 	maxReplayBytes: number?, -- nor more bytes (default 8 MB)
@@ -39,6 +40,7 @@ export type Config = {
 
 type Flight = { cum: number, t: number, delivered: number } -- one records message in flight
 type Sample = { t: number, rate: number }
+type DelaySample = { t: number, d: number }
 
 export type State = "live" | "held" | "waiting"
 
@@ -53,6 +55,10 @@ export type Viewer = {
 	flights: { Flight },
 	samples: { Sample },
 	rate: number, -- delivery-rate estimate, bytes/s (0 = unknown)
+	delays: { DelaySample }, -- send -> processed delay of recent messages (seconds)
+	baseDelay: number, -- the smallest of them: network + decode time without any queue (math.huge = unknown)
+	queueDelay: number, -- smoothed delay above baseDelay: time messages wait in queues (network or decode)
+	decodeWait: number, -- smoothed client-reported wait in its decode queue (seconds): the CPU part of queueDelay
 	since: number, -- last (re)start: join or sync
 	waitingSince: number,
 	costMs: number, -- client-reported decode time per frame
@@ -65,6 +71,9 @@ export type Stats = {
 	lagging: number, -- held + waiting
 	measured: number, -- viewers past their warm-up
 	lag: number, -- lower median over measured viewers of how far behind they are (seconds; see Fanout.stats)
+	queueDelay: number, -- lower median over measured live viewers of their *network* queueing delay (seconds)
+	decodeWait: number, -- lower median of their decode-queue waits (seconds): clients short of CPU
+	deliveryRate: number, -- lower median of their delivery-rate estimates (bytes/s; 0 = unknown)
 	maxLag: number, -- the largest of those
 	costMs: number, -- lower median decode cost per frame (0 = none reported)
 }
@@ -82,6 +91,7 @@ export type Fanout = typeof(setmetatable(
 		seq: number,
 		minWindow: number,
 		windowSeconds: number,
+		baseWindow: number,
 		rateWindow: number,
 		maxReplayFrames: number,
 		maxReplayBytes: number,
@@ -104,8 +114,9 @@ function Fanout.new(send: Send, config: Config?): Fanout
 		detail = nil :: string?,
 		session = 0,
 		seq = 0,
-		minWindow = cfg.minWindow or 128 * 1024,
-		windowSeconds = cfg.windowSeconds or 1,
+		minWindow = cfg.minWindow or 64 * 1024,
+		windowSeconds = cfg.windowSeconds or 0.5,
+		baseWindow = cfg.baseWindow or 10,
 		rateWindow = cfg.rateWindow or 5,
 		maxReplayFrames = cfg.maxReplayFrames or 24,
 		maxReplayBytes = cfg.maxReplayBytes or 8 * 1024 * 1024,
@@ -180,7 +191,9 @@ local function resume(self: Fanout, key: any, v: Viewer, now: number)
 	local reset = v.needsReset
 	v.needsReset = false
 	-- replaying costs `bytes`; a fresh keyframe costs about the keyframe and its refinement plus a wait
-	if frames > self.maxReplayFrames or bytes > self.maxReplayBytes or bytes > 2 * self.keyBytes + window(self, v) then
+	if frames > self.maxReplayFrames or bytes > self.maxReplayBytes
+		or bytes > 2 * self.keyBytes + math.max(window(self, v), 2 * self.minWindow)
+	then
 		v.state, v.waitingSince = "waiting", now
 		if reset and self.status == "live" then
 			self.send(key, "status", "connecting", "catching up with the stream")
@@ -208,6 +221,10 @@ local function newViewer(now: number): Viewer
 		flights = {},
 		samples = {},
 		rate = 0,
+		delays = {},
+		baseDelay = math.huge,
+		queueDelay = 0,
+		decodeWait = 0,
 		since = now,
 		waitingSince = now,
 		costMs = 0,
@@ -230,7 +247,7 @@ local function addSample(self: Fanout, v: Viewer, rate: number, now: number)
 	v.rate = best
 end
 
-local function noteProcessed(self: Fanout, v: Viewer, processed: number, now: number)
+local function noteProcessed(self: Fanout, v: Viewer, processed: number, now: number, ageMs: number?)
 	if processed ~= processed then
 		return -- NaN
 	end
@@ -246,6 +263,21 @@ local function noteProcessed(self: Fanout, v: Viewer, processed: number, now: nu
 	if last then
 		-- delivery rate over the flight of the newest fully processed message (BBR-style sample)
 		addSample(self, v, (processed - last.delivered) / math.max(now - last.t, 0.02), now)
+		-- and its delay. The smallest delay of the last baseWindow seconds is the path without queues (LEDBAT-style
+		-- base delay); what exceeds it is time spent queued — the signal the rate control keeps small.
+		-- (minus the time the ack itself waited on the client after the part was processed: not a queue)
+		local d = math.max(0, now - last.t - (ageMs or 0) / 1000)
+		local kept: { DelaySample } = {}
+		local base = d
+		for _, s in v.delays do
+			if now - s.t <= self.baseWindow then
+				table.insert(kept, s)
+				base = math.min(base, s.d)
+			end
+		end
+		table.insert(kept, { t = now, d = d })
+		v.delays, v.baseDelay = kept, base
+		v.queueDelay = v.queueDelay * 0.5 + (d - base) * 0.5
 	end
 end
 
@@ -288,7 +320,8 @@ function Fanout.broadcast(self: Fanout, m: Message, now: number)
 end
 
 -- A viewer processed `processed` bytes of part records in total (its decode cost per frame is costMs).
-function Fanout.ack(self: Fanout, key: any, processed: number, now: number, costMs: number?)
+function Fanout.ack(self: Fanout, key: any, processed: number, now: number, costMs: number?, waitMs: number?,
+	ageMs: number?)
 	local v = self.viewers[key]
 	if v == nil then
 		return
@@ -296,7 +329,10 @@ function Fanout.ack(self: Fanout, key: any, processed: number, now: number, cost
 	if costMs then
 		v.costMs = costMs
 	end
-	noteProcessed(self, v, processed, now)
+	if waitMs then
+		v.decodeWait = v.decodeWait * 0.5 + waitMs / 1000 * 0.5
+	end
+	noteProcessed(self, v, processed, now, ageMs)
 	if v.state == "held" and v.acked >= v.sent then
 		resume(self, key, v, now)
 	end
@@ -349,6 +385,9 @@ end
 function Fanout.stats(self: Fanout, now: number): Stats
 	local lags: { number } = {}
 	local costs: { number } = {}
+	local queues: { number } = {}
+	local waits: { number } = {}
+	local rates: { number } = {}
 	local count, lagging, maxLag = 0, 0, 0
 	for _, v in self.viewers do
 		count += 1
@@ -364,16 +403,32 @@ function Fanout.stats(self: Fanout, now: number): Stats
 			if v.state == "live" and v.costMs > 0 then
 				table.insert(costs, v.costMs)
 			end
+			if v.state ~= "waiting" and v.baseDelay < math.huge then -- held viewers too: they are held *because* queued
+				-- nothing acked for a while counts as queued: the oldest message still in flight has waited `lag`
+				-- (minus the ~0.15 s a message may normally wait for the next ack and the next frame). Time spent in
+				-- the client's own decode queue is the CPU's, not the network's.
+				table.insert(queues, math.max(0, math.max(v.queueDelay, lag - v.baseDelay - 0.15) - v.decodeWait))
+				table.insert(waits, v.decodeWait)
+				if v.rate > 0 then
+					table.insert(rates, v.rate)
+				end
+			end
 		end
 	end
 	table.sort(lags)
 	table.sort(costs)
+	table.sort(queues)
+	table.sort(waits)
+	table.sort(rates)
 	return {
 		viewers = count,
 		lagging = lagging,
 		measured = #lags,
 		lag = if #lags > 0 then lags[(#lags + 1) // 2] else 0,
 		maxLag = maxLag,
+		queueDelay = if #queues > 0 then queues[(#queues + 1) // 2] else 0,
+		deliveryRate = if #rates > 0 then rates[(#rates + 1) // 2] else 0,
+		decodeWait = if #waits > 0 then waits[(#waits + 1) // 2] else 0,
 		costMs = if #costs > 0 then costs[(#costs + 1) // 2] else 0,
 	}
 end

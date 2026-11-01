@@ -139,9 +139,11 @@ Select **ServerScriptService ⟩ Rlps ⟩ RlpsServer**, scroll to **Attributes**
 | `SecretName` | `rlps_token` (default; must match the secret's name) |
 | `ViewerUserIds` | optional: comma-separated UserIds allowed to see the screen, e.g. `12345678, 87654321`; empty = everyone |
 | `MaxBytesPerSecond` | 8000000 — upper bound of the adaptive stream rate (per viewer; every viewer gets the same stream) |
-| `StartBytesPerSecond`, `MinBytesPerSecond` | 1000000, 100000 — where the rate starts and how low it may go |
-| `TargetLagSeconds` | 0.35 — acceptable delay of the median viewer (the rate follows most viewers; slower ones are held and caught up, never slowing the others) |
-| `BatchMs`, `ClientDecodeBudgetMs` | 150, 10 — frames per HTTP response window; decode time per client frame |
+| `StartBytesPerSecond`, `MinBytesPerSecond` | 500000, 30000 — where the rate starts and how low it may go |
+| `TargetQueueMs` | 100 — how long the stream may wait in Roblox's network queue for the median viewer before the rate backs off (lower = less delay, less quality) |
+| `TargetLagSeconds` | 0.6 — hard limit: a median viewer this far behind cuts rate and frame rate at once (slower minorities are held and caught up, never slowing the others) |
+| `BatchMs`, `PlayoutMs` | 0, 100 — extra wait for more frames per HTTP response (0 = none); most pacing delay for the frames of one response |
+| `ClientDecodeBudgetMs` | 10 — decode time per client frame |
 | `ViewerModes` | `fullscreen,cinema,mini` — viewer modes players may use (INSTALL F.2); empty = none |
 | `ModeratorUserIds` | optional: UserIds who may hide the screen for everyone from inside the game (C.1b) |
 | `Hidden` | false — true withholds the screen in this server (moderators toggle it in game; you can also run `game.ServerScriptService.Rlps.RlpsServer:SetAttribute("Hidden", true)` in the server console) |
@@ -149,7 +151,8 @@ Select **ServerScriptService ⟩ Rlps ⟩ RlpsServer**, scroll to **Attributes**
 
 The script also *writes* read-only diagnostics there while running: `Status`, `StatusDetail`, `Containers`,
 `ForwardedBytes`, `Dropped`, `LastError`, `RateBps` (current stream rate), `FpsCap`, `ForwardFps`, `LagMs` (delay of
-the median viewer), `MaxLagMs`, `Viewers`, `LaggingViewers` (held or waiting for a keyframe), `BodyMode` (`raw` or
+the median viewer), `QueueMs` (its time in Roblox's network queue), `DecodeWaitMs` (its time in the client's decode
+queue), `MaxLagMs`, `Viewers`, `LaggingViewers` (held or waiting for a keyframe), `BodyMode` (`raw` or
 `base64`). Each client's `RlpsClient` script shows `State`, `Seq`,
 `DecodeMsPerFrame`, `QueueLength`, `Desyncs`, `LastError`, `ViewMode`, `Redraws`, `LastRedrawPixels` (pixels written
 by the last redraw — only what changed), `SkippedRedraws` (redraws saved while no TV was in view) (Explorer while

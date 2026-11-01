@@ -35,7 +35,7 @@ local frames = ReplicatedStorage:WaitForChild("RlpsFrames") :: RemoteEvent
 
 local SCREEN_TAG = "RlpsScreen"
 local DEFAULT_DECODE_BUDGET_MS = 10 -- per Heartbeat; the server may override it (RemoteEvent attribute DecodeBudgetMs)
-local ACK_INTERVAL = 0.1 -- seconds between "ack" messages (congestion control on the server)
+local ACK_INTERVAL = 0.05 -- seconds between "ack" messages (the server measures each viewer's delay from them)
 local MAX_QUEUE = 4000 -- queued messages; beyond it the stream is dropped and re-synced (should never happen)
 local SYNC_COOLDOWN = 3 -- seconds between sync requests (startup retry / desync recovery)
 local RENDER_DISTANCE = 300 -- studs; farther away a screen is not redrawn (frames are still assembled)
@@ -694,13 +694,15 @@ end
 
 -- Messages are queued and processed on Heartbeat within a time budget, so a large frame never freezes the game:
 -- a frame may be assembled over several game frames (the EditableImage keeps showing the previous complete one).
-type Msg = { kind: string, a: unknown, b: unknown, c: unknown }
+type Msg = { kind: string, a: unknown, b: unknown, c: unknown, t: number } -- t = arrival (os.clock)
 local queue: { Msg } = {}
 local qHead, qTail = 1, 0 -- explicit bounds: processed slots are set to nil, so `#queue` would be meaningless
 local lastAckAt = 0
 local ackedSession, ackedSeq, ackedBytes = 0, 0, 0
 local decodeSpent = 0 -- seconds of decoding spent on the frame being assembled
 local costMs = 0 -- moving average decode cost of one complete frame (sent with acks: the server derives a fps cap)
+local waitSum, waitCount = 0, 0 -- seconds parts waited in the queue before decoding, since the last ack
+local lastPartAt = 0 -- when the newest part was processed (acks report its age: the server's delay samples exclude it)
 
 local function countPart(a: unknown)
 	if typeof(a) == "buffer" then
@@ -775,8 +777,38 @@ frames.OnClientEvent:Connect(function(kind: unknown, a: unknown, b: unknown, c: 
 		return
 	end
 	qTail += 1
-	queue[qTail] = { kind = kind :: string, a = a, b = b, c = c }
+	queue[qTail] = { kind = kind :: string, a = a, b = b, c = c, t = os.clock() }
 end)
+
+-- Are all parts of the next queued frame here? Only then may decoding go on past a frame that just completed: the
+-- picture is drawn between frames (render skips a half-assembled one), so stopping in the middle of the next frame
+-- would hide the completed one until a Heartbeat happens to end on a frame boundary — with a steady stream that is
+-- rarely, and the TV falls behind. Part header: partIndex u16 @6, partCount u16 @8, seq u32 @20 (docs/PROTOCOL.md).
+local function nextFrameQueued(): boolean
+	local need, seq = -1, -1
+	for i = qHead, qTail do
+		local m = queue[i]
+		if m and m.kind == "part" then
+			local b = m.a
+			if typeof(b) ~= "buffer" or buffer.len(b) < 36 then
+				return false
+			end
+			local idx, cnt, s = buffer.readu16(b, 6), buffer.readu16(b, 8), buffer.readu32(b, 20)
+			if need < 0 then
+				if idx ~= 0 then
+					return false
+				end
+				need, seq = cnt, s
+			elseif s ~= seq then
+				return false
+			end
+			if idx == need - 1 then
+				return true
+			end
+		end
+	end
+	return false
+end
 
 local function processQueue()
 	local budgetMs = frames:GetAttribute("DecodeBudgetMs")
@@ -787,14 +819,25 @@ local function processQueue()
 		queue[qHead] = nil :: any
 		qHead += 1
 		local t0 = os.clock()
+		if m.kind == "part" then
+			waitSum += t0 - m.t
+			waitCount += 1
+		end
 		handle(m)
+		if m.kind == "part" then
+			lastPartAt = os.clock()
+		end
 		decodeSpent += os.clock() - t0
 		if m.kind == "part" and renderPending and core.pendingSeq == 0 then
 			local ms = decodeSpent * 1000
 			costMs = if costMs == 0 then ms else costMs * 0.8 + ms * 0.2
 			decodeSpent = 0
-		end
-		if os.clock() - started >= budget then
+			-- a frame is complete: draw it this Heartbeat, unless a whole newer frame is already queued and there is
+			-- time to assemble it too (catching up: only the newest picture is drawn)
+			if os.clock() - started >= budget * 0.5 or not nextFrameQueued() then
+				break
+			end
+		elseif os.clock() - started >= budget then
 			break
 		end
 	end
@@ -812,7 +855,12 @@ local function sendAck()
 	if core.sessionId ~= ackedSession or core.seq ~= ackedSeq or processed ~= ackedBytes then
 		lastAckAt = now
 		ackedSession, ackedSeq, ackedBytes = core.sessionId, core.seq, processed
-		frames:FireServer("ack", core.sessionId, core.seq, costMs, processed)
+		-- waitMs: how long parts waited in this client's decode queue (CPU-bound, not the network: the server keeps
+		-- the two apart — the byte rate follows the network, the frame rate follows this)
+		local waitMs = if waitCount > 0 then waitSum / waitCount * 1000 else 0
+		waitSum, waitCount = 0, 0
+		frames:FireServer("ack", core.sessionId, core.seq, costMs, processed, math.floor(waitMs + 0.5),
+			math.floor((now - lastPartAt) * 1000 + 0.5))
 	end
 end
 

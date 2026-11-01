@@ -119,9 +119,21 @@ def quantize(coefs: np.ndarray, quality_index: int) -> np.ndarray:
     return np.clip(q, -32768, 32767).astype(np.int16)[:, :, ZIGZAG]
 
 
-def pack_entries(qz: np.ndarray, quality_index: int) -> list[bytes]:
-    """One 770-byte entry per tile."""
-    head = bytes((P.TILE_MODE_DCT, quality_index))
+def downscale2(blocks_rgb: np.ndarray) -> np.ndarray:
+    """(G, 32, 32, 3) uint8 -> (G, 16, 16, 3) uint8: 2x2 box average, rounded half up (TILE_MODE_DCT2 source)."""
+    b = blocks_rgb.astype(np.uint16)
+    s = b[:, 0::2, 0::2] + b[:, 1::2, 0::2] + b[:, 0::2, 1::2] + b[:, 1::2, 1::2]
+    return ((s + 2) >> 2).astype(np.uint8)
+
+
+def upscale2(tiles: np.ndarray) -> np.ndarray:
+    """(G, 16, 16, C) -> (G, 32, 32, C): every pixel doubled in both directions (how clients draw TILE_MODE_DCT2)."""
+    return np.repeat(np.repeat(tiles, 2, axis=1), 2, axis=2)
+
+
+def pack_entries(qz: np.ndarray, quality_index: int, mode: int = P.TILE_MODE_DCT) -> list[bytes]:
+    """One 770-byte entry per tile (``mode`` TILE_MODE_DCT or TILE_MODE_DCT2)."""
+    head = bytes((mode, quality_index))
     body = qz.astype("<i2").reshape(qz.shape[0], -1)
     return [head + body[i].tobytes() for i in range(qz.shape[0])]
 
@@ -163,8 +175,8 @@ def reconstruct(qz: np.ndarray, quality_indices: np.ndarray | int) -> np.ndarray
 
 
 def decode_entry(entry: bytes) -> np.ndarray:
-    """Reference decode of one DCT entry -> (16, 16, 4) RGBA."""
-    if len(entry) != ENTRY_BYTES or entry[0] != P.TILE_MODE_DCT:
+    """Reference decode of one DCT entry -> (16, 16, 4) RGBA (a DCT2 entry: its 16x16 samples, before doubling)."""
+    if len(entry) != ENTRY_BYTES or entry[0] not in (P.TILE_MODE_DCT, P.TILE_MODE_DCT2):
         raise P.ProtocolError("bad DCT tile entry")
     qi = entry[1]
     if qi >= len(QUALITIES):

@@ -53,6 +53,10 @@ Lighting as far as the scripts use them.
 | E2E-28 | a player hides the screen for herself: picture and pixels dropped, 0 bytes received while hidden (the others keep updating); showing it again resyncs exactly |
 | E2E-29 | moderator kill switch: only `ModeratorUserIds` get the button; a non-moderator's forged `moderate` request is ignored; hiding drops every viewer's pixels and stops polling the PC; showing it again restores the exact picture; showing it while sharing is off says "Screen sharing is off" at once (< 5 s), and after Start the exact picture returns |
 | E2E-30 | image API disabled (creation succeeds, writes fail — as in a published game without Allow Mesh / Image APIs): the TV explains the owner setting and the ID-verification requirement; no per-frame retry |
+| E2E-31 | glass-to-glass delay, network "studio" (5 ms each way, 20 ms tunnel round trip, unlimited link): a counter drawn on the real screen is read back from the client's EditableImage the moment it is written — single change median ≤ 0.18 s; video (20 changes/s + moving picture) median ≤ 0.40 s, p90 ≤ 0.60 s, no growth, ≥ 60 % of the changes shown, no queue build-up once it stops |
+| E2E-32 | the same over "online" (60 ms each way, 150 ms tunnel round trip, a 400 kB/s link per player that queues like Roblox's send queue): single ≤ 0.35 s; video median ≤ 0.65 s, p90 ≤ 1.0 s |
+| E2E-33 | a place saved with the old tuning (`BatchMs` 150, `StartBytesPerSecond` 1000000, `MinBytesPerSecond` 100000, `TargetLagSeconds` 0.35) runs with the low-latency defaults |
+| E2E-34 | "weak": online + players that afford only 3 ms of decoding per game frame: single ≤ 0.45 s; video median ≤ 0.9 s, p90 ≤ 1.4 s, ≥ 30 % shown |
 
 ## Run it
 

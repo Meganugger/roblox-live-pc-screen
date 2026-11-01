@@ -499,11 +499,51 @@ do
 	T.eq(r.stats.fastHoldsAfterWarmup, 0, "A never held after its warm-up")
 	for _, name in { "A", "B", "C" } do
 		local v = r.fan:viewer(name) :: any
-		T.check(v.holds <= 3, name .. " held at most a few times while warming up", tostring(v.holds))
+		-- (a 64 KB window before a viewer's rate is known: a 200 KB keyframe holds it until processed — the price of
+		-- the latency-first window, D-0013; never after the warm-up)
+		T.check(v.holds <= 8, name .. " held at most a few times while warming up", tostring(v.holds))
 		T.eq(r.sims[name].seq, r.lastSeq, name .. " on the last frame")
 		T.eq(r.sims[name].desyncs, 0, name .. " never desynced")
 	end
 	T.eq(r.stats.fastGaps, 0, "A got every frame")
+end
+
+-- D. Queueing delay (D-0013): base delay = smallest send -> processed delay of the last 10 s; queueing = the smoothed
+-- excess, minus the client's decode wait (CPU, not network); the ack's own age is not delay; held viewers count.
+do
+	local _, send = recorder()
+	local fan = Fanout.new(send, { minWindow = 1e6 })
+	fan:sync("v", 0, 0)
+	fan:broadcast({ kind = "status", status = "live" } :: any, 0)
+	local sent, t = 0, 0
+	local function step(delay: number, waitMs: number?, ageMs: number?)
+		t += 0.1
+		fan:broadcast(frame(math.floor(t * 10 + 0.5), sent == 0, 100), t)
+		sent += 100
+		fan:ack("v", sent, t + delay + (ageMs or 0) / 1000, nil, waitMs, ageMs)
+	end
+	for _ = 1, 20 do
+		step(0.05) -- 50 ms path, nothing queued
+	end
+	local v = fan:viewer("v") :: any
+	T.check(math.abs(v.baseDelay - 0.05) < 1e-9, "base delay = the path's delay", tostring(v.baseDelay))
+	T.check(fan:stats(t + 0.05).queueDelay < 1e-6, "no queue on a steady path", tostring(fan:stats(t + 0.05).queueDelay))
+	for _ = 1, 8 do
+		step(0.05, nil, 40) -- acks sent 40 ms after processing: not a queue
+	end
+	T.check(fan:stats(t + 0.09).queueDelay < 1e-6, "an ack's own age is not counted", tostring(fan:stats(t).queueDelay))
+	for _ = 1, 8 do
+		step(0.35) -- 300 ms in a queue
+	end
+	local q = fan:stats(t + 0.35).queueDelay
+	T.check(q > 0.25 and q <= 0.3 + 1e-9, "queueing delay seen", tostring(q))
+	for _ = 1, 8 do
+		step(0.35, 300) -- the same 300 ms, but spent in the client's decode queue
+	end
+	local st = fan:stats(t + 0.35)
+	T.check(st.queueDelay < 0.05 and st.decodeWait > 0.25, "decode wait is CPU, not network",
+		st.queueDelay .. " / " .. st.decodeWait)
+	T.check(st.deliveryRate > 0, "delivery rate known", tostring(st.deliveryRate))
 end
 
 T.summary()

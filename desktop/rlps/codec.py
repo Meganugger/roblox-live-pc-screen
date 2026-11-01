@@ -396,14 +396,18 @@ def apply_part(frame_rgba: np.ndarray, part: Part, ref: np.ndarray | None = None
                 raise ProtocolError("tile data length mismatch")
             mode = raw[off]
             size = (P.HYBRID_RAW_ENTRY if mode == P.TILE_MODE_RAW else
-                    P.HYBRID_DCT_ENTRY if mode == P.TILE_MODE_DCT else
+                    P.HYBRID_DCT_ENTRY if mode in (P.TILE_MODE_DCT, P.TILE_MODE_DCT2) else
                     P.HYBRID_COPY_ENTRY if mode == P.TILE_MODE_COPY else 0)
             if size == 0:
                 raise ProtocolError("unknown tile mode")
             if off + size > len(raw):
                 raise ProtocolError("tile data length mismatch")
-            if mode == P.TILE_MODE_DCT and raw[off + 1] >= len(_dct().QUALITIES):
+            if mode in (P.TILE_MODE_DCT, P.TILE_MODE_DCT2) and raw[off + 1] >= len(_dct().QUALITIES):
                 raise ProtocolError("invalid DCT quality")
+            if mode == P.TILE_MODE_DCT2:
+                x0, y0, _, _ = P.tile_rect(idx, w, h, ts)
+                if x0 + 2 * ts > w or y0 + 2 * ts > h:
+                    raise ProtocolError("half-resolution tile outside the frame")
             if mode == P.TILE_MODE_COPY:
                 if not part.flags & P.PFLAG_REF:
                     raise ProtocolError("copy tile without reference")
@@ -418,7 +422,7 @@ def apply_part(frame_rgba: np.ndarray, part: Part, ref: np.ndarray | None = None
             raise ProtocolError("tile data length mismatch")
         if part.flags & P.PFLAG_REF and (ref is None or ref.shape != frame_rgba.shape):
             raise ProtocolError("copy tile without reference")
-        dct_spans = [(idx, off) for idx, mode, off in spans if mode == P.TILE_MODE_DCT]
+        dct_spans = [(idx, off) for idx, mode, off in spans if mode in (P.TILE_MODE_DCT, P.TILE_MODE_DCT2)]
         decoded = {}
         if dct_spans:  # one vectorized integer decode for all DCT tiles of the part
             D = _dct()
@@ -434,6 +438,9 @@ def apply_part(frame_rgba: np.ndarray, part: Part, ref: np.ndarray | None = None
                 dx = int.from_bytes(raw[off + 1:off + 3], "little", signed=True)
                 dy = int.from_bytes(raw[off + 3:off + 5], "little", signed=True)
                 tile = ref[y0 + dy: y0 + dy + ts, x0 + dx: x0 + dx + ts]
+            elif mode == P.TILE_MODE_DCT2:
+                frame_rgba[y0: y0 + 2 * ts, x0: x0 + 2 * ts] = _dct().upscale2(decoded[idx][None])[0]
+                continue
             else:
                 tile = decoded[idx]
             frame_rgba[y0: y0 + ts, x0: x0 + ts] = tile

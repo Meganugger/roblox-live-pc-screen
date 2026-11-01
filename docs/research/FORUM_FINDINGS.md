@@ -181,6 +181,22 @@ Labels: **[OFFICIAL]** Roblox staff / documentation · **[COMMUNITY]** a develop
   decode time. A parallel decoder would need Actors with their own frame buffers and a copy back — worth it only if
   owner measurements show clients CPU-bound (KI-0007). Recorded as an option, not a task.
 
+### 1.12 Delay and lag (second pass, after the owner reported more delay — D-0013)
+
+* The owner's thread (1sp88kg, with its reposts 1sovo51 and 1sq1agw) was fetched again and read comment by comment.
+  Its author gets "1 fps 2 fps" and blames HTTP ("roblox http is ahh"); the suggestions are a buffer, compression,
+  sending only the pixel changes and waiting for WebSockets. Nothing about delay beyond that. **[COMMUNITY]**
+* Roblox replication runs after Heartbeat, and RemoteEvents above a soft per-client budget (~50 KB/s cited) are
+  **queued, not dropped** (DevForum 4209361 #8, #14); Studio's network stats over-report bandwidth (4963686). A stream
+  sent faster than a player's connection therefore turns into delay. **[COMMUNITY]**, consistent with the official
+  ~50 KB/s planning figure (F-0017).
+* Native code generation is documented for server scripts only (S-0039): clients decode **interpreted** Luau. Measured
+  here: 0.3 ms per DCT tile, 0.7 s for a full-screen frame of motion (F-0050). Ro2D and the SM64 port (§1.3) report
+  the same pressure ("abysmal on mobile").
+* **Here**: the delay is now measured end to end (E2E-31…34); the fixes are in D-0013 — frame-boundary drawing, no
+  batching wait, pacing capped at 100 ms, delay-based rate control that keeps Roblox's queue short, a faster decoder
+  and half-resolution macroblocks for large moving areas.
+
 ## 2. Changes made from this research (D-0012, TR-0016)
 
 | Finding | Change | Verified by |
@@ -189,6 +205,7 @@ Labels: **[OFFICIAL]** Roblox staff / documentation · **[COMMUNITY]** a develop
 | 1.6 viewers may not want to see it | per-player Hide / Show (key H); server stops sending to that player | E2E-28 (0 bytes received while hidden) |
 | 1.7 creation succeeds when the API is disabled | one-pixel probe write, clear message, 30 s retry | E2E-30 |
 | 1.10 enlarged text looks soft | full-screen "Sharp" (`ResamplerMode.Pixelated`) | E2E-25 |
+| 1.12 queued RemoteEvents, interpreted clients (second pass) | latency-first stream (D-0013) | E2E-31…34, TR-0017 |
 | 1.6 ID verification, Content Labels, personal information | INSTALL C.1 / C.1b, SECURITY, TROUBLESHOOTING | review |
 
 ## 3. Not adopted, and why

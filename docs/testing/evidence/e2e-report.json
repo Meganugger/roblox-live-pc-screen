@@ -1,6 +1,6 @@
 {
   "ok": true,
-  "duration_s": 167.0,
+  "duration_s": 248.1,
   "checks": [
     {
       "id": "E2E-01",
@@ -26,7 +26,7 @@
         1024,
         576
       ],
-      "latency_s": 1.127
+      "latency_s": 1.179
     },
     {
       "id": "E2E-04",
@@ -84,14 +84,14 @@
       "check": "late joiner Bob shows the same frame as Alice (server-side history sync)",
       "pass": true,
       "seq": 1,
-      "latency_s": 0.221
+      "latency_s": 0.311
     },
     {
       "id": "E2E-08",
       "check": "desktop change reaches both TVs (new frame, delta path)",
       "pass": true,
       "seq": 2,
-      "latency_s": 0.315
+      "latency_s": 0.165
     },
     {
       "id": "E2E-09a",
@@ -149,15 +149,15 @@
       "id": "E2E-10",
       "check": "after 9 rapid desktop changes both TVs settle on the exact newest frame (scene A)",
       "pass": true,
-      "seq": 12,
-      "frames_between": 10,
+      "seq": 13,
+      "frames_between": 11,
       "dropped": 0
     },
     {
       "id": "E2E-23",
       "check": "a change in two opposite corners redraws only those tiles (dirty rectangles), not their bounding box",
       "pass": true,
-      "last_redraw_pixels": 2048,
+      "last_redraw_pixels": 2816,
       "frame_pixels": 589824
     },
     {
@@ -165,12 +165,12 @@
       "check": "TV out of view: no redraws while frames are still decoded; looking back shows the exact current picture",
       "pass": true,
       "redraws": [
-        13,
-        13
+        15,
+        15
       ],
       "skipped": [
         0,
-        55
+        48
       ]
     },
     {
@@ -205,27 +205,27 @@
       "bob_denied": true,
       "dropped": true,
       "polls_while_hidden": 0,
-      "show_to_sharing_off_s": 0.657
+      "show_to_sharing_off_s": 0.152
     },
     {
       "id": "E2E-11",
       "check": "frame service down: both TVs show 'Screen unavailable' and hide the picture",
       "pass": true,
-      "detail": "Screen unavailable\nrequest failed: [string \"server:roblox/src/server/RlpsServer.server.luau\"]:466: HttpError: ConnectFail",
-      "last_error": "[string \"server:roblox/src/server/RlpsServer.server.luau\"]:466: HttpError: ConnectFail"
+      "detail": "Screen unavailable\nrequest failed: [string \"server:roblox/src/server/RlpsServer.server.luau\"]:504: HttpError: ConnectFail",
+      "last_error": "[string \"server:roblox/src/server/RlpsServer.server.luau\"]:504: HttpError: ConnectFail"
     },
     {
       "id": "E2E-12",
       "check": "service back: both TVs resume with the exact newest frame",
       "pass": true,
       "seq": 2,
-      "latency_s": 8.217
+      "latency_s": 7.977
     },
     {
       "id": "E2E-13",
       "check": "after Stop: both TVs show 'Screen sharing is off', EditableImages destroyed, no frames left in the service, within 5 s",
       "pass": true,
-      "latency_s": 0.052,
+      "latency_s": 0.103,
       "status": "stopped"
     },
     {
@@ -242,9 +242,9 @@
         "dct",
         "lossless"
       ],
-      "lossy_pictures_matched": 57,
+      "lossy_pictures_matched": 55,
       "body_mode": "raw",
-      "seq": 140,
+      "seq": 169,
       "refine_s": 0.01,
       "errors": {}
     },
@@ -258,8 +258,8 @@
       ],
       "lossy_pictures_matched": 54,
       "body_mode": "base64",
-      "seq": 158,
-      "refine_s": 0.0,
+      "seq": 166,
+      "refine_s": 0.01,
       "errors": {}
     },
     {
@@ -268,28 +268,28 @@
       "pass": true,
       "tiles_per_frame": 2304,
       "keyframe_bytes": 50345,
-      "bytes_for_15_scroll_steps": 395485,
-      "copied_tiles": 32361
+      "bytes_for_15_scroll_steps": 245339,
+      "copied_tiles": 32343
     },
     {
       "id": "E2E-20",
       "check": "adaptive rate: grows above the start rate with one fast viewer; a 10 KB/s viewer makes it back off or gets paused while the fast viewer keeps getting frames; both end exact",
       "pass": true,
-      "start_rate": 300000,
-      "rate_after_growth": 1282729,
-      "min_rate_with_slow_viewer": 1282729,
+      "start_rate": 100000,
+      "rate_after_growth": 223351,
+      "min_rate_with_slow_viewer": 223351,
       "max_lagging_viewers": 1,
-      "fast_distinct_pictures_meanwhile": 104
+      "fast_distinct_pictures_meanwhile": 83
     },
     {
       "id": "E2E-16",
       "check": "pacing: forwarded stream stays near the 3000 B/s budget during 10 s of ~2.7 changes/s (one container of slack), frames coalesced, final frame exact",
       "pass": true,
       "budget_Bps": 3000,
-      "measured_Bps": 4152,
+      "measured_Bps": 4122,
       "desktop_changes": 26,
-      "frames_published": 132,
-      "containers_ingested_during_churn": 126
+      "frames_published": 141,
+      "containers_ingested_during_churn": 132
     },
     {
       "id": "E2E-27",
@@ -322,48 +322,170 @@
       "pass": true,
       "text": "Screen unavailable\ncannot draw the screen image: the owner must enable Allow Mesh / Image APIs (Game Settings > Security; needs a 13+ ID-verified owner)",
       "images_created": 1
+    },
+    {
+      "id": "E2E-33",
+      "check": "a place saved with the old tuning (BatchMs 150 ...) runs with the low-latency defaults",
+      "pass": true,
+      "RateBps": 834552,
+      "FpsCap": 60,
+      "LagMs": 0,
+      "MaxLagMs": 0,
+      "LaggingViewers": 0,
+      "BatchMs": 0,
+      "TargetLagSeconds": 0.6
+    },
+    {
+      "id": "E2E-31",
+      "check": "[studio] Alice: glass-to-glass delay \u2014 single change median <= 0.18 s, video median <= 0.4 s and p90 <= 0.6 s, no growth over the run, >= 60 % of the changes shown, no queue build-up once it stops moving",
+      "pass": true,
+      "tail_max_lag_ms": 0,
+      "single_median_s": 0.087,
+      "single_max_s": 0.099,
+      "single_shown": "8/8",
+      "video_median_s": 0.235,
+      "video_p90_s": 0.271,
+      "video_shown": "196/199",
+      "video_first_third_median_s": 0.233,
+      "video_last_third_median_s": 0.234
+    },
+    {
+      "id": "E2E-32",
+      "check": "[online] Alice: glass-to-glass delay \u2014 single change median <= 0.35 s, video median <= 0.65 s and p90 <= 1.0 s, no growth over the run, >= 60 % of the changes shown, no queue build-up once it stops moving",
+      "pass": true,
+      "tail_max_lag_ms": 489,
+      "single_median_s": 0.19,
+      "single_max_s": 0.211,
+      "single_shown": "8/8",
+      "video_median_s": 0.427,
+      "video_p90_s": 0.467,
+      "video_shown": "191/200",
+      "video_first_third_median_s": 0.432,
+      "video_last_third_median_s": 0.416
+    },
+    {
+      "id": "E2E-34",
+      "check": "[weak] Alice: glass-to-glass delay \u2014 single change median <= 0.45 s, video median <= 0.9 s and p90 <= 1.4 s, no growth over the run, >= 30 % of the changes shown, no queue build-up once it stops moving",
+      "pass": true,
+      "tail_max_lag_ms": 288,
+      "single_median_s": 0.195,
+      "single_max_s": 0.223,
+      "single_shown": "8/8",
+      "video_median_s": 0.44,
+      "video_p90_s": 0.505,
+      "video_shown": "175/199",
+      "video_first_third_median_s": 0.458,
+      "video_last_third_median_s": 0.434
     }
   ],
   "metrics": {
     "screen": "1280x720",
-    "join_to_stopped_screen_s": 1.03,
-    "start_to_picture_s": 1.127,
-    "late_joiner_s": 0.221,
-    "desktop_change_to_both_tvs_s": 0.315,
-    "outage_recovery_s": 8.217,
-    "stop_to_tv_off_s": 0.052,
+    "join_to_stopped_screen_s": 1.038,
+    "start_to_picture_s": 1.179,
+    "late_joiner_s": 0.311,
+    "desktop_change_to_both_tvs_s": 0.165,
+    "outage_recovery_s": 7.977,
+    "stop_to_tv_off_s": 0.103,
     "profile": "max",
     "frame_service_responses_after_outage": 2,
-    "http_requests_by_roblox_server": 28,
-    "http_body_bytes": 77488,
-    "server_forwarded_part_bytes": 74616,
-    "server_containers": 38,
+    "http_requests_by_roblox_server": 32,
+    "http_body_bytes": 83970,
+    "server_forwarded_part_bytes": 80730,
+    "server_containers": 46,
     "server_dropped": 0,
-    "alice_received_bytes": 101655,
-    "alice_remote_messages": 402,
-    "alice_pixel_writes": 40,
-    "frames_published": 18,
-    "frames_captured": 1651,
+    "alice_received_bytes": 110050,
+    "alice_remote_messages": 418,
+    "alice_pixel_writes": 87,
+    "frames_published": 22,
+    "frames_captured": 1670,
     "E2E-18_refine_s": 0.01,
-    "E2E-19_refine_s": 0.0,
+    "E2E-19_refine_s": 0.01,
     "scroll": {
       "keyframe_bytes": 50345,
-      "bytes_for_15_scroll_steps": 395485,
-      "copied_tiles": 32361
+      "bytes_for_15_scroll_steps": 245339,
+      "copied_tiles": 32343
     },
     "congestion": {
-      "start_rate": 300000,
-      "rate_after_growth": 1282729,
-      "min_rate_with_slow_viewer": 1282729,
+      "start_rate": 100000,
+      "rate_after_growth": 223351,
+      "min_rate_with_slow_viewer": 223351,
       "max_lagging_viewers": 1,
-      "fast_distinct_pictures_meanwhile": 104
+      "fast_distinct_pictures_meanwhile": 83
     },
     "pacing": {
       "budget_Bps": 3000,
-      "measured_Bps": 4152,
+      "measured_Bps": 4122,
       "desktop_changes": 26,
-      "frames_published": 132,
-      "containers_ingested_during_churn": 126
+      "frames_published": 141,
+      "containers_ingested_during_churn": 132
+    },
+    "latency": {
+      "studio": {
+        "Alice": {
+          "single_median_s": 0.087,
+          "single_max_s": 0.099,
+          "single_shown": "8/8",
+          "video_median_s": 0.235,
+          "video_p90_s": 0.271,
+          "video_shown": "196/199",
+          "video_first_third_median_s": 0.233,
+          "video_last_third_median_s": 0.234
+        },
+        "server": {
+          "RateBps": 834552,
+          "FpsCap": 60,
+          "LagMs": 0,
+          "MaxLagMs": 0,
+          "LaggingViewers": 0,
+          "BatchMs": 0,
+          "TargetLagSeconds": 0.6
+        },
+        "tail_max_lag_ms": 0
+      },
+      "online": {
+        "Alice": {
+          "single_median_s": 0.19,
+          "single_max_s": 0.211,
+          "single_shown": "8/8",
+          "video_median_s": 0.427,
+          "video_p90_s": 0.467,
+          "video_shown": "191/200",
+          "video_first_third_median_s": 0.432,
+          "video_last_third_median_s": 0.416
+        },
+        "server": {
+          "RateBps": 268420,
+          "FpsCap": 60,
+          "LagMs": 0,
+          "MaxLagMs": 0,
+          "LaggingViewers": 0,
+          "BatchMs": 0,
+          "TargetLagSeconds": 0.6
+        },
+        "tail_max_lag_ms": 489
+      },
+      "weak": {
+        "Alice": {
+          "single_median_s": 0.195,
+          "single_max_s": 0.223,
+          "single_shown": "8/8",
+          "video_median_s": 0.44,
+          "video_p90_s": 0.505,
+          "video_shown": "175/199",
+          "video_first_third_median_s": 0.458,
+          "video_last_third_median_s": 0.434
+        },
+        "server": {
+          "RateBps": 223724,
+          "FpsCap": 32.7,
+          "LagMs": 0,
+          "MaxLagMs": 0,
+          "LaggingViewers": 0,
+          "BatchMs": 0,
+          "TargetLagSeconds": 0.6
+        },
+        "tail_max_lag_ms": 288
+      }
     }
   }
 }

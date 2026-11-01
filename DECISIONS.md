@@ -202,3 +202,29 @@
   A/V sync cannot be judged without real clients and ears; it also needs an owner-uploaded tone asset. The owner
   decides the policy question first.
 
+
+## D-0013 — Latency first: frame-boundary drawing, no batching wait, bounded playout, delay-based rate, half-resolution motion (2026-10-31, 29th session)
+
+- **Evidence** (owner: "it lags way more and has a lot more delay than the previous one"; TR-0017): a new
+  glass-to-glass measurement (counter on the real screen → read back from the clients' EditableImages, emulated network
+  with delay, a queueing 400 kB/s player link and a 150 ms tunnel round trip) reproduced it: video delay 1.1–1.3 s
+  median / 1.9–2.1 s p90 at PR #4 (two players), 0.5 / 1.2 s at PR #2. Causes: (1) PR #3 moved drawing to the end of
+  the Heartbeat but the decode loop could stop half-way into the next frame, and a half-assembled frame is never drawn
+  — with a steady stream the TV fell behind; (2) 150 ms batching wait per poll and up to 1 s of playout pacing; (3) the
+  rate control reacted to the *age* of unacknowledged frames against a 0.35 s target that the base delay alone nearly
+  reaches, and started at 1 MB/s with a 128 KiB / 1 s window, so Roblox's send queue filled before it backed off; (4)
+  client decoding is interpreted Luau (native code is server-only, S-0039) — 0.3 ms per DCT tile, 0.7 s for a
+  full-screen frame of motion.
+- **Selected**: (1) stop decoding at a frame boundary unless the next frame is completely queued; (2) `BatchMs` 0,
+  `PlayoutMs` 100 (pacing compressed to ≤ 100 ms per response); (3) per-viewer delay samples with a 10 s base-delay
+  minimum, queueing delay = excess minus the client-reported decode wait, rate AIMD on it (`TargetQueueMs` 100,
+  drain to 0.85 × the delivery rate above 3 × target, no growth beyond 1.25 × the delivery rate), `TargetLagSeconds` 0.6
+  as a hard limit, start 500 kB/s, floor 30 kB/s, window 64 KiB / 0.5 s, encoder bucket 0.25 s, acks ≤ 20/s with
+  their own age; decode wait drives the fps cap; (4) IDCT doing work only for non-zero coefficient groups and used
+  columns (1.8× faster, bit-identical) and **DCT2** half-resolution macroblocks for complete 2×2 groups in large moving
+  areas (¼ of the decode work and bytes; still content still refines to exact); (5) places with the old saved tuning
+  switch to the new defaults at run time (logged).
+- **Rejected**: several HTTP polls in flight (duplicate frames, and 500 requests/min would be reached); dropping
+  playout pacing entirely (bursts of 4–5 frames per response would show as ~6 fps); a lossless-only half-resolution
+  mode (more bytes than DCT2 for video); decoding on the Roblox server with native code (EditableImage pixels do not
+  replicate, so the server would have to send raw pixels to every client).

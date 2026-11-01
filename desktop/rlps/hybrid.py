@@ -5,7 +5,10 @@ The encoder owns the *decoder-side reconstruction* (``recon``): what every clien
 so far. Each frame it sends tiles whose reconstruction differs from the new source, choosing per frame:
 
 1. **moving tiles** (changed within the last ``refine_after`` captures): lossless if they fit the byte budget, else DCT at
-   the highest quality step that fits (binary search, warm-started from the previous frame's step);
+   the highest quality step that fits (binary search, warm-started from the previous frame's step). In a large moving
+   area (video) every complete, aligned 2x2 group of moving tiles is sent as one **half-resolution** macroblock
+   (TILE_MODE_DCT2): a quarter of the bytes and of the clients' decode work — which decides the frame rate players
+   get, because clients decode in interpreted Luau;
 2. **settled tiles** (unchanged for ``refine_after`` captures but still lossy or stale): lossless, oldest first, with the
    budget left over — so a still screen converges to a pixel-exact copy of the desktop.
 
@@ -35,7 +38,11 @@ class HybridInfo:
 
 
 class HybridEncoder:
-    def __init__(self, width: int, height: int, *, packer: codec.FrameEncoder | None = None, refine_after: int = 2):
+    HALF_RES_MIN_SHARE = 0.06  # moving area (share of the frame's tiles) from which 2x2 groups go half-resolution
+    HALF_RES_MIN_TILES = 48
+
+    def __init__(self, width: int, height: int, *, packer: codec.FrameEncoder | None = None, refine_after: int = 2,
+                 half_res: bool = True):
         if width % T or height % T or not (T <= width <= P.MAX_DIM and T <= height <= P.MAX_DIM):
             raise ValueError(f"hybrid frames need dimensions divisible by {T} within {P.MAX_DIM}, got {width}x{height}")
         self.w, self.h = width, height
@@ -45,6 +52,7 @@ class HybridEncoder:
         if self.packer.tile_size != T:
             raise ValueError("packer tile size must be 16")
         self.refine_after = refine_after
+        self.half_res = half_res
         self.recon: np.ndarray | None = None  # (H, W, 4) uint8, decoder-side picture
         self.src_prev: np.ndarray | None = None
         self.still = np.zeros(self.count, np.int64)  # captures since the tile's source last changed
@@ -60,6 +68,16 @@ class HybridEncoder:
         """(H, W, C) -> (count, 16, 16, C) view in row-major tile order."""
         c = img.shape[2]
         return img.reshape(self.ty, T, self.tx, T, c).swapaxes(1, 2).reshape(self.count, T, T, c)
+
+    def _groups(self, moving: np.ndarray) -> np.ndarray:
+        """Top-left tile indices of the complete, aligned 2x2 groups of moving tiles (TILE_MODE_DCT2 candidates)."""
+        ey, ex = self.ty // 2 * 2, self.tx // 2 * 2
+        if not (self.half_res and ey and ex) or moving.sum() < max(self.HALF_RES_MIN_TILES,
+                                                                   self.count * self.HALF_RES_MIN_SHARE):
+            return np.zeros(0, np.int64)
+        m = moving.reshape(self.ty, self.tx)[:ey, :ex].reshape(ey // 2, 2, ex // 2, 2).all(axis=(1, 3))
+        gy, gx = np.nonzero(m)
+        return (gy * 2 * self.tx + gx * 2).astype(np.int64)
 
     def _pack(self, entries, *, session_id, seq, base_seq, keyframe, ref=False) -> bytes:
         entries.sort(key=lambda e: e[0])
@@ -201,7 +219,9 @@ class HybridEncoder:
         dct_q: int | None = None
         dct_recon = None
         if moving_idx.size:
-            hopeless = budget is not None and moving_idx.size * self.lossless_tile_bytes > budget * 2
+            # (keyframes always try lossless: text and desktops compress far better than the running estimate says)
+            hopeless = (budget is not None and not keyframe
+                        and moving_idx.size * self.lossless_tile_bytes > budget * 2)
             lossless = None if hopeless else self._pack(list(raw_entries.items()) + copy_entries, **args)
             if lossless is not None:
                 self.lossless_tile_bytes = 0.7 * self.lossless_tile_bytes + 0.3 * len(lossless) / moving_idx.size
@@ -209,9 +229,30 @@ class HybridEncoder:
                 chosen = list(raw_entries.items()) + copy_entries
                 size = len(lossless)
             else:
-                coefs = dct.forward_coefficients(st[moving_idx][..., :3])
+                # DCT: single tiles, plus 2x2 groups of a large moving area at half resolution
+                groups = self._groups(moving)
+                covered = np.zeros(self.count, bool)
+                if groups.size:
+                    for d in (0, 1, self.tx, self.tx + 1):
+                        covered[groups + d] = True
+                single_idx = np.flatnonzero(moving & ~covered)
+                ent_idx = np.concatenate([single_idx, groups])
+                modes = np.concatenate([np.full(single_idx.size, P.TILE_MODE_DCT),
+                                        np.full(groups.size, P.TILE_MODE_DCT2)])
+                parts_rgb = [st[single_idx][..., :3]]
+                if groups.size:
+                    gy, gx = groups // self.tx * T, groups % self.tx * T
+                    yy = gy[:, None] + np.arange(2 * T)[None, :]
+                    xx = gx[:, None] + np.arange(2 * T)[None, :]
+                    parts_rgb.append(dct.downscale2(src[yy[:, :, None], xx[:, None, :], :3]))
+                coefs = dct.forward_coefficients(np.concatenate(parts_rgb))
+
+                def entries(qz, qi, sel=slice(None)):
+                    blobs = dct.pack_entries(qz, qi)
+                    return [(int(i), bytes((int(m),)) + b[1:]) for i, m, b in zip(ent_idx[sel], modes[sel], blobs)]
+
                 # Search the quality on a sample of the tiles (sizes scale with the tile count), then encode once.
-                n = moving_idx.size
+                n = ent_idx.size
                 stride = max(1, n // 192)
                 sample = np.arange(0, n, stride)
                 scale = n / sample.size
@@ -220,8 +261,7 @@ class HybridEncoder:
                 def attempt(qi: int) -> bool:
                     if qi not in cache:
                         qz = dct.quantize(coefs[sample], qi)
-                        ent = list(zip(moving_idx[sample].tolist(), dct.pack_entries(qz, qi)))
-                        cache[qi] = int(len(self._pack(ent, **args)) * scale) + 5 * len(copy_entries)
+                        cache[qi] = int(len(self._pack(entries(qz, qi, sample), **args)) * scale) + 5 * len(copy_entries)
                     return cache[qi] <= budget
 
                 top = len(dct.QUALITIES) - 1
@@ -254,7 +294,7 @@ class HybridEncoder:
                 lo = max(lo, 0)
                 while True:  # the real encode; step down if the sample estimate was optimistic
                     qz = dct.quantize(coefs, lo)
-                    chosen = list(zip(moving_idx.tolist(), dct.pack_entries(qz, lo))) + copy_entries
+                    chosen = entries(qz, lo) + copy_entries
                     size = len(self._pack(list(chosen), **args))
                     if size <= budget or lo == 0 or stride == 1:
                         break
@@ -263,7 +303,8 @@ class HybridEncoder:
                     info.skipped = True
                     return None, info
                 self.q_index = lo
-                dct_q, dct_recon = lo, dct.reconstruct(qz, lo)
+                rec = dct.reconstruct(qz, lo)
+                dct_q, dct_recon = lo, (single_idx, rec[:single_idx.size], groups, dct.upscale2(rec[single_idx.size:]))
         else:
             chosen = list(copy_entries)
             size = len(self._pack(list(chosen), **args)) if chosen else 0
@@ -296,7 +337,11 @@ class HybridEncoder:
         if sent_raw.size:
             rt[sent_raw // self.tx, sent_raw % self.tx] = st[sent_raw]
         if dct_recon is not None:
-            rt[moving_idx // self.tx, moving_idx % self.tx] = dct_recon
+            single_idx, single_rec, groups, group_rec = dct_recon
+            rt[single_idx // self.tx, single_idx % self.tx] = single_rec
+            for g, block in zip(groups.tolist(), group_rec):
+                gy, gx = g // self.tx * T, g % self.tx * T
+                self.recon[gy:gy + 2 * T, gx:gx + 2 * T] = block
         for i, (dx, dy) in copies.items():
             ty, tx = divmod(i, self.tx)
             self.recon[ty * T:ty * T + T, tx * T:tx * T + T] = before[ty * T + dy:ty * T + dy + T,

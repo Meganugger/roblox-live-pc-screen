@@ -23,6 +23,9 @@ SCENES = {
 DOT_COLOR = (250, 220, 40)
 CHECKER = (560, 40, 160, 80, 8)  # x, y, w, h, cell: fine detail (text-like high-frequency content)
 NOISE_RECT = (300, 150, 480, 320)  # "noise <seed>": smooth moving colours + grain here (forces lossy DCT tiles)
+# "clock <n> <motion>": a 16-bit counter drawn as 16 black / white blocks (bit i = block i), for glass-to-glass latency
+# measurements; motion=1 also animates NOISE_RECT (video-like load). Blocks are large so lossy tiles keep them readable.
+MARKER = (40, 640, 40, 40, 16)  # x, y, block width, block height, bits (reference coordinates)
 
 
 def noise_image(seed: int, w: int, h: int):
@@ -56,6 +59,15 @@ def noise_geometry(w: int, h: int):
     x, y, rw, rh = NOISE_RECT
     sx, sy = w / REF_W, h / REF_H
     return round(x * sx), round(y * sy), round(rw * sx), round(rh * sy)
+
+
+def marker_blocks(n: int, w: int, h: int):
+    """(rgb, x, y, w, h) of the counter blocks for value ``n`` in real screen pixels."""
+    sx, sy = w / REF_W, h / REF_H
+    x0, y0, bw, bh, bits = MARKER
+    for i in range(bits):
+        rgb = (255, 255, 255) if (n >> i) & 1 else (0, 0, 0)
+        yield rgb, round((x0 + i * bw) * sx), round(y0 * sy), round(bw * sx), round(bh * sy)
 
 
 def shapes(name: str, w: int, h: int):
@@ -121,6 +133,15 @@ class XlibBackend:
 
     def page(self, offset: int) -> None:
         self._blit(page_image(offset, self.w, self.h), 0, 0)
+
+    def clock(self, n: int, motion: bool) -> None:
+        if motion:
+            x, y, w, h = noise_geometry(self.w, self.h)
+            self._blit(noise_image(n, w, h), x, y)
+        for rgb, x, y, w, h in marker_blocks(n, self.w, self.h):
+            self.gc.change(foreground=self.pixel(rgb))
+            self.win.fill_rectangle(self.gc, x, y, w, h)
+        self.d.sync()
 
     def close(self) -> None:
         self.win.destroy()
@@ -189,6 +210,10 @@ def main() -> int:
         elif cmd[0] == "page" and len(cmd) == 2 and cmd[1].isdigit():
             backend.page(int(cmd[1]))
             print(f"ready page{cmd[1]}", flush=True)
+        elif cmd[0] == "clock" and len(cmd) == 3 and cmd[1].isdigit() and cmd[2] in ("0", "1") \
+                and hasattr(backend, "clock"):
+            backend.clock(int(cmd[1]), cmd[2] == "1")
+            print(f"ready clock{cmd[1]}", flush=True)
         elif cmd[0] == "noise" and len(cmd) == 2 and cmd[1].isdigit():
             backend.noise(int(cmd[1]))
             print(f"ready noise{cmd[1]}", flush=True)

@@ -45,6 +45,7 @@ PROBE_BODY = bytes(range(256)) * 4  # every byte value, 1 KiB: the poller checks
 RATE_HOLD_S = 5.0  # a poller's reported rate is honoured this long
 KEYFRAME_REPLAY_MAX = 24  # a poller that needs a keyframe gets a fresh one rather than more frames than this
 IDLE_ENCODE_S = 10.0  # nobody polled for this long: stop encoding (CPU), next poll gets a fresh keyframe
+BURST_S = 0.25  # token bucket depth in seconds of the stream rate (bigger bursts = longer queues on the way)
 
 
 class TokenBucket:
@@ -195,7 +196,7 @@ class FrameStore:
                 return False
             rate = self.current_rate()
             now = self._clock()
-            cap = max(rate * 0.5, 4096)
+            cap = max(rate * BURST_S, 4096)  # small bursts: a burst sits in the players' network queues
             # (a full bucket at the start: Windows' monotonic clock ticks every ~16 ms, so dt can be 0)
             self._tokens = cap if self._tokens is None else min(cap, self._tokens + (now - self._tokens_at) * rate)
             self._tokens_at = now

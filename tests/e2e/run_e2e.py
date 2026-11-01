@@ -52,7 +52,24 @@ class Failure(AssertionError):
     pass
 
 
-class RecordingStore(server.FrameStore):
+class TimedStore(server.FrameStore):
+    """FrameStore that knows when the capture its picture reflects was taken (``last_capture_t``, monotonic): a test
+    waiting for a desktop change must not accept a frame captured before the change was on the screen — with a fast
+    pipeline a client can show a refinement frame of the old picture before the new capture is even encoded."""
+
+    last_capture_t = 0.0
+
+    def publish(self, q, fmt):
+        t = time.monotonic()  # the grab happened just before this call
+        st = self.status
+        skips = (st.skipped, st.fps_skipped)
+        added = super().publish(q, fmt)
+        if added or (st.skipped, st.fps_skipped) == skips:  # added, or unchanged: the picture reflects this capture
+            self.last_capture_t = t
+        return added
+
+
+class RecordingStore(TimedStore):
     """FrameStore that remembers, per published frame, the SHA-256 of the decoder-side picture and whether it was
     lossy (picture != captured frame) — lets the test prove that clients show lossy frames bit-exactly."""
 
@@ -87,6 +104,7 @@ class Harness:
         self.procs: list[subprocess.Popen] = []
         self.checks: list[dict] = []
         self.metrics: dict = {}
+        self.last_scene_t = 0.0  # monotonic time the newest scene was on the screen
 
     # -------------------------------------------------------------------------------------------- environment
 
@@ -123,11 +141,12 @@ class Harness:
         line = self.painter.stdout.readline().strip()
         if line != f"ready {name}":
             raise Failure(f"painter answered {line!r}")
-        return time.monotonic()
+        self.last_scene_t = time.monotonic()
+        return self.last_scene_t
 
     def start_emulator(self, base_url: str, token: str, ctl: str, attrs: dict | None = None, *,
                        public_url: str = "https://rlps-e2e.test", secret_domain: str = "*") -> subprocess.Popen:
-        env = dict(os.environ, RLPS_REPO=REPO, RLPS_OUT=ctl, RLPS_BASE_URL=base_url, RLPS_TOKEN=token,
+        env = dict(os.environ, RLPS_REPO=self.args.scripts or REPO, RLPS_OUT=ctl, RLPS_BASE_URL=base_url, RLPS_TOKEN=token,
                    RLPS_PUBLIC_URL=public_url, RLPS_SECRET_DOMAIN=secret_domain, RLPS_MAX_SECONDS="240")
         env.update({f"RLPS_ATTR_{k}": str(v) for k, v in (attrs or {}).items()})
         with open(os.path.join(ctl, "emulator.log"), "w") as log:  # the child keeps its own handle
@@ -206,6 +225,8 @@ class Harness:
         """Wait until every named client's EditableImage equals the newest captured frame, which must be newer than
         ``after_seq`` (so a change is only accepted once the capture loop has really seen it)."""
         def pred(st):
+            if getattr(store, "last_capture_t", 1e18) < self.last_scene_t + 0.05:
+                return None  # no capture of the current screen yet (a grab takes < 50 ms before publish is called)
             seq, sha, rgba = self.expected(store)
             if not sha or seq <= after_seq:
                 return None
@@ -263,7 +284,7 @@ class Harness:
         ctl = tempfile.mkdtemp(prefix="rlps-e2e-live-", dir=self.out)
         token = secrets.token_urlsafe(32)
         profile = app.PROFILES[self.args.profile]
-        store = server.FrameStore()
+        store = TimedStore()
         service = server.FrameService(store, token, port=0)
         service.start()
         port = service.address[1]
@@ -405,7 +426,7 @@ class Harness:
         ctl = tempfile.mkdtemp(prefix="rlps-e2e-pacing-", dir=self.out)
         token = secrets.token_urlsafe(32)
         budget = 3000
-        store = server.FrameStore()
+        store = TimedStore()
         service = server.FrameService(store, token, port=0)
         service.start()
         controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["low"])
@@ -570,18 +591,18 @@ class Harness:
         the fast viewer keeps receiving frames, and both end on the exact picture."""
         ctl = tempfile.mkdtemp(prefix="rlps-e2e-congestion-", dir=self.out)
         token = secrets.token_urlsafe(32)
-        store = server.FrameStore()
+        store = TimedStore()
         service = server.FrameService(store, token, port=0)
         service.start()
         controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["high"])
         self.scene("A")
         controller.start()
-        start_rate = 300_000
+        start_rate = 100_000  # below what the moving picture needs: the stream uses its budget, so it must grow
         os.environ["RLPS_EMU_THROTTLE_Slow"] = "10000"
         try:
             emu = self.start_emulator(f"http://127.0.0.1:{service.address[1]}", token, ctl,
                                       {"StartBytesPerSecond": start_rate, "MaxBytesPerSecond": 4_000_000,
-                                       "MinBytesPerSecond": 50_000})
+                                       "MinBytesPerSecond": 30_000})
         finally:
             os.environ.pop("RLPS_EMU_THROTTLE_Slow", None)
         try:
@@ -632,7 +653,7 @@ class Harness:
         """ViewerUserIds allowlist: only listed players receive pixels."""
         ctl = tempfile.mkdtemp(prefix="rlps-e2e-viewers-", dir=self.out)
         token = secrets.token_urlsafe(32)
-        store = server.FrameStore()
+        store = TimedStore()
         service = server.FrameService(store, token, port=0)
         service.start()
         controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["low"])
@@ -673,9 +694,179 @@ class Harness:
             service.close()
             shutil.copy(os.path.join(ctl, "emulator.log"), os.path.join(self.out, "emulator-viewers.log"))
 
+    # ------------------------------------------------------------------------------------------ latency
+
+    NETWORKS = {  # one-way RemoteEvent delay, client link byte rate (None = unlimited), HTTP round trip via tunnel
+        "studio": (5, None, 20),
+        "online": (60, 400_000, 150),
+        "weak": (60, 400_000, 150),  # online + players whose CPU affords only 3 ms of decoding per game frame
+    }
+
+    def clock(self, n: int, motion: bool) -> float:
+        """Draw counter value ``n`` (and a moving picture when ``motion``); wall-clock ms when it is on the screen."""
+        self.painter.stdin.write(f"clock {n} {1 if motion else 0}\n")
+        self.painter.stdin.flush()
+        line = self.painter.stdout.readline().strip()
+        if line != f"ready clock{n}":
+            raise Failure(f"painter answered {line!r}")
+        return time.time() * 1000
+
+    @staticmethod
+    def latencies(drawn: dict[int, float], markers: list) -> tuple[list[float], int]:
+        """Glass-to-glass delay (s) of every drawn counter value a client showed, and how many it showed."""
+        first: dict[int, float] = {}
+        for value, ms in markers or []:
+            first.setdefault(int(value), float(ms))
+        lat = [(first[n] - t) / 1000 for n, t in drawn.items() if n in first and first[n] >= t - 50]
+        return lat, len(lat)
+
+    @staticmethod
+    def pct(xs: list[float], q: float) -> float:
+        if not xs:
+            return float("nan")
+        ys = sorted(xs)
+        return round(ys[min(len(ys) - 1, int(q * (len(ys) - 1) + 0.5))], 3)
+
+    def scenario_latency(self) -> None:
+        """Glass-to-glass delay from the PC's screen to the players' TVs (E2E-31, E2E-32): a counter drawn on the real
+        screen is read back from each client's EditableImage the moment it is written. Network models: "studio"
+        (fast) and "online" (60 ms each way, a 400 kB/s link per player that queues like Roblox's send queue, 150 ms
+        tunnel round trip). Phases: single changes on an idle desktop (typing, clicks), then 20 changes/s with a
+        moving picture (video)."""
+        results = {}
+        for net_name in (self.args.networks or "studio,online,weak").split(","):
+            one_way, link, rtt = self.NETWORKS[net_name]
+            ctl = tempfile.mkdtemp(prefix=f"rlps-e2e-latency-{net_name}-", dir=self.out)
+            token = secrets.token_urlsafe(32)
+            store = TimedStore()
+            service = server.FrameService(store, token, port=0)
+            service.start()
+            profile = app.PROFILES[self.args.profile]
+            controller = app.SharingController(store, lambda: capture.MssSource(1, None), profile)
+            cw, ch, fw, fh = capture.stream_size(*self.screen, profile.max_w, profile.max_h, 16)
+            if (cw, ch) != (fw, fh):
+                raise Failure(f"latency scenario needs a profile without letterbox bars here ({cw}x{ch} in {fw}x{fh})")
+            kx, ky = cw / SCREEN_W, ch / SCREEN_H  # reference coordinates -> stream pixels
+            mx, my, bw, bh, bits = scenes.MARKER
+            env = {"RLPS_EMU_LATENCY_MS": str(one_way), "RLPS_EMU_HTTP_RTT_MS": str(rtt),
+                   "RLPS_EMU_MARKER": "%d,%d,%d,%d" % (round((mx + bw / 2) * kx), round((my + bh / 2) * ky),
+                                                       round(bw * kx), bits)}
+            if link:
+                env["RLPS_EMU_LINK_BPS"] = str(link)
+            self.scene("A")
+            n = 1
+            self.clock(n, False)
+            controller.start()
+            os.environ.update(env)
+            # the "studio" run uses a place saved with the old tuning: the server must switch to the new defaults
+            legacy = {"BatchMs": 150, "StartBytesPerSecond": 1000000, "MinBytesPerSecond": 100000,
+                      "TargetLagSeconds": 0.35} if net_name == "studio" else None
+            if net_name == "weak":
+                legacy = {"ClientDecodeBudgetMs": 3}
+            try:
+                emu = self.start_emulator(f"http://127.0.0.1:{service.address[1]}", token, ctl, legacy)
+            finally:
+                for k in env:
+                    os.environ.pop(k, None)
+            try:
+                # one viewer by default: the emulator runs every client in one process, so a second decoding client
+                # halves this one's CPU — real players each have their own (--latency-viewers 2: a CPU-starved client)
+                viewers = ["Alice", "Bob", "Carol"][:self.args.latency_viewers]
+                for who in viewers:
+                    open(os.path.join(ctl, f"join-{who}"), "w").close()
+                self.wait_match(ctl, store, viewers, 60, f"[{net_name}] the TV shows the desktop")
+                time.sleep(2.0)
+                # phase 1: one change at a time on a still desktop
+                single: dict[int, float] = {}
+                for _ in range(8):
+                    n += 1
+                    single[n] = self.clock(n, False)
+                    time.sleep(1.2)
+                # phase 2: 20 changes per second with a moving picture, 14 s
+                video: dict[int, float] = {}
+                timeline = []
+                t_video = time.monotonic()
+
+                def sample():
+                    st = self.read_state(ctl, timeout=0.1)
+                    if st:
+                        a, c = st["server"]["attributes"], st["clients"]["Alice"]
+                        ca = c.get("script_attributes") or {}
+                        timeline.append((round(time.monotonic() - t_video, 1), a.get("RateBps"), a.get("LagMs"),
+                                         a.get("QueueMs"), a.get("DecodeWaitMs"), a.get("FpsCap"),
+                                         a.get("LaggingViewers"), c.get("queued_messages"), ca.get("QueueLength"),
+                                         ca.get("DecodeMsPerFrame")))
+
+                end = t_video + 14
+                while time.monotonic() < end:
+                    n += 1
+                    video[n] = self.clock(n, True)
+                    if n % 8 == 0:
+                        sample()
+                    time.sleep(max(0.0, 0.05 - 0.002))
+                for _ in range(8):  # the picture stops moving: refinement to lossless must not build queues
+                    time.sleep(0.5)
+                    sample()
+                st = self.read_state(ctl)
+                res = {}
+                for who in ("Alice",):
+                    markers = st["clients"][who].get("markers") or []
+                    s_lat, s_n = self.latencies(single, markers)
+                    v_lat, v_n = self.latencies(video, markers)
+                    third = max(1, len(v_lat) // 3)
+                    res[who] = {"single_median_s": self.pct(s_lat, 0.5), "single_max_s": self.pct(s_lat, 1.0),
+                                "single_shown": f"{s_n}/{len(single)}",
+                                "video_median_s": self.pct(v_lat, 0.5), "video_p90_s": self.pct(v_lat, 0.9),
+                                "video_shown": f"{v_n}/{len(video)}",
+                                "video_first_third_median_s": self.pct(v_lat[:third], 0.5),
+                                "video_last_third_median_s": self.pct(v_lat[-third:], 0.5)}
+                a = st["server"]["attributes"]
+                res["server"] = {k: a.get(k) for k in ("RateBps", "FpsCap", "LagMs", "MaxLagMs", "LaggingViewers",
+                                                       "BatchMs", "TargetLagSeconds")}
+                res["tail_max_lag_ms"] = max((row[2] or 0) for row in timeline[-8:]) if timeline else None
+                results[net_name] = res
+                print(f"LATENCY [{net_name}] {json.dumps(res)}", flush=True)
+                print(f"TIMELINE [{net_name}] (t, rate, lagMs, queueMs, decodeWaitMs, fpsCap, lagging, net queue, decode queue, decodeMs) {timeline}", flush=True)
+            finally:
+                open(os.path.join(ctl, "quit"), "w").close()
+                try:
+                    emu.wait(10)
+                except subprocess.TimeoutExpired:
+                    emu.kill()
+                controller.stop()
+                service.close()
+                shutil.copy(os.path.join(ctl, "emulator.log"), os.path.join(self.out, f"emulator-latency-{net_name}.log"))
+        self.metrics["latency"] = results
+        if "studio" in results:
+            srv = results["studio"]["server"]
+            self.check("E2E-33", "a place saved with the old tuning (BatchMs 150 ...) runs with the low-latency defaults",
+                       srv.get("BatchMs") == 0 and srv.get("TargetLagSeconds") == 0.6, **srv)
+        if self.args.no_latency_checks:
+            return
+        for net_name, res in results.items():
+            limits = self.LATENCY_LIMITS[net_name]
+            for who in ("Alice",):
+                r = res[who]
+                shown = int(r["video_shown"].split("/")[0]) / max(1, int(r["video_shown"].split("/")[1]))
+                self.check({"studio": "E2E-31", "online": "E2E-32", "weak": "E2E-34"}[net_name],
+                           f"[{net_name}] {who}: glass-to-glass delay — single change median <= {limits[0]} s, video "
+                           f"median <= {limits[1]} s and p90 <= {limits[2]} s, no growth over the run, >= "
+                           f"{int(limits[3] * 100)} % of the changes shown, no queue build-up once it stops moving",
+                           r["single_median_s"] <= limits[0] and r["video_median_s"] <= limits[1]
+                           and r["video_p90_s"] <= limits[2]
+                           and r["video_last_third_median_s"] <= r["video_first_third_median_s"] + 0.15
+                           and shown >= limits[3] and (res["tail_max_lag_ms"] or 0) <= 1500,
+                           tail_max_lag_ms=res["tail_max_lag_ms"], **r)
+
+    # (single-change median, video median, video p90, share of the changes shown) — measured on a 2.1 GHz sandbox:
+    # studio 0.07 / 0.22 / 0.26 / 99 %, online 0.20 / 0.42 / 0.59 / 98 %; before D-0013: studio 0.24 / 0.25 / 0.28,
+    # online 0.35 / 0.66 / 0.96 (one player) and 0.37 / 1.14 / 1.90 / 65 % (two players sharing the emulator's CPU)
+    LATENCY_LIMITS = {"studio": (0.18, 0.40, 0.60, 0.6), "online": (0.35, 0.65, 1.0, 0.6),
+                      "weak": (0.45, 0.9, 1.4, 0.3)}
+
     def scenario_badtoken(self) -> None:
         ctl = tempfile.mkdtemp(prefix="rlps-e2e-badtoken-", dir=self.out)
-        store = server.FrameStore()
+        store = TimedStore()
         service = server.FrameService(store, secrets.token_urlsafe(32), port=0)
         service.start()
         controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["low"])
@@ -712,7 +903,14 @@ class Harness:
         def attrs(s):
             return s["clients"]["Alice"].get("script_attributes") or {}
 
-        # 1. two small squares in opposite corners: only their tiles are rewritten, not the bounding box (≈ the screen)
+        # 1. two small squares in opposite corners: only their tiles are rewritten, not the bounding box (≈ the screen).
+        # First let the earlier motion finish refining to lossless, so the last redraw is the change alone.
+        def settled(st):
+            _, sha, rgba = self.expected(store)
+            cap = self.captured(store)
+            return (cap is not None and np.array_equal(rgba, cap)
+                    and all(st["clients"][n].get("image_sha256") == sha for n in ("Alice", "Bob")))
+        self.wait_for(ctl, settled, 30, "the picture refined to the exact desktop")
         self.scene("D")
         (seq_d, _, _), st = self.wait_match(ctl, store, ["Alice", "Bob"], 30, "scene D on both", after_seq=after_seq)
         time.sleep(1.3)  # client diagnostics are published once per second
@@ -850,7 +1048,7 @@ class Harness:
         """A published game without "Allow Mesh / Image APIs": creating the EditableImage works, writing fails."""
         ctl = tempfile.mkdtemp(prefix="rlps-e2e-imageapi-", dir=self.out)
         token = secrets.token_urlsafe(32)
-        store = server.FrameStore()
+        store = TimedStore()
         service = server.FrameService(store, token, port=0)
         service.start()
         controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["low"])
@@ -887,7 +1085,7 @@ class Harness:
     def scenario_secretdomain(self) -> None:
         """The secret's domain must allow the tunnel host (Roblox refuses to attach it otherwise)."""
         token = secrets.token_urlsafe(32)
-        store = server.FrameStore()
+        store = TimedStore()
         service = server.FrameService(store, token, port=0)
         service.start()
         controller = app.SharingController(store, lambda: capture.MssSource(1, None), app.PROFILES["low"])
@@ -932,8 +1130,12 @@ def main() -> int:
     ap.add_argument("--lune", default=shutil.which("lune") or "lune")
     ap.add_argument("--profile", choices=sorted(app.PROFILES), default=app.DEFAULT_PROFILE)
     ap.add_argument("--scenario", choices=["live", "quality", "scroll", "congestion", "pacing", "viewers", "badtoken",
-                                           "secretdomain", "imageapi", "all"], default="all")
+                                           "secretdomain", "imageapi", "latency", "all"], default="all")
     ap.add_argument("--xvfb", action="store_true", help="start Xvfb even if DISPLAY is set")
+    ap.add_argument("--networks", help="latency scenario: comma-separated network models (studio, online)")
+    ap.add_argument("--no-latency-checks", action="store_true", help="latency scenario: measure only")
+    ap.add_argument("--latency-viewers", type=int, default=1, choices=(1, 2, 3), help="latency scenario: players")
+    ap.add_argument("--scripts", help="run the Roblox scripts of another checkout (measurements / comparisons)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     h = Harness(args, args.out)
@@ -960,6 +1162,8 @@ def main() -> int:
             h.scenario_secretdomain()
         if args.scenario in ("imageapi", "all"):
             h.scenario_imageapi()
+        if args.scenario in ("latency", "all") and sys.platform.startswith("linux"):
+            h.scenario_latency()  # needs the Xlib painter's counter; timing via Tk on Windows would be meaningless
     except Failure as exc:
         ok = False
         print(f"E2E FAILED: {exc}", flush=True)
