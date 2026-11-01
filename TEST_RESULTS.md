@@ -279,3 +279,5 @@ evidence · defects · fixes · rerun needed (STALE when the tested code changed
   redraw; E2E-20 starts at 100 kB/s (with half-resolution video the stream no longer needs 300 kB/s at the fps the
   emulator decodes, so "grows" needs a start below demand).
 - **Not verified here**: real Roblox (per-player send budget, client CPU), the owner's tunnel.
+- **CI** at `c4c470e` (PR #5): **5 / 5 green** — incl. the latency checks E2E-31…34 on the GitHub Linux runner and the
+  live test on a real Windows desktop (latency scenario Linux-only).
